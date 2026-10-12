@@ -8,6 +8,27 @@ It is not a decoder and not a broker. The only hard requirement on a publisher i
 firm feed handler -> internal bus (SBE) -> flashtick (per box) -> shared-memory ring per app session -> apps
 ```
 
+## Why it exists
+
+A trading box runs a handful of applications, and every one of them needs market data. Without an agent, each app does the same work on its own:
+
+- subscribes to the bus and receives every message, including the ones it will throw away;
+- decodes enough of each message to know what it is and which instrument it is about;
+- filters down to the instruments and message types it cares about;
+- tracks sequence numbers, detects gaps, handles restarts and late joins;
+- carries code for the bus's transport and encoding, so a new bus or a new encoding means changes in every app.
+
+Ten apps on a box means ten subscriptions, ten decoders, ten filters and ten slightly different gap handlers. The cost is paid again every time a short-lived worker starts, and every app team maintains plumbing that has nothing to do with their strategy.
+
+flashtick does that work once per box:
+
+- **One subscription per box.** The agent joins the bus, the apps do not.
+- **Routing, not decoding.** It reads only the fields needed to route (instrument, message type, sequence, timestamp) and leaves the message bytes untouched.
+- **A filtered ring per app.** Each app reads a shared-memory ring that holds only the messages it asked for, bit-identical to what the bus carried, plus in-band events for gaps, restarts and snapshots.
+- **One contract for every bus.** Which transport, encoding and framing the bus uses is agent configuration. Apps on a UDP SBE bus, a TCP DBN stream or a FlatBuffers feed read rings the same way, and typed views let them read fields without a codec when they want one.
+
+What it deliberately is not: a decoder (apps keep their own codecs and full decode), a broker (one-way flow, nothing routed back to a producer, nothing across hosts), or a feed handler (no exchange protocols). Keeping the core to subscribe, route and fan out is what lets it stay small and fast, and lets everything else vary behind the one contract.
+
 ## Quick start
 
 Needs a C++20 compiler (GCC 11 or newer), CMake 3.20+, pkg-config and yaml-cpp (`libyaml-cpp-dev` on Ubuntu).
