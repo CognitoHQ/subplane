@@ -61,8 +61,13 @@ if(BUILD_TESTING OR FLASHTICK_BUILD_TESTS)
     # Typed views: ft_schema's NumPy output loaded by python3 (skipped where numpy is absent).
     add_test(NAME schema_views_numpy
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_schema_views_numpy.sh
-                $<TARGET_FILE:ft_schema> ${CMAKE_SOURCE_DIR}/tests/data/sample_md.xml)
+                $<TARGET_FILE:ft_schema> ${CMAKE_SOURCE_DIR}/tests/data/sample_md.xml ${CMAKE_SOURCE_DIR}/schemas/flashtick_canonical.xml)
     set_tests_properties(schema_views_numpy PROPERTIES SKIP_RETURN_CODE 77)
+    # Canonical schema end to end: sender (canonical profile) -> agent -> ring -> views_app (generated struct views).
+    add_test(NAME canonical_views_app
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_views_app.sh
+                $<TARGET_FILE:ft_sbe_sender> $<TARGET_FILE:flashtickd> $<TARGET_FILE:views_app>
+                ${CMAKE_SOURCE_DIR}/schemas/flashtick_canonical.xml)
     # FlatBuffers over UDP: pcap of real flatc buffers (1..4 per datagram) -> agent -> ring.
     add_test(NAME flatbuffers_replay
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh

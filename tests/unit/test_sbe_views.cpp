@@ -134,3 +134,33 @@ TEST_CASE("views: big-endian refused, constants omitted and noted, overlap rejec
     REQUIRE(rep.skipped.size() == 1);
     CHECK(has(rep.skipped[0], "O: field 'B' overlaps"));
 }
+
+TEST_CASE("views: scalar arrays are typed in every view; a misaligned array flips to the view form") {
+    const char* kArr = R"(<?xml version="1.0"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe" package="t.a" id="9" version="1" byteOrder="littleEndian" headerType="messageHeader">
+  <types><composite name="messageHeader"><type name="blockLength" primitiveType="uint16"/><type name="templateId" primitiveType="uint16"/><type name="schemaId" primitiveType="uint16"/><type name="version" primitiveType="uint16"/></composite>
+    <type name="I4" primitiveType="int64" length="4"/><type name="U2" primitiveType="uint64" length="2"/></types>
+  <sbe:message name="A" id="1"><field name="X" id="1" type="I4"/><field name="N" id="2" type="uint32"/></sbe:message>
+  <sbe:message name="B" id="2"><field name="N" id="1" type="uint32"/><field name="Y" id="2" type="U2"/></sbe:message>
+</sbe:messageSchema>)";
+    SbeSchema s; std::string err;
+    REQUIRE_MESSAGE(s.load_string(kArr, err), err);
+    CHECK(s.find_field(*s.find_message(1), "X")->elem_prim == SbePrim::I64);
+    ViewsOptions o; ViewsReport rep; std::string out;
+    REQUIRE_MESSAGE(emit_cpp(s, o, out, rep, err), err);
+    CHECK(has(out, "struct A {"));
+    CHECK(has(out, "    int64_t X[4];"));
+    CHECK(has(out, "static_assert(offsetof(A, N) == 40);"));
+    CHECK(has(out, "class B {"));                       // Y at payload 12: uint64 elements need 8
+    CHECK(has(out, "Y at offset 12 is not naturally aligned"));
+    CHECK(has(out, "static constexpr size_t kYLen = 2;"));
+    CHECK(has(out, "uint64_t Y(size_t i) const noexcept { return detail::load<uint64_t>(p_, 12 + i * 8); }"));
+    REQUIRE_MESSAGE(emit_numpy(s, o, out, rep, err), err);
+    CHECK(has(out, "    X: tuple"));
+    CHECK(has(out, "FORMAT = '<HHHH4qI'"));
+    CHECK(has(out, "ARRAYS = [('X', 4)]"));
+    CHECK(has(out, "'formats': ['<u2', '<u2', '<u2', '<u2', ('<i8', (4,)), '<u4'],"));
+    REQUIRE_MESSAGE(emit_q(s, o, out, rep, err), err);
+    CHECK(has(out, ".ft.t_a.A.spec:(\"hhhh i\";2 2 2 2 32 4)"));
+    CHECK(has(out, "d[`X]:first (enlist \"j\";enlist 8) 1: b[8+til 32];"));
+}

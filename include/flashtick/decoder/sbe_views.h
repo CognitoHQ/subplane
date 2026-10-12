@@ -36,7 +36,8 @@ struct ViewSlot {
     uint32_t    offset = 0;  // from the start of the message (header included)
     uint32_t    size = 0;
     SbePrim     prim = SbePrim::U8;
-    uint16_t    length = 1;  // CHAR_ARRAY element count
+    uint16_t    length = 1;  // CHAR_ARRAY / scalar-array element count
+    SbePrim     elem = SbePrim::U8; // element primitive for scalar arrays (prim == OPAQUE)
     std::string type_name;
 };
 

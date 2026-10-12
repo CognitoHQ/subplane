@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ft_schema --views numpy, loaded by python3 + numpy: a Trade built with the dtype
 # round-trips through bytes, RECORD_HEADER is 64 bytes. Skips (77) without numpy.
-# usage: test_schema_views_numpy.sh <ft_schema> <schema.xml>
+# usage: test_schema_views_numpy.sh <ft_schema> <schema.xml> <canonical.xml>
 set -u
-TOOL=$1; SCHEMA=$2
+TOOL=$1; SCHEMA=$2; CANON=$3
 command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not available"; exit 77; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 "$TOOL" --schema "$SCHEMA" --views numpy --out "$TMP" 2> "$TMP/report.txt" || fail "ft_schema: $(cat "$TMP/report.txt")"
+"$TOOL" --schema "$CANON" --views numpy --namespace ft_canonical --out "$TMP" 2>> "$TMP/report.txt" || fail "ft_schema canonical: $(cat "$TMP/report.txt")"
 grep -q "skipped BookUpdate: has groups" "$TMP/report.txt" || fail "report lacks the skipped message: $(cat "$TMP/report.txt")"
 cat > "$TMP/check.py" <<'PY'
 import struct, sys
@@ -30,6 +31,12 @@ hdr, msg = v.parse(rec)
 assert hdr.symbol_id == 424242 and hdr.payload_len == 47 and msg == t, (hdr, msg)
 hdr2, msg2 = v.parse(rec[:51] + b'\x01' + rec[52:])    # kind 1 (control) at byte 51: no message
 assert hdr2.kind == 1 and msg2 is None
+import flashtick_canonical_views as c
+snap = struct.pack(c.BookSnapshot.FORMAT, 360, 4, c.SCHEMA_ID, 1, 7, 3, 0, 55, 0, 0, *range(100, 110), *range(10), *range(200, 210), *range(10), 10)
+bs = c.BookSnapshot.from_bytes(snap)
+assert len(snap) == 368 and bs.InstrumentId == 7 and bs.Depth == 10 and bs.BidPx == tuple(range(100, 110)) and bs.AskPx[9] == 209, bs
+tr = c.Trade.from_bytes(struct.pack(c.Trade.FORMAT, 64, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 0, 0, 65432100000000, 250000000, 99, 2))
+assert tr.Price == 65432100000000 and tr.Aggressor == 2 and c.message_from_bytes(snap) == bs
 print("dataclass views ok")
 # NumPy, when present.
 try:
@@ -43,6 +50,9 @@ col = np.frombuffer(raw * 3, dtype=v.Trade.DTYPE)
 assert col.shape == (3,) and int(col['Qty'].sum()) == 1500
 h = np.frombuffer(rec, dtype=v.RECORD_HEADER, count=1)[0]
 assert h['payload_len'] == 47 and h['template_id'] == 1
+assert c.BookSnapshot.DTYPE['BidPx'].shape == (10,) and c.BookSnapshot.DTYPE.itemsize == 368
+arr = np.frombuffer(snap, dtype=c.BookSnapshot.DTYPE)[0]
+assert list(arr['BidPx']) == list(range(100, 110)) and arr['Depth'] == 10
 print("numpy views ok")
 PY
 python3 -I "$TMP/check.py" "$TMP" || fail "python check failed"

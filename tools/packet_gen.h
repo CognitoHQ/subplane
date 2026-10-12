@@ -54,6 +54,12 @@ const FieldDef* find_f(const std::vector<FieldDef>& v, std::string_view name) {
     for (const auto& f : v) if (f.name == name) return &f;
     return nullptr;
 }
+// First of several names that exists: the sample schema (SecurityID, SeqNum, ...) and the
+// canonical schema (InstrumentId, Sequence, ...) are both generated from the same code.
+const FieldDef* find_f(const std::vector<FieldDef>& v, std::string_view a, std::string_view b) {
+    const FieldDef* f = find_f(v, a);
+    return f ? f : find_f(v, b);
+}
 const GroupDef* find_g(const std::vector<GroupDef>& v, std::string_view name) {
     for (const auto& g : v) if (g.name == name) return &g;
     return nullptr;
@@ -67,6 +73,7 @@ struct Tpl {
                    *newseq = nullptr, *seqfield = nullptr;
     const GroupDef *levels = nullptr, *orders = nullptr;
     const FieldDef *l_px = nullptr, *l_qty = nullptr, *l_side = nullptr, *o_id = nullptr, *o_qty = nullptr;
+    const FieldDef *action = nullptr, *level = nullptr; // canonical BookUpdate (flat, one level)
     const VarDataDef* note = nullptr;
 };
 
@@ -87,10 +94,11 @@ public:
             if (!t.def && needed) { err = std::string("schema has no ") + what + " template " + std::to_string(id); return false; }
             if (!t.def) return true;
             const auto& f = t.def->fields;
-            t.sec = find_f(f, "SecurityID"); t.seq = find_f(f, "SeqNum"); t.ts = find_f(f, "TransactTime");
-            t.seg = find_f(f, "MarketSegmentID"); t.px = find_f(f, "Price"); t.qty = find_f(f, "Qty");
-            t.side = find_f(f, "Side"); t.bidpx = find_f(f, "BidPx"); t.bidqty = find_f(f, "BidQty");
+            t.sec = find_f(f, "SecurityID", "InstrumentId"); t.seq = find_f(f, "SeqNum", "Sequence"); t.ts = find_f(f, "TransactTime", "ExchangeTs");
+            t.seg = find_f(f, "MarketSegmentID", "VenueId"); t.px = find_f(f, "Price"); t.qty = find_f(f, "Qty");
+            t.side = find_f(f, "Side", "Aggressor"); t.bidpx = find_f(f, "BidPx"); t.bidqty = find_f(f, "BidQty");
             t.askpx = find_f(f, "AskPx"); t.askqty = find_f(f, "AskQty"); t.newseq = find_f(f, "NewSeq");
+            t.action = find_f(f, "Action"); t.level = find_f(f, "Level");
             if (cfg_.seq_source == SeqSource::MESSAGE_FIELD) {
                 t.seqfield = find_f(f, cfg_.seq_field);
                 if (!t.seqfield) { err = std::string(what) + " has no sequence field " + cfg_.seq_field; return false; }
@@ -109,6 +117,8 @@ public:
             !bind_tpl(book_, 3, o_.mix_book > 0, "BookUpdate") ||
             !bind_tpl(hb_, 100, o_.heartbeat_ms > 0, "Heartbeat") ||
             !bind_tpl(reset_, 101, o_.seq_reset_at > 0, "SeqReset")) return false;
+        // Canonical prices are int64 scaled by 1e-9: make the synthetic numbers read as sane prices/sizes.
+        canonical_ = s_.package() == "flashtick.canonical";
 
         auto find_ff = [](const std::vector<FramingField>& v, const std::string& n) -> const FramingField* {
             for (const auto& f : v) if (f.name == n) return &f;
@@ -187,7 +197,8 @@ private:
             uint8_t* root = b_.root();
             const uint64_t sv = cfg_.seq_source == SeqSource::MESSAGE_FIELD ? ++msg_seq_ : ++msg_no_;
             const uint64_t sym = 1 + (sym_n_++ % o_.symbols);
-            const uint64_t px = 1000000 + sym * 100 + rnd() % 50;
+            const uint64_t px = canonical_ ? (100000ull + sym * 1000ull + rnd() % 500) * 1000000ull /* 100.xxx */ : 1000000 + sym * 100 + rnd() % 50;
+            const uint64_t qscale = canonical_ ? 1000000000ull : 1;
             setf(root, t.seq, sv);
             setf(root, t.seqfield, sv);
             setf(root, t.sec, sym);
@@ -195,13 +206,18 @@ private:
             setf(root, t.seg, 1);
             switch (kind) {
                 case GenKind::TRADE:
-                    setf(root, t.px, px); setf(root, t.qty, 1 + rnd() % 500); setf(root, t.side, 1 + rnd() % 2);
+                    setf(root, t.px, px); setf(root, t.qty, (1 + rnd() % 500) * qscale); setf(root, t.side, 1 + rnd() % 2);
                     break;
                 case GenKind::QUOTE:
-                    setf(root, t.bidpx, px); setf(root, t.bidqty, 1 + rnd() % 500);
-                    setf(root, t.askpx, px + 1); setf(root, t.askqty, 1 + rnd() % 500);
+                    setf(root, t.bidpx, px); setf(root, t.bidqty, (1 + rnd() % 500) * qscale);
+                    setf(root, t.askpx, px + (canonical_ ? 1000000 : 1)); setf(root, t.askqty, (1 + rnd() % 500) * qscale);
                     break;
                 case GenKind::BOOK: {
+                    if (!t.levels) {
+                        // Flat one-level update (canonical BookUpdate).
+                        setf(root, t.px, px); setf(root, t.qty, (1 + rnd() % 500) * qscale); setf(root, t.side, 1 + rnd() % 2);
+                        setf(root, t.action, 1 + rnd() % 3); setf(root, t.level, rnd() % 10);
+                    }
                     if (t.levels) {
                         const auto levels = static_cast<uint16_t>(1 + rnd() % 3);
                         b_.begin_group(*t.levels, levels);
@@ -249,6 +265,7 @@ private:
     Tpl trade_, quote_, book_, hb_, reset_;
     const FramingField *seqf_ = nullptr, *countf_ = nullptr, *lenf_ = nullptr;
     uint64_t next_pkt_seq_ = 1, msg_seq_ = 0, msg_no_ = 0, sym_n_ = 0, nmsg_ = 0;
+    bool canonical_ = false;
     uint64_t rng_ = 0x9E3779B97F4A7C15ULL;
     GenStats st_;
 };

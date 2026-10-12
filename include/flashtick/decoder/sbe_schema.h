@@ -24,7 +24,8 @@ struct FieldDef {
     uint16_t    offset = 0;
     uint16_t    size   = 0;      // bytes occupied in the block (0 for constants)
     SbePrim     prim   = SbePrim::U8;
-    uint16_t    length = 1;      // element count for CHAR_ARRAY
+    uint16_t    length = 1;      // element count for CHAR_ARRAY and scalar arrays
+    SbePrim     elem_prim = SbePrim::U8; // element primitive: equals prim for scalars; the scalar type for an OPAQUE array of scalars
     std::string type_name;       // the XML `type` attribute (enum/set/type name or primitive); cold, for tooling
 };
 

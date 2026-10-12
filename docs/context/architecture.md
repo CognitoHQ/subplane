@@ -355,7 +355,61 @@ public:
 };
 ```
 
-The Python module defines one frozen dataclass per message (standard library `struct`, no dependencies) with `from_bytes`, a `RecordHeader` dataclass for the 64-byte `TickHeader`, and `parse(record)` that turns one ring record into `(RecordHeader, message)` by template id, so a ring or a recording can be read from Python without the C++ SDK. When NumPy is importable each class also carries a structured `DTYPE` with explicit offsets for columnar, zero-copy reads (`np.frombuffer(payloads, dtype=Trade.DTYPE)`). The q script emits a `1:` fixed-width spec and a `parse` function per message (unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes); it is generated and checked structurally but has not been run under q here. Little-endian schemas only; messages with groups or varData are reported as skipped, never partially emitted; constant fields are omitted and listed in a comment; enums and sets appear as their encoding primitive with the type name noted. `tests/data/sample_md.xml` is run through the tool at every build and the generated header is compiled and exercised by `test_sbe_views`; `ctest -R schema_views_numpy` loads the NumPy module (skipped where NumPy is absent).
+The Python module defines one frozen dataclass per message (standard library `struct`, no dependencies) with `from_bytes`, a `RecordHeader` dataclass for the 64-byte `TickHeader`, and `parse(record)` that turns one ring record into `(RecordHeader, message)` by template id, so a ring or a recording can be read from Python without the C++ SDK. When NumPy is importable each class also carries a structured `DTYPE` with explicit offsets for columnar, zero-copy reads (`np.frombuffer(payloads, dtype=Trade.DTYPE)`). The q script emits a `1:` fixed-width spec and a `parse` function per message (unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes); it is generated and checked structurally but has not been run under q here. Little-endian schemas only; messages with groups or varData are reported as skipped, never partially emitted; constant fields are omitted and listed in a comment; enums and sets appear as their encoding primitive with the type name noted. `tests/data/sample_md.xml` is run through the tool at every build and the generated header is compiled and exercised by `test_sbe_views`; `ctest -R schema_views_numpy` loads the NumPy module (skipped where NumPy is absent). Scalar arrays (`<type primitiveType="int64" length="10">`) are typed in every view: `int64_t BidPx[10]` in a struct, an indexed accessor in a view class, a `('<i8', (10,))` dtype field, a tuple in the dataclass, a list in q.
+
+**Canonical schema.** `schemas/flashtick_canonical.xml` (package `flashtick.canonical`, schema id 100, version 1) is the normalized tick shape that the transcode mapping (planned, encoding-agnostic step 4), the kdb+ feed, the recorder index, the Python client and the feeds package target. Every message is flat and every scalar is naturally aligned at its payload offset, so all eight are struct views; `schemas/CMakeLists.txt` generates `flashtick_canonical_views.{h,py,q}` into `build/generated/` at every build and `test_canonical` compiles the header and reads encoded messages through it. Rules: prices and quantities are `int64` scaled by 10^-9 (declared as the constant `PriceExponent = -9`; 1.0 is 1,000,000,000; range ±9.2e9), no floats, no per-message exponent; every data message starts with the same 32-byte prefix (`InstrumentId u32, VenueId u16, Flags u16, Sequence u64, ExchangeTs u64, RecvTs u64`, payload offsets 8..40), so routing fields sit at fixed offsets in every message; symbols are ids and names arrive as `InstrumentDefinition` messages (which is how a gateway assigns ids); the book snapshot is ten levels per side in fixed arrays, deeper books are raw passthrough; `BookUpdate` is one level per message.
+
+| Template | Message | Fields after the prefix | Payload bytes |
+|---|---|---|---|
+| 1 | `Trade` | `Price`, `Qty`, `TradeId u64`, `Aggressor` (Side) | 72 |
+| 2 | `Quote` | `BidPx`, `BidQty`, `AskPx`, `AskQty` | 72 |
+| 3 | `BookUpdate` | `Price`, `Qty` (0 on delete), `Side`, `Action` (Add/Update/Delete/Clear), `Level u8` | 64 |
+| 4 | `BookSnapshot` | `BidPx[10]`, `BidQty[10]`, `AskPx[10]`, `AskQty[10]`, `Depth u8` | 368 |
+| 5 | `Ohlcv` | `Open`, `High`, `Low`, `Close`, `Volume`, `IntervalSec u32` | 88 |
+| 6 | `Status` | `TradingStatus`, `Reason u8` | 48 |
+| 10 | `InstrumentDefinition` | `Symbol char[32]`, `Exchange`, `Base`, `Quote` (`char[16]`), `TickSize`, `LotSize`, `Status` | 144 |
+| 100 | `Heartbeat` | prefix only, `InstrumentId` 0 | 40 |
+
+A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` and templates 1..6 mapped to the matching `MsgType`, 10 to `STATUS`, 100 to `admin: HEARTBEAT` (the commented `canonical` partition in `config.yaml`). `ft_sbe_sender --schema schemas/flashtick_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views; `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
+
+```cpp
+// Trade: template 1, 72 bytes. Constant fields omitted: PriceExponent (PriceExponent).
+struct Trade {
+    static constexpr bool kIsStruct = true;
+    static constexpr uint16_t kTemplateId = 1;
+    static constexpr size_t kSize = 72;
+    uint16_t blockLength;
+    uint16_t templateId;
+    uint16_t schemaId;
+    uint16_t version;
+    uint32_t InstrumentId;
+    uint16_t VenueId;
+    uint16_t Flags;
+    uint64_t Sequence;
+    uint64_t ExchangeTs;  // Ts
+    uint64_t RecvTs;  // Ts
+    int64_t Price;  // Price
+    int64_t Qty;  // Qty
+    uint64_t TradeId;
+    uint8_t Aggressor;  // Side
+    uint8_t _pad0[7];
+};
+static_assert(sizeof(Trade) == Trade::kSize);
+static_assert(offsetof(Trade, blockLength) == 0);
+static_assert(offsetof(Trade, templateId) == 2);
+static_assert(offsetof(Trade, schemaId) == 4);
+static_assert(offsetof(Trade, version) == 6);
+static_assert(offsetof(Trade, InstrumentId) == 8);
+static_assert(offsetof(Trade, VenueId) == 12);
+static_assert(offsetof(Trade, Flags) == 14);
+static_assert(offsetof(Trade, Sequence) == 16);
+static_assert(offsetof(Trade, ExchangeTs) == 24);
+static_assert(offsetof(Trade, RecvTs) == 32);
+static_assert(offsetof(Trade, Price) == 40);
+static_assert(offsetof(Trade, Qty) == 48);
+static_assert(offsetof(Trade, TradeId) == 56);
+static_assert(offsetof(Trade, Aggressor) == 64);
+```
 
 ## HTTP API (cold path)
 
@@ -442,8 +496,8 @@ include/flashtick/
 src/            mirrors include/; src/main.cpp builds the `flashtickd` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
 tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_schema.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
-examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime)
-schemas/        sample_md.xml (referenced by config.yaml)
+examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime) views_app.cpp (canonical struct views)
+schemas/        sample_md.xml (referenced by config.yaml) flashtick_canonical.xml (the canonical flat schema) CMakeLists.txt (views generated at build time)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
 scripts/        ci-build-2204.sh
@@ -463,6 +517,7 @@ All built by default (`FLASHTICK_BUILD_TOOLS`).
 - `ft_replay --pcap FILE --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]`: replay UDP payloads from a pcap (hand-written reader, no libpcap). `ft_replay --bench --config config.yaml [--packets N] [--per-packet K] [--symbols N] [--sessions K] [--batch N] [--cpu N] [--json]`: drive the pipeline in-process with an in-memory transport and print the `recv_to_publish` histogram.
 - `ring_soak --role writer|reader|harness [...]`: ring chaos test with CRC payloads, N readers, writer kill and restart; checks readers see `WriterGone` then `AGENT_RESTARTED`.
 - `shm_demo_app --socket PATH [--session NAME] [--symbols 1,2,3] [--trades-only] [--seconds N] [--quiet]` (in `examples/`): the whole app contract in one file.
+- `views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start]` (in `examples/`): reads a ring of canonical messages through the generated struct views, no codec; prints one line per message and a summary (`trades= quotes= books= snapshots= other= heartbeats= bad=`), exit 1 if any data record was rejected by every view.
 
 ## Build and test
 

@@ -42,7 +42,19 @@ const char* cpp_scalar(SbePrim p) {
         default: return nullptr; // CHAR_ARRAY / OPAQUE are arrays
     }
 }
+bool scalar_array(const ViewSlot& v) { return v.prim == SbePrim::OPAQUE && v.length > 1 && cpp_scalar(v.elem) != nullptr; }
+std::string np_elem(SbePrim p) {
+    switch (p) {
+        case SbePrim::U8: return "u1";   case SbePrim::I8: return "i1";
+        case SbePrim::U16: return "<u2"; case SbePrim::I16: return "<i2";
+        case SbePrim::U32: return "<u4"; case SbePrim::I32: return "<i4";
+        case SbePrim::U64: return "<u8"; case SbePrim::I64: return "<i8";
+        case SbePrim::F32: return "<f4"; default: return "<f8";
+    }
+}
+// Quoted dtype format for one slot; a scalar array is an unquoted (fmt, (n,)) tuple.
 std::string np_fmt(const ViewSlot& v) {
+    if (scalar_array(v)) return "('" + np_elem(v.elem) + "', (" + std::to_string(v.length) + ",))";
     switch (v.prim) {
         case SbePrim::U8: return "u1";   case SbePrim::I8: return "i1";
         case SbePrim::U16: return "<u2"; case SbePrim::I16: return "<i2";
@@ -107,7 +119,7 @@ bool flat_layout(const SbeSchema& s, const MessageDef& m, FlatLayout& out, std::
         if (f.size == 0) { out.constants.push_back(f.name + " (" + f.type_name + ")"); continue; }
         if (!valid_ident(f.name)) { reason = "field '" + f.name + "' is not an identifier"; return false; }
         ViewSlot v; v.kind = Kind::FIELD; v.name = f.name; v.offset = static_cast<uint32_t>(h.size) + f.offset; v.size = f.size;
-        v.prim = f.prim; v.length = f.length; v.type_name = f.type_name;
+        v.prim = f.prim; v.length = f.length; v.elem = f.elem_prim; v.type_name = f.type_name;
         if (v.offset + v.size > out.size) { reason = "field '" + f.name + "' runs past blockLength"; return false; }
         slots.push_back(v);
     }
@@ -116,7 +128,8 @@ bool flat_layout(const SbeSchema& s, const MessageDef& m, FlatLayout& out, std::
     for (const ViewSlot& v : slots) {
         if (v.offset < cur) { reason = "field '" + v.name + "' overlaps the previous one"; return false; }
         add_pad(out, cur, v.offset, npad);
-        if (cpp_scalar(v.prim) && v.offset % v.size != 0 && out.aligned) { out.aligned = false; out.misaligned_field = v.name + " at offset " + std::to_string(v.offset); }
+        const uint32_t align = cpp_scalar(v.prim) ? v.size : scalar_array(v) ? v.size / v.length : 1;
+        if (align > 1 && v.offset % align != 0 && out.aligned) { out.aligned = false; out.misaligned_field = v.name + " at offset " + std::to_string(v.offset); }
         out.slots.push_back(v);
         cur = v.offset + v.size;
     }
@@ -177,7 +190,8 @@ bool emit_cpp(const SbeSchema& s, const ViewsOptions& o, std::string& out, Views
                 if (v.kind == Kind::PAD) line += "uint8_t " + v.name + "[" + std::to_string(v.size) + "];";
                 else if (sc) line += std::string(sc) + " " + v.name + ";";
                 else if (v.prim == SbePrim::CHAR_ARRAY) line += "char " + v.name + "[" + std::to_string(v.size) + "];";
-                else line += "uint8_t " + v.name + "[" + std::to_string(v.size) + "];  // composite/array bytes";
+                else if (scalar_array(v)) line += std::string(cpp_scalar(v.elem)) + " " + v.name + "[" + std::to_string(v.length) + "];";
+                else line += "uint8_t " + v.name + "[" + std::to_string(v.size) + "];  // composite bytes";
                 const std::string tn = type_note(v);
                 if (!tn.empty()) line += "  // " + tn;
                 out += line + "\n";
@@ -201,7 +215,8 @@ bool emit_cpp(const SbeSchema& s, const ViewsOptions& o, std::string& out, Views
                 std::string line;
                 if (sc) line = "    " + std::string(sc) + " " + v.name + "() const noexcept { return detail::load<" + sc + ">(p_, " + std::to_string(v.offset) + "); }";
                 else if (v.prim == SbePrim::CHAR_ARRAY) line = "    std::string_view " + v.name + "() const noexcept { return {reinterpret_cast<const char*>(p_ + " + std::to_string(v.offset) + "), " + std::to_string(v.size) + "}; }";
-                else line = "    const uint8_t* " + v.name + "() const noexcept { return p_ + " + std::to_string(v.offset) + "; }  // " + std::to_string(v.size) + " composite/array bytes";
+                else if (scalar_array(v)) line = "    static constexpr size_t k" + v.name + "Len = " + std::to_string(v.length) + ";\n    " + std::string(cpp_scalar(v.elem)) + " " + v.name + "(size_t i) const noexcept { return detail::load<" + cpp_scalar(v.elem) + ">(p_, " + std::to_string(v.offset) + " + i * " + std::to_string(v.size / v.length) + "); }";
+                else line = "    const uint8_t* " + v.name + "() const noexcept { return p_ + " + std::to_string(v.offset) + "; }  // " + std::to_string(v.size) + " composite bytes";
                 const std::string tn = type_note(v);
                 if (!tn.empty()) line += "  // " + tn;
                 out += line + "\n";
@@ -235,7 +250,13 @@ std::string py_fmt(const ViewSlot& v) {
         default: return std::to_string(v.size) + "s";
     }
 }
+// Scalar arrays are unpacked as a tuple: FORMAT repeats the element code `length` times.
+std::string py_fmt_elem(SbePrim p) {
+    ViewSlot t; t.kind = Kind::FIELD; t.prim = p; t.size = 1;
+    return py_fmt(t);
+}
 const char* py_type(const ViewSlot& v) {
+    if (scalar_array(v)) return "tuple";
     switch (v.prim) {
         case SbePrim::F32: case SbePrim::F64: return "float";
         case SbePrim::CHAR_ARRAY: case SbePrim::OPAQUE: return "bytes";
@@ -257,6 +278,13 @@ bool emit_numpy(const SbeSchema& s, const ViewsOptions& o, std::string& out, Vie
            "# `np.frombuffer(payloads, dtype=Trade.DTYPE)`. Little-endian.\n"
            "from dataclasses import dataclass\nimport struct\ntry:\n    import numpy as np\nexcept ImportError:  # dataclasses work without NumPy\n    np = None\n\n"
            "SCHEMA_ID = " + std::to_string(s.schema_id()) + "\nSCHEMA_VERSION = " + std::to_string(s.version()) + "\nHEADER_SIZE = " + std::to_string(s.header().size) + "\n\n"
+           "def _regroup(flat, arrays, slots):\n"
+           "    \"\"\"struct unpacks scalar arrays flat; regroup them into tuples in field order.\"\"\"\n"
+           "    lens = dict(arrays)\n    out, i = [], 0\n"
+           "    for name in slots:\n        n = lens.get(name)\n"
+           "        if n is None:\n            out.append(flat[i]); i += 1\n"
+           "        else:\n            out.append(tuple(flat[i:i + n])); i += n\n"
+           "    return out\n\n"
            "@dataclass(frozen=True, slots=True)\nclass RecordHeader:\n"
            "    \"\"\"flashtick ring record header (core/message.h TickHeader), 64 bytes.\"\"\"\n"
            "    seq_tag: int\n    sequence: int\n    exchange_ts: int\n    ingest_ts: int\n    symbol_id: int\n    payload_len: int\n    template_id: int\n"
@@ -274,21 +302,25 @@ bool emit_numpy(const SbeSchema& s, const ViewsOptions& o, std::string& out, Vie
     for (const FlatLayout& l : ls) {
         std::string cons;
         for (const auto& c : l.constants) cons += (cons.empty() ? "" : ", ") + c;
-        std::string fmt = "<", fields, names, fmts, offs;
+        std::string fmt = "<", fields, names, fmts, offs, arrays;
         for (const ViewSlot& v : l.slots) {
-            fmt += py_fmt(v);
+            if (scalar_array(v)) { fmt += std::to_string(v.length) + py_fmt_elem(v.elem); arrays += (arrays.empty() ? "" : ", ") + ("('" + v.name + "', " + std::to_string(v.length) + ")"); }
+            else fmt += py_fmt(v);
             if (v.kind == Kind::PAD) continue;
             fields += "    " + v.name + ": " + py_type(v);
             const std::string tn = type_note(v);
             fields += (tn.empty() ? "" : "  # " + tn) + "\n";
             names += (names.empty() ? "" : ", ") + ("'" + v.name + "'");
-            fmts += (fmts.empty() ? "" : ", ") + ("'" + np_fmt(v) + "'");
+            fmts += (fmts.empty() ? "" : ", ") + (scalar_array(v) ? np_fmt(v) : "'" + np_fmt(v) + "'");
             offs += (offs.empty() ? "" : ", ") + std::to_string(v.offset);
         }
         out += "@dataclass(frozen=True, slots=True)\nclass " + l.name + ":\n    \"\"\"template " + std::to_string(l.template_id) + ", " +
                std::to_string(l.size) + " bytes" + (cons.empty() ? "" : "; constant fields omitted: " + cons) + ".\"\"\"\n" + fields +
-               "    TEMPLATE_ID = " + std::to_string(l.template_id) + "\n    FORMAT = '" + fmt + "'\n    SIZE = " + std::to_string(l.size) + "\n\n"
-               "    @classmethod\n    def from_bytes(cls, b, offset=0):\n        return cls(*struct.unpack_from(cls.FORMAT, b, offset))\n\n"
+               "    TEMPLATE_ID = " + std::to_string(l.template_id) + "\n    FORMAT = '" + fmt + "'\n    SIZE = " + std::to_string(l.size) + "\n\n" +
+               (arrays.empty()
+                    ? "    @classmethod\n    def from_bytes(cls, b, offset=0):\n        return cls(*struct.unpack_from(cls.FORMAT, b, offset))\n\n"
+                    : "    ARRAYS = [" + arrays + "]  # (field, length): unpacked flat, regrouped as tuples\n\n"
+                      "    @classmethod\n    def from_bytes(cls, b, offset=0):\n        return cls(*_regroup(struct.unpack_from(cls.FORMAT, b, offset), cls.ARRAYS, cls.__slots__))\n\n") +
                "if np is not None:\n    " + l.name + ".DTYPE = np.dtype({'names': [" + names + "],\n        'formats': [" + fmts + "],\n        'offsets': [" + offs + "],\n        'itemsize': " +
                std::to_string(l.size) + "})\n\n";
         ids += (ids.empty() ? "" : ", ") + ("'" + l.name + "': " + std::to_string(l.template_id));
@@ -332,6 +364,7 @@ bool emit_q(const SbeSchema& s, const ViewsOptions& o, std::string& out, ViewsRe
             if (v.kind == Kind::PAD) continue;
             if (t == ' ') {
                 if (v.prim == SbePrim::CHAR_ARRAY) chars += " d[`" + v.name + "]:`$\"c\"$b[" + std::to_string(v.offset) + "+til " + std::to_string(v.size) + "];";
+                else if (scalar_array(v)) chars += " d[`" + v.name + "]:first (enlist \"" + std::string(1, q_type(v.elem)) + "\";enlist " + std::to_string(v.size / v.length) + ") 1: b[" + std::to_string(v.offset) + "+til " + std::to_string(v.size) + "];";
                 else chars += " d[`" + v.name + "]:b[" + std::to_string(v.offset) + "+til " + std::to_string(v.size) + "];";
             } else {
                 names += "`" + v.name;

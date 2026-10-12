@@ -20,6 +20,7 @@ struct Member {
 
 struct TypeInfo {
     SbePrim  prim      = SbePrim::U8;
+    SbePrim  elem      = SbePrim::U8;   // element primitive for arrays
     uint16_t size      = 0;
     uint16_t length    = 1;
     bool     composite = false;
@@ -63,7 +64,8 @@ struct Loader {
     bool resolve(std::string_view name, TypeInfo& out) {
         SbePrim p; uint16_t sz;
         if (prim_from_name(name, p, sz)) {
-            out = TypeInfo{p, sz, 1, false, {}};
+            out = TypeInfo{};
+            out.prim = p; out.elem = p; out.size = sz; out.length = 1;
             return true;
         }
         auto it = types.find(name);
@@ -82,7 +84,7 @@ struct Loader {
         unsigned long len = 1;
         if (n.attribute("length") && !parse_uint(n.attribute("length").value(), 65535, len))
             return fail(std::string("bad length in type '") + n.attribute("name").as_string() + "'");
-        t.prim = p; t.length = static_cast<uint16_t>(len);
+        t.prim = p; t.elem = p; t.length = static_cast<uint16_t>(len);
         unsigned long total = static_cast<unsigned long>(sz) * len;
         if (total > 65535) return fail("type too large: " + std::string(n.attribute("name").as_string()));
         t.size = static_cast<uint16_t>(total);
@@ -222,6 +224,7 @@ struct Loader {
                 std::string type = c.attribute("type").as_string();
                 if (!resolve(type, t)) return fail("field '" + f.name + "': " + err);
                 f.prim = t.prim; f.size = t.size; f.length = t.length;
+                f.elem_prim = t.composite ? SbePrim::OPAQUE : t.elem;
                 f.type_name = type;
                 if (std::string_view(c.attribute("presence").as_string()) == "constant") f.size = 0;
                 unsigned long off = cursor;

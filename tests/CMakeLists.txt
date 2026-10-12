@@ -25,16 +25,13 @@ flashtick_unit_test(test_session_manager unit/test_session_manager.cpp)
 flashtick_unit_test(test_control unit/test_control.cpp)
 # DBN decoder, TCP stream transport, DBN through the pipeline
 flashtick_unit_test(test_dbn unit/test_dbn_decoder.cpp unit/test_tcp_stream.cpp unit/test_dbn_pipeline.cpp)
-# Typed views emitter, and the header it generates for the sample schema compiled and exercised:
-# ft_schema runs at build time so the static_asserts in the generated header are checked on every build.
-set(FT_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
-add_custom_command(
-    OUTPUT ${FT_GENERATED_DIR}/sample_md_views.h ${FT_GENERATED_DIR}/sample_md_views.py ${FT_GENERATED_DIR}/sample_md_views.q
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${FT_GENERATED_DIR}
-    COMMAND ft_schema --schema ${CMAKE_SOURCE_DIR}/tests/data/sample_md.xml --views all --out ${FT_GENERATED_DIR}
-    DEPENDS ft_schema ${CMAKE_SOURCE_DIR}/tests/data/sample_md.xml
-    COMMENT "ft_schema: typed views for tests/data/sample_md.xml")
+# Typed views emitter, and the headers generated for the sample and canonical schemas (schemas/CMakeLists.txt):
+# ft_schema runs at build time so the static_asserts in the generated headers are checked on every build.
 flashtick_unit_test(test_sbe_views unit/test_sbe_views.cpp unit/test_sbe_views_generated.cpp ${FT_GENERATED_DIR}/sample_md_views.h)
 target_include_directories(test_sbe_views PRIVATE ${FT_GENERATED_DIR} ${CMAKE_SOURCE_DIR}/tools)
+add_dependencies(test_sbe_views views_sample_md)
+flashtick_unit_test(test_canonical unit/test_canonical_schema.cpp ${FT_GENERATED_DIR}/flashtick_canonical_views.h)
+target_include_directories(test_canonical PRIVATE ${FT_GENERATED_DIR} ${CMAKE_SOURCE_DIR}/tools)
+add_dependencies(test_canonical views_flashtick_canonical)
 # FlatBuffers wire reader, routing decoder, pipeline (fixture: real flatc output in tests/fixtures/flatbuffers)
 flashtick_unit_test(test_flatbuffers unit/test_flatbuffers_wire.cpp unit/test_flatbuffers_decoder.cpp unit/test_flatbuffers_pipeline.cpp)

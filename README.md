@@ -132,24 +132,24 @@ public:
 };
 ```
 
-Reading a ring with them, with `client/shm_reader.h` as the only SDK header:
+Reading a ring with them is `examples/views_app.cpp`, built with the other examples; the core of it:
 
 ```cpp
 #include "flashtick/client/shm_reader.h"
-#include "sample_md_views.h"
-using namespace ft_views;
+#include "flashtick_canonical_views.h"     // generated at build time from schemas/flashtick_canonical.xml
+using namespace ft_canonical;
 
 ShmReader rd;
-rd.open("/dev/shm/flashtick.flashtick.alpha.ring");
+rd.open("/dev/shm/flashtick.flashtick.alpha.ring", &err);
 RecordView rv;
 while (rd.poll(rv) == ReaderStatus::Ok) {
     if (rv.hdr->kind != static_cast<uint8_t>(Kind::DATA)) continue;
-    if (const Ticker* t = view<Ticker>(rv.payload, rv.payload_len)) {        // struct: pointer into the ring
-        printf("%.8s seq=%llu\n", t->Symbol, (unsigned long long)t->SeqNum);
-    } else if (auto tr = view<Trade>(rv.payload, rv.payload_len)) {        // view: accessors
-        printf("sym=%u px=%lld qty=%u\n", rv.hdr->symbol_id, (long long)tr->Price(), tr->Qty());
+    if (const Trade* t = view<Trade>(rv.payload, rv.payload_len)) {          // pointer into the ring, no copy
+        printf("sym=%u px=%.9g qty=%.9g\n", t->InstrumentId, t->Price / 1e9, t->Qty / 1e9);
+    } else if (const BookSnapshot* s = view<BookSnapshot>(rv.payload, rv.payload_len)) {
+        printf("best bid %.9g x %.9g\n", s->BidPx[0] / 1e9, s->BidQty[0] / 1e9);
     }
-    if (!rv.valid()) { /* overwritten while reading: drop and resync */ }
+    if (!rv.valid()) { /* lapped by the writer while reading: drop and resync */ }
 }
 ```
 
@@ -181,6 +181,8 @@ t`Price
 Unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes. The q output is generated and checked structurally but has not been run under q here.
 
 The sample schema's views are regenerated and compiled at every build (`ctest -R sbe_views`), so a layout regression fails the build. Little-endian schemas only.
+
+**The canonical schema.** `schemas/flashtick_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a partition carrying it today is ordinary `sbe_routing` configuration (the commented `canonical` partition in `config.yaml`), and `ctest -R canonical_views_app` runs `ft_sbe_sender`, the agent and `views_app` end to end on it.
 
 ## Licence
 

@@ -13,7 +13,7 @@ Only what builds today:
 - **Language**: C++20 (GCC 11, Ubuntu 22.04), CMake 3.20+, `-Werror`
 - **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`
 - **Ingest**: UDP multicast / unicast (`recvmmsg`, optional busy-poll and kernel timestamps); TCP byte stream reassembled into records (`tcp_stream`)
-- **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config.
+- **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/flashtick_canonical.xml`) with typed C++/Python/q views generated at build time by `ft_schema`.
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK
 - **Control**: Unix `SOCK_SEQPACKET` control channel (dynamic sessions, snapshots)
 - **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/reload`)

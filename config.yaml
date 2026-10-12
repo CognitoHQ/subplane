@@ -94,6 +94,33 @@ partitions:
   #       - { type: 3, admin: HEARTBEAT, sequence: { path: [0], type: u64 } }
   #   heartbeat_timeout_ms: 5000
 
+  # The canonical flat schema (schemas/flashtick_canonical.xml): what gateways in the feeds package
+  # publish and what the normalization mode (planned) emits. Plain sbe_routing configuration.
+  # Try it: build/tools/ft_sbe_sender --schema schemas/flashtick_canonical.xml --port 30003 --framing "$FRAMING"
+  #         build/examples/views_app /dev/shm/flashtick.flashtick.<session>.ring
+  # - name: canonical
+  #   transport: { type: udp, group: "", port: 30003 }
+  #   framing:
+  #     packet_header: [ { name: seq, type: u64le }, { name: count, type: u16le } ]
+  #     message_prefix: [ { name: len, type: u16le } ]
+  #     sequence: packet_header.seq
+  #     length: message_prefix.len
+  #   decoder:
+  #     type: sbe_routing
+  #     schema: schemas/flashtick_canonical.xml
+  #     fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+  #     symbol_id_mode: table
+  #     messages:
+  #       - { template: 1,   msg_type: TRADE }
+  #       - { template: 2,   msg_type: QUOTE }
+  #       - { template: 3,   msg_type: BOOK_UPDATE }
+  #       - { template: 4,   msg_type: BOOK_SNAPSHOT }
+  #       - { template: 5,   msg_type: OHLCV }
+  #       - { template: 6,   msg_type: STATUS }
+  #       - { template: 10,  msg_type: STATUS }      # InstrumentDefinition
+  #       - { template: 100, admin: HEARTBEAT }
+  #   heartbeat_timeout_ms: 5000
+
 # Operator-defined sessions. Apps may also create their own over the control channel.
 sessions:
   - name: alpha

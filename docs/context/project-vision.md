@@ -176,12 +176,12 @@ If the bus carries no sequence number, gap detection is off for that partition a
 
 ## Non-goals
 
-- Not an exchange feed handler. No ITCH, FIX or other exchange protocol decoding.
+- The agent is not an exchange feed handler: no ITCH, FIX, WebSocket or other exchange protocol decoding in the core. Feed handlers ship beside it as separate gateway processes in the `flashtick-feeds` package (planned), publishing canonical SBE into `shm_ingest`.
 - Not a broker. No request-reply, no routing back to a producer, no cross-box delivery. (A local app publishing one-way into an ingest ring is planned; see roadmap.)
 - Not a full SBE decoder. Routing fields only; apps own full decode.
 - No dynamic loading of foreign code (no `.so` plugins, no WASM, no embedded scripting).
 - No cross-host fan-out. Fan-out is local to the box.
-- No payload transformation or normalization.
+- No payload transformation or normalization in the raw mode, which is the default on every partition. Normalization to the canonical flat schema is an opt-in per-partition mode (planned, encoding-agnostic step 4), never applied to raw sessions.
 
 ## What was rejected and why
 
@@ -210,12 +210,13 @@ Items are planned unless marked done. The order is the intended build order; eac
 12. **Derived feeds** (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings; with `shm_ingest` in place these become the agent's own ingest partitions.
 13. Last-value cache exported into shared memory for direct app reads.
 14. Real bus capture on a production NIC with busy-poll, to replace the loopback numbers; kernel-bypass evaluation after that.
+15. **Feeds package** (`flashtick-feeds`, a sister repository, crypto first): a shared gateway framework (WebSocket client, JSON scanner, subscriptions, sequencing, rate limits) and one gateway process per exchange that publishes canonical SBE plus an exchange-specific pack into `shm_ingest`, so a box holds one exchange connection and every app reads a filtered ring. Depends on 5. The same shape makes the agent the only Kafka consumer on a box once 10 exists. The sister repo depends only on the agent's public contract and never the reverse.
 
 **Encoding-agnostic apps**, a sequence tracked alongside the numbered items; every step ships as a mode that stays:
 
 1. Raw `flatbuffers` decoder: done (2026-10-12). Field ids in YAML, whole buffer delivered bit-identical, no library.
 2. Typed views for flat SBE schemas: done (2026-10-12). `ft_schema --views` emits a C++ struct or memcpy view (decided by alignment, never packed), a NumPy dtype and a q `1:` spec from any group-less XML; the sample schema's views are generated and compiled at every build.
-3. A canonical flat SBE schema (planned): trade, quote, status and a ten-level book as fixed blocks, shipped with the agent with its views; no transcode yet.
+3. The canonical flat SBE schema: done (2026-10-12). `schemas/flashtick_canonical.xml`: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat as fixed, naturally aligned blocks with a common 32-byte prefix and int64 prices scaled by 10^-9; every message is a struct view, generated and compiled at every build, with `examples/views_app.cpp` consuming it end to end. No transcode yet.
 4. Transcode to the canonical schema (planned): a per-partition mapping in the decoder YAML from source fields to canonical fields, with scale and unit conversion, validated at startup; apps written against the canonical struct run on any bus. Raw delivery stays the default.
 5. App-attached target schema (planned): a session names its own flat SBE XML, the daemon resolves the mapping by field name with aliases, one transcode per distinct schema.
 6. `ft_schema` (planned): projects tick-shaped protobuf or FlatBuffers messages to flat SBE XML and an identity mapping; a convenience over 4 and 5. A raw protobuf decoder follows the shape of step 1 when a user needs one.
