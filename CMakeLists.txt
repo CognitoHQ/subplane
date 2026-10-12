@@ -52,6 +52,7 @@ add_library(flashtick_core STATIC
     src/decoder/sbe_routing_decoder.cpp
     src/decoder/dbn_decoder.cpp
     src/decoder/flatbuffers_decoder.cpp
+    src/decoder/sbe_views.cpp
     src/framing/sbe_length.cpp
     src/framing/framing.cpp
     src/transport/udp_multicast.cpp

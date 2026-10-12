@@ -214,7 +214,7 @@ Items are planned unless marked done. The order is the intended build order; eac
 **Encoding-agnostic apps**, a sequence tracked alongside the numbered items; every step ships as a mode that stays:
 
 1. Raw `flatbuffers` decoder: done (2026-10-12). Field ids in YAML, whole buffer delivered bit-identical, no library.
-2. Typed views for flat SBE schemas (planned): a C++ struct, a NumPy dtype and a q column map emitted from any group-less XML.
+2. Typed views for flat SBE schemas: done (2026-10-12). `ft_schema --views` emits a C++ struct or memcpy view (decided by alignment, never packed), a NumPy dtype and a q `1:` spec from any group-less XML; the sample schema's views are generated and compiled at every build.
 3. A canonical flat SBE schema (planned): trade, quote, status and a ten-level book as fixed blocks, shipped with the agent with its views; no transcode yet.
 4. Transcode to the canonical schema (planned): a per-partition mapping in the decoder YAML from source fields to canonical fields, with scale and unit conversion, validated at startup; apps written against the canonical struct run on any bus. Raw delivery stays the default.
 5. App-attached target schema (planned): a session names its own flat SBE XML, the daemon resolves the mapping by field name with aliases, one transcode per distinct schema.

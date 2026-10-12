@@ -308,6 +308,55 @@ Two header-only files, libc and the standard library only. They re-export `shm/r
 
 Apps decode the SBE payload with their own generated codecs. A Python client is planned.
 
+**Typed views for flat messages.** An SBE message with no groups and no varData is a fixed block behind the 8-byte message header, so `ft_schema --views` emits typed access to it in three forms from the same XML the agent loads (`decoder/sbe_views.h`): a C++ header, a NumPy module and a q script. No codec, no code generation step beyond the one tool run, and never a `#pragma pack`: a message whose fields are all naturally aligned at their payload offsets becomes a plain struct whose `static_assert`s prove the layout, and one with any misaligned field (SBE does not pad; the sample `Trade` has an `int64` at offset 34) becomes a view class with `memcpy` accessors, correct on every platform and the same loads on x86. `view<T>(payload, len)` checks the length, template id and schema id first and returns a pointer (struct form) or an optional (view form). From the sample schema:
+
+```cpp
+// Ticker: template 4, 32 bytes.
+struct Ticker {
+    static constexpr bool kIsStruct = true;
+    static constexpr uint16_t kTemplateId = 4;
+    static constexpr size_t kSize = 32;
+    uint16_t blockLength;
+    uint16_t templateId;
+    uint16_t schemaId;
+    uint16_t version;
+    char Symbol[8];  // Symbol8
+    uint64_t SeqNum;
+    uint64_t TransactTime;
+};
+static_assert(sizeof(Ticker) == Ticker::kSize);
+static_assert(offsetof(Ticker, blockLength) == 0);
+static_assert(offsetof(Ticker, templateId) == 2);
+static_assert(offsetof(Ticker, schemaId) == 4);
+static_assert(offsetof(Ticker, version) == 6);
+static_assert(offsetof(Ticker, Symbol) == 8);
+static_assert(offsetof(Ticker, SeqNum) == 16);
+static_assert(offsetof(Ticker, TransactTime) == 24);
+
+// Trade: template 1, 47 bytes. View class, not a struct: Price at offset 34 is not naturally aligned.
+class Trade {
+public:
+    static constexpr bool kIsStruct = false;
+    static constexpr uint16_t kTemplateId = 1;
+    static constexpr size_t kSize = 47;
+    explicit Trade(const uint8_t* p) noexcept : p_(p) {}
+    const uint8_t* data() const noexcept { return p_; }
+    uint16_t blockLength() const noexcept { return detail::load<uint16_t>(p_, 0); }
+    uint16_t templateId() const noexcept { return detail::load<uint16_t>(p_, 2); }
+    uint16_t schemaId() const noexcept { return detail::load<uint16_t>(p_, 4); }
+    uint16_t version() const noexcept { return detail::load<uint16_t>(p_, 6); }
+    uint64_t SecurityID() const noexcept { return detail::load<uint64_t>(p_, 8); }
+    uint64_t SeqNum() const noexcept { return detail::load<uint64_t>(p_, 16); }
+    uint64_t TransactTime() const noexcept { return detail::load<uint64_t>(p_, 24); }
+    uint16_t MarketSegmentID() const noexcept { return detail::load<uint16_t>(p_, 32); }
+    int64_t Price() const noexcept { return detail::load<int64_t>(p_, 34); }
+    uint32_t Qty() const noexcept { return detail::load<uint32_t>(p_, 42); }  // Qty32
+    uint8_t Side() const noexcept { return detail::load<uint8_t>(p_, 46); }  // SideEnum
+};
+```
+
+The Python module defines one frozen dataclass per message (standard library `struct`, no dependencies) with `from_bytes`, a `RecordHeader` dataclass for the 64-byte `TickHeader`, and `parse(record)` that turns one ring record into `(RecordHeader, message)` by template id, so a ring or a recording can be read from Python without the C++ SDK. When NumPy is importable each class also carries a structured `DTYPE` with explicit offsets for columnar, zero-copy reads (`np.frombuffer(payloads, dtype=Trade.DTYPE)`). The q script emits a `1:` fixed-width spec and a `parse` function per message (unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes); it is generated and checked structurally but has not been run under q here. Little-endian schemas only; messages with groups or varData are reported as skipped, never partially emitted; constant fields are omitted and listed in a comment; enums and sets appear as their encoding primitive with the type name noted. `tests/data/sample_md.xml` is run through the tool at every build and the generated header is compiled and exercised by `test_sbe_views`; `ctest -R schema_views_numpy` loads the NumPy module (skipped where NumPy is absent).
+
 ## HTTP API (cold path)
 
 `api_server.h`. Raw POSIX sockets, HTTP/1.1, read-only except reload. Bound to `api.host:api.port` (default 127.0.0.1:8080). Not on the hot path.
@@ -382,7 +431,7 @@ include/flashtick/
   registry/    component_registry.h
   transport/   transport.h udp_multicast.h tcp_stream.h
   framing/     framing.h sbe_length.h
-  decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h
+  decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h
   pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h
   shm/         ring_layout.h control_events.h        (shared with apps)
   fanout/      ring_writer.h
@@ -392,7 +441,7 @@ include/flashtick/
   agent.h api_server.h config_manager.h symbol_table.h status_types.h types.h persistence_manager.h
 src/            mirrors include/; src/main.cpp builds the `flashtickd` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
-tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
+tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_schema.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
 examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime)
 schemas/        sample_md.xml (referenced by config.yaml)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
@@ -409,6 +458,7 @@ All built by default (`FLASHTICK_BUILD_TOOLS`).
 - `ft_dbn_sim --port N (--file x.dbn | --synthetic) [--rate rec/s] [--clients N] [--prelude dbn|none] [--loop N] [--timing file] [--instruments N] [--count N] [--mix mbo=60,trade=30,mbp1=10] [--gap-every N] [--heartbeat-ms N]`: TCP server that streams DBN like Databento's live gateway, from an uncompressed `.dbn` file or synthetic v3 records (MBO, trade, MBP-1, SYSTEM heartbeats).
 - `ft_sbe_sender --port N [--schema X] [--framing '<yaml>'] [--group G | --host H] [--rate msgs/s] [--count N] [--symbols N] [--per-packet N] [--mix trade=70,quote=25,book=5] [--heartbeat-ms N] [--gap-every N] [--seq-reset-at N] [--unknown-every N] [--dup-every N]`: synthetic publisher using the same schema and framing code as the agent. Can inject gaps, a sequence reset, unknown templates and duplicates.
 - `ft_probe --port N [--schema X] [--framing '<yaml>'] [--group G] [--interface IP] [--packets 100] [--timeout-ms 5000] [--verbose]`: validate a framing block against live packets.
+- `ft_schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]`: typed views for flat SBE messages (see Client SDK); prints emitted and skipped messages.
 - `ft_tail <ring path> [--count N] [--follow] [--from-start] [--hex]`: dump ring records (header fields, control event bodies).
 - `ft_replay --pcap FILE --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]`: replay UDP payloads from a pcap (hand-written reader, no libpcap). `ft_replay --bench --config config.yaml [--packets N] [--per-packet K] [--symbols N] [--sessions K] [--batch N] [--cpu N] [--json]`: drive the pipeline in-process with an in-memory transport and print the `recv_to_publish` histogram.
 - `ring_soak --role writer|reader|harness [...]`: ring chaos test with CRC payloads, N readers, writer kill and restart; checks readers see `WriterGone` then `AGENT_RESTARTED`.

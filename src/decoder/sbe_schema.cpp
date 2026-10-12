@@ -222,6 +222,7 @@ struct Loader {
                 std::string type = c.attribute("type").as_string();
                 if (!resolve(type, t)) return fail("field '" + f.name + "': " + err);
                 f.prim = t.prim; f.size = t.size; f.length = t.length;
+                f.type_name = type;
                 if (std::string_view(c.attribute("presence").as_string()) == "constant") f.size = 0;
                 unsigned long off = cursor;
                 if (c.attribute("offset") && !parse_uint(c.attribute("offset").value(), 65535, off))
@@ -302,6 +303,7 @@ bool SbeSchema::load_string(std::string_view xml, std::string& err) {
     v = 0;
     if (!parse_uint(root.attribute("version").value(), 65535, v)) { err = "messageSchema needs a valid version"; return false; }
     version_ = static_cast<uint16_t>(v);
+    package_ = root.attribute("package").as_string("");
     std::string_view bo = root.attribute("byteOrder").as_string("littleEndian");
     if (bo == "littleEndian") little_endian_ = true;
     else if (bo == "bigEndian") little_endian_ = false;

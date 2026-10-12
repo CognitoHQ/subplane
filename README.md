@@ -72,6 +72,95 @@ A second encoding over a second transport: `decoder: {type: dbn}` with `transpor
 
 A third encoding with no library: `decoder: {type: flatbuffers}` routes FlatBuffers by field id straight off the wire and delivers the whole buffer, size prefix included. `ctest -R flatbuffers` runs real `flatc` output (`tests/fixtures/flatbuffers/`) through the decoder and over UDP through the agent. The commented `fb-p0` partition in `config.yaml` is the configuration.
 
+## Typed views without a codec
+
+A flat SBE message (no groups, no varData) is a fixed block behind the 8-byte message header. `ft_schema` turns the schema the agent loads into typed access to that block in three languages, so an app never links a codec or runs a code generator of its own:
+
+```bash
+build/tools/ft_schema --schema schemas/sample_md.xml --views all --out out/
+# wrote out/sample_md_views.h  out/sample_md_views.py  out/sample_md_views.q
+# emitted Trade, Quote, Ticker, Heartbeat, SeqReset; skipped BookUpdate: has groups (Levels)
+```
+
+**C++.** A message whose fields are all naturally aligned becomes a plain struct, and the `static_assert`s are the proof that it is the wire layout. A message with a misaligned field (SBE does not pad) becomes a view class with `memcpy` accessors instead. There is never a `#pragma pack`.
+
+```cpp
+// out/sample_md_views.h (generated)
+struct Ticker {
+    static constexpr bool kIsStruct = true;
+    static constexpr uint16_t kTemplateId = 4;
+    static constexpr size_t kSize = 32;
+    uint16_t blockLength;
+    uint16_t templateId;
+    uint16_t schemaId;
+    uint16_t version;
+    char Symbol[8];  // Symbol8
+    uint64_t SeqNum;
+    uint64_t TransactTime;
+};
+static_assert(sizeof(Ticker) == Ticker::kSize);
+static_assert(offsetof(Ticker, SeqNum) == 16);
+// ...
+class Trade {               // Price sits at offset 34: not aligned, so a view, not a struct
+public:
+    explicit Trade(const uint8_t* p) noexcept;
+    int64_t Price() const noexcept;   // memcpy from offset 34
+    uint32_t Qty() const noexcept;
+    uint8_t Side() const noexcept;    // SideEnum
+    // ...
+};
+```
+
+Reading a ring with them, with `client/shm_reader.h` as the only SDK header:
+
+```cpp
+#include "flashtick/client/shm_reader.h"
+#include "sample_md_views.h"
+using namespace ft_views;
+
+ShmReader rd;
+rd.open("/dev/shm/flashtick.flashtick.alpha.ring");
+RecordView rv;
+while (rd.poll(rv) == ReaderStatus::Ok) {
+    if (rv.hdr->kind != static_cast<uint8_t>(Kind::DATA)) continue;
+    if (const Ticker* t = view<Ticker>(rv.payload, rv.payload_len)) {        // struct: pointer into the ring
+        printf("%.8s seq=%llu\n", t->Symbol, (unsigned long long)t->SeqNum);
+    } else if (auto tr = view<Trade>(rv.payload, rv.payload_len)) {        // view: accessors
+        printf("sym=%u px=%lld qty=%u\n", rv.hdr->symbol_id, (long long)tr->Price(), tr->Qty());
+    }
+    if (!rv.valid()) { /* overwritten while reading: drop and resync */ }
+}
+```
+
+`view<T>` returns null unless the payload is long enough and its header carries `T`'s template id and the schema id, so a wrong cast is impossible rather than merely unlikely.
+
+**Python.** One frozen dataclass per message, standard library only, and `parse` for a whole ring record:
+
+```python
+from sample_md_views import Trade, parse
+
+hdr, msg = parse(record)                 # record = 64-byte header + payload, as read from a ring or a recording
+if isinstance(msg, Trade):
+    print(hdr.symbol_id, msg.Price, msg.Qty, msg.Side)
+
+t = Trade.from_bytes(payload)            # or just the SBE message
+```
+
+With NumPy installed each class also carries a `DTYPE`, so a buffer of payloads is a column store in one line: `np.frombuffer(payloads, dtype=Trade.DTYPE)['Price']`.
+
+**q.** A `1:` fixed-width spec and a parse function per message:
+
+```q
+\l sample_md_views.q
+.ft.sample_md.Trade.spec                    / ("hhhhjjjhjix";2 2 2 2 8 8 8 2 8 4 1)
+t:.ft.sample_md.Trade.parse payload         / `blockLength`templateId`...`Price`Qty`Side!...
+t`Price
+```
+
+Unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes. The q output is generated and checked structurally but has not been run under q here.
+
+The sample schema's views are regenerated and compiled at every build (`ctest -R sbe_views`), so a layout regression fails the build. Little-endian schemas only.
+
 ## Licence
 
 Apache License 2.0. See `LICENSE` and `NOTICE`; contribution guidelines are in `CONTRIBUTING.md`.

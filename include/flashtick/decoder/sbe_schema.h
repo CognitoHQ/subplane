@@ -25,6 +25,7 @@ struct FieldDef {
     uint16_t    size   = 0;      // bytes occupied in the block (0 for constants)
     SbePrim     prim   = SbePrim::U8;
     uint16_t    length = 1;      // element count for CHAR_ARRAY
+    std::string type_name;       // the XML `type` attribute (enum/set/type name or primitive); cold, for tooling
 };
 
 // Layout of the message header composite (derived from headerType).
@@ -77,6 +78,7 @@ public:
     bool load_string(std::string_view xml, std::string& err);
 
     uint16_t            schema_id() const noexcept { return schema_id_; }
+    const std::string&  package() const noexcept { return package_; }   // XML `package` attribute, may be empty
     uint16_t            version() const noexcept { return version_; }
     bool                little_endian() const noexcept { return little_endian_; }
     const HeaderLayout& header() const noexcept { return header_; }
@@ -90,6 +92,7 @@ public:
 
 private:
     uint16_t schema_id_ = 0, version_ = 0;
+    std::string package_;
     bool     little_endian_ = true;
     HeaderLayout header_;
     std::vector<MessageDef> messages_;

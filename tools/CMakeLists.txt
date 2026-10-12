@@ -17,6 +17,10 @@ add_executable(ft_dbn_sim dbn_sim.cpp)
 target_link_libraries(ft_dbn_sim PRIVATE flashtick_core flashtick_warnings)
 target_include_directories(ft_dbn_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(ft_schema ft_schema.cpp)
+target_link_libraries(ft_schema PRIVATE flashtick_core flashtick_warnings)
+target_include_directories(ft_schema PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(ft_tail ft_tail.cpp)
 target_link_libraries(ft_tail PRIVATE flashtick_core flashtick_warnings)
 
@@ -54,6 +58,11 @@ if(BUILD_TESTING OR FLASHTICK_BUILD_TESTS)
     add_test(NAME dbn_sim
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_dbn_sim.sh
                 $<TARGET_FILE:ft_dbn_sim> $<TARGET_FILE:flashtickd> $<TARGET_FILE:ft_tail>)
+    # Typed views: ft_schema's NumPy output loaded by python3 (skipped where numpy is absent).
+    add_test(NAME schema_views_numpy
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_schema_views_numpy.sh
+                $<TARGET_FILE:ft_schema> ${CMAKE_SOURCE_DIR}/tests/data/sample_md.xml)
+    set_tests_properties(schema_views_numpy PROPERTIES SKIP_RETURN_CODE 77)
     # FlatBuffers over UDP: pcap of real flatc buffers (1..4 per datagram) -> agent -> ring.
     add_test(NAME flatbuffers_replay
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh
