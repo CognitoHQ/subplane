@@ -3,7 +3,7 @@
 // Adapts SymbolTable to the decoder's SymbolResolver interface and records
 // newly interned ids so the pipeline can emit SYMBOL_MAPPED events.
 
-#include "flashtick/decoder/sbe_routing_decoder.h"
+#include "flashtick/decoder/decoder_common.h"
 #include "flashtick/symbol_table.h"
 
 namespace flashtick {

@@ -94,10 +94,12 @@ bool FramingConfig::parse(const YAML::Node& node, FramingConfig& out, std::strin
         std::string seq = node["sequence"].as<std::string>("none");
         if (seq == "none") {
             out.seq_source = SeqSource::NONE;
+        } else if (seq == "message") {
+            out.seq_source = SeqSource::MESSAGE_FIELD; // the decoder fills TickHeader::sequence itself
         } else {
             std::string scope, name;
             if (!split_ref(seq, scope, name)) {
-                err = "framing.sequence must be none, packet_header.<field> or message.<SchemaField>";
+                err = "framing.sequence must be none, packet_header.<field>, message or message.<SchemaField>";
                 return false;
             }
             if (scope == "packet_header") {
@@ -131,11 +133,14 @@ bool FramingConfig::parse(const YAML::Node& node, FramingConfig& out, std::strin
         std::string len = node["length"].as<std::string>("schema");
         if (len == "schema") {
             out.len_source = LenSource::SCHEMA;
+        } else if (len == "packet") {
+            out.len_source = LenSource::PACKET;
+            if (!out.message_prefix.empty()) { err = "framing.length packet cannot be combined with message_prefix"; return false; }
         } else {
             std::string scope, name;
             if (!split_ref(len, scope, name) || scope != "message_prefix" || !find(out.message_prefix, name) ||
                 find(out.message_prefix, name)->type == FieldType::BYTES) {
-                err = "framing.length must be schema or message_prefix.<integer field>";
+                err = "framing.length must be schema, packet or message_prefix.<integer field>";
                 return false;
             }
             out.len_source = LenSource::MESSAGE_PREFIX;
@@ -153,7 +158,7 @@ bool Framer::init(const FramingConfig& cfg, const SbeLengthWalker* walker, std::
     cfg_ = cfg;
     walker_ = walker;
     if (cfg_.len_source == LenSource::SCHEMA && walker_ == nullptr) {
-        err = "framing.length is schema but no length walker was provided";
+        err = "framing.length is schema but this decoder cannot compute message length; use length: packet or a message_prefix";
         return false;
     }
     auto bind = [](const std::vector<FramingField>& v, const std::string& name, Accessor& a) {
@@ -222,7 +227,9 @@ NextStatus Framer::next(MessageIter& it, const uint8_t*& msg, uint32_t& len) con
     msg = it.cur + cfg_.message_prefix_size;
     const uint32_t body_avail = avail - cfg_.message_prefix_size;
 
-    if (len_.present) {
+    if (cfg_.len_source == LenSource::PACKET) {
+        len = body_avail; // one message per packet; the decoder validates its own length
+    } else if (len_.present) {
         uint64_t declared = read(it.cur, len_);
         if (cfg_.length_includes_prefix) {
             if (declared < cfg_.message_prefix_size) return NextStatus::MALFORMED;

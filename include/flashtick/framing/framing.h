@@ -45,7 +45,7 @@ struct FramingField {
 };
 
 enum class SeqSource : uint8_t { NONE, PACKET_HEADER, MESSAGE_FIELD };
-enum class LenSource : uint8_t { SCHEMA, MESSAGE_PREFIX };
+enum class LenSource : uint8_t { SCHEMA, MESSAGE_PREFIX, PACKET }; // PACKET: whole packet is one message
 
 struct FramingConfig {
     std::vector<FramingField> packet_header;
@@ -90,7 +90,7 @@ enum class NextStatus : uint8_t {
 
 class Framer {
 public:
-    // Cold. walker may be null only when cfg.len_source == MESSAGE_PREFIX.
+    // Cold. walker may be null unless cfg.len_source == SCHEMA.
     bool init(const FramingConfig& cfg, const SbeLengthWalker* walker, std::string& err);
 
     // Hot. False if the packet is shorter than the packet header.

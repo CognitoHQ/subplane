@@ -326,8 +326,9 @@ bool run_one(const BenchOpts& o, const YAML::Node& part_node, const std::string&
     if (!part.build(pcfg, err, std::move(bt)) || !part.open(err)) return false;
 
     // Pre-generate every packet so generation cost is outside the measurement.
+    if (!part.schema()) { err = "--bench needs an sbe_routing partition (the generator encodes SBE); partition uses " + std::string(decoder_type_name(part.decoder_type())); return false; }
     fttool::GenOptions go = o.gen;
-    fttool::Generator gen(part.schema(), framing, go);
+    fttool::Generator gen(*part.schema(), framing, go);
     if (!gen.init(err)) return false;
     const uint64_t total = o.warmup + o.packets;
     std::vector<uint8_t> arena;

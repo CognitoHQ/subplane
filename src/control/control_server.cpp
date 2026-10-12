@@ -494,8 +494,10 @@ bool ControlServer::op_hello(Client& c, const CtlHeader& h) {
     r.symbol_count = symbols_.size();
     r.max_symbols = symbols_.capacity();
     if (!partitions_.empty()) {
-        r.schema_id = partitions_.front()->schema().schema_id();
-        r.schema_version = partitions_.front()->schema().version();
+        if (const SbeSchema* s = partitions_.front()->schema()) {
+            r.schema_id = s->schema_id();
+            r.schema_version = s->version();
+        }
     }
     r.partition_count = static_cast<uint16_t>(partitions_.size());
     std::vector<uint8_t> body(sizeof(r) + partitions_.size() * sizeof(CtlPartitionEntry));

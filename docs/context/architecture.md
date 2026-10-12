@@ -58,6 +58,26 @@ The framer and the decoder are not looked up through the registry. The framer is
 - `SO_TIMESTAMPNS` kernel receive timestamps when `kernel_timestamps: true` (default off). Otherwise the receive timestamp is taken after `recvmmsg` returns.
 - `multicast_loop` (default true) is needed for same-host tests.
 
+`tcp_stream` (`TcpStreamTransport`): a byte stream reassembled into whole records, each handed to the pipeline as one packet. Encoding-blind: the record-length rule and the optional stream prelude are configuration.
+
+```yaml
+transport:
+  type: tcp_stream
+  host: 127.0.0.1
+  port: 9550
+  record_length: { offset: 0, size: 1, scale: 4 }   # total bytes = little-endian field * scale (size 1, 2 or 4)
+  prelude: dbn            # none | dbn: "DBN" u8 version u32 len, then len bytes, skipped once per connection
+  rcvbuf: 4194304         # reassembly arena bytes (also SO_RCVBUF); at least 2 * max_record
+  batch: 64               # records per poll
+  max_record: 65536
+  reconnect_ms: 1000      # 0 = peer close or error is fatal (poll returns -1)
+  connect_timeout_ms: 2000
+```
+
+- Non-blocking connect completed inside `poll()`. `poll()` reads once into one arena allocated in `open()`, then cuts complete records (up to `batch`) as views into the arena; a record split across reads waits for the next poll. One clock read per batch.
+- Peer close or a socket error closes the connection; with `reconnect_ms > 0` the transport reconnects with that backoff and `poll()` returns 0 meanwhile, so the partition reports DEGRADED through the normal heartbeat timeout. A record length of 0 or above `max_record` means the stream is misaligned: counted as a framing error and reconnected. A zstd-compressed DBN stream is fatal with a message (decompress with the `dbn` CLI).
+- `ft_dbn_sim` serves DBN over TCP the way Databento's live gateway does after `Start()` (prelude, metadata, records) from an uncompressed `.dbn` file or synthetically; see Tools.
+
 ## Framing
 
 `framing/framing.h`. The only hard requirement on a publisher is its SBE schema; everything else about packet layout is a declarative `framing:` block compiled at startup into fixed offsets. The hot path has no allocation and no virtual calls.
@@ -78,9 +98,18 @@ framing:
 - Field types: `u8`, `u16le`, `u16be`, `u32le`, `u32be`, `u64le`, `u64be`, `bytes` (needs `size`). An optional `offset:` overrides the running offset.
 - **Length.** With a prefix, length comes from it. Without one (`length: schema`, the default), the length is computed by walking the schema: root `blockLength` from the SBE header, then each group (dimension composite gives `blockLength` and `numInGroup`, recursive up to depth 4) and each varData (length prefix). The walk is compiled per template at schema load into a small op array, so `[sbe][sbe][sbe]` back-to-back packets parse with no framing at all. The walk honours SBE's extension rule: a group or varData whose `sinceVersion` is newer than the `version` in the message header is not on the wire and is skipped. The walker and this framing block are validated against real CME MDP 3.0 packets (wire versions 6 and 9, schemas v9 and v13) by `tests/integration/test_cme_probe.sh` after `scripts/fetch-cme-sample.sh`; the MDP 3.0 block is `packet_header: [seq u32le, sending_time u64le]`, `message_prefix: [len u16le]`, `length_includes_prefix: true`.
 - **Unknown template.** If the length is known (from a prefix, or the template is in the schema so the walk works) but the template has no mapping in `decoder.messages`, the message is skipped and `unknown_templates` is counted, with the last id kept in `last_unknown_template`. If there is no prefix and the template is absent from the schema, the length cannot be computed: the rest of the packet is dropped and `undecodable_tail` is counted. It is never guessed. A schema id mismatch in the SBE header is counted separately as `schema_mismatch`. Truncated or inconsistent messages count as `truncated`, `malformed` or `decode_errors`. Nothing is silent. The operator fix for a new template is the publisher's newer XML plus a restart.
-- **Sequence sources.** `packet_header.<field>` (one sequence per packet, checked before the messages), `message.<SchemaField>` (each message carries it, mapped through `decoder.fields.sequence`), or `none`. With `none`, gap detection is off for that partition and liveness is by heartbeat timeout only. (Planned: the same three sources for every routing field and for the extension tuple; see the vision roadmap, item 1.)
-- **Encoding is per-partition configuration.** Transports are encoding-blind; the decoder component chosen for a partition sets `wire_format` on every record. Only `sbe_routing` exists today. `length: schema` is valid only for a decoder that can compute message length (SBE); other encodings (planned: fixed-offset layouts such as DBN, FlatBuffers, protobuf) must declare a length prefix or a count, and the agent rejects an invalid framing/decoder pair at startup.
+- **Length `packet`.** `length: packet` makes the whole packet (after any packet header) one message; the decoder validates the length it finds inside. This is the default for the `dbn` decoder, whose records are self-delimiting and arrive one per packet from `tcp_stream`. It cannot be combined with `message_prefix`.
+- **Sequence sources.** `packet_header.<field>` (one sequence per packet, checked before the messages), `message.<SchemaField>` (each message carries it, mapped through `decoder.fields.sequence`), bare `message` (the decoder fills `TickHeader::sequence` from a format-defined field, as `dbn` does), or `none`. With `none`, gap detection is off for that partition and liveness is by heartbeat timeout only. (Planned: the same three sources for every routing field and for the extension tuple; see the vision roadmap, item 1.)
+- **Encoding is per-partition configuration.** Transports are encoding-blind; the decoder component chosen by `decoder.type` sets `wire_format` on every record. Two decoders exist: `sbe_routing` and `dbn`. `length: schema` is valid only for a decoder that can compute message length (SBE); other encodings use `length: packet` or a length prefix, and the agent rejects an invalid framing/decoder pair at startup (`"framing.length is schema but this decoder cannot compute message length"`). The decoder is held by value in the partition and selected with a branch per message, not a virtual call. Planned: FlatBuffers, protobuf, generic fixed-offset layouts.
 - **`ft_probe`** joins a group (or binds a unicast port), captures N packets and runs the production framer and schema walker over them. It checks that template ids are in the schema, that lengths tile each packet exactly, and that the sequence is monotone, and prints a verdict and the message mix. Exit 0 pass, 1 fail, 2 no packets or usage error.
+
+## DBN decoder
+
+`decoder/dbn_decoder.h`. Databento Binary Encoding: every record starts with a fixed 16-byte header (`u8 length/4`, `u8 rtype`, `u16 publisher_id`, `u32 instrument_id`, `u64 ts_event`), so routing needs no schema. `symbol = instrument_id` (mode `passthrough` by default, `table` remaps densely), `venue = publisher_id`, `exchange_ts = ts_event`, `template_id = rtype`, `wire_format = DBN (31)`, `sequence` from the per-rtype offset where DBN carries one (MBO at 52; trade, MBP-1 and MBP-10 at 44). `messages:` maps rtype names (`MBO`, `MBP_0`/`TRADE`, `MBP_1`, `MBP_10`, `CMBP_1`, `BBO_1S`, `BBO_1M`, `CBBO_1S`, `CBBO_1M`, `OHLCV_1S/1M/1H/1D`, `STATUS`, `DEFINITION`, `IMBALANCE`, `ERROR`, `SYMBOL_MAPPING`, `SYSTEM`, `STATISTICS`, or a number) to `msg_type` or `admin`; when omitted the default is MBO to BOOK_UPDATE, MBP_0 to TRADE, MBP_1/CMBP_1/BBO/CBBO to QUOTE, MBP_10 to BOOK_SNAPSHOT, OHLCV to OHLCV, STATUS/STATISTICS/IMBALANCE to STATUS, SYSTEM to admin HEARTBEAT; DEFINITION, SYMBOL_MAPPING and ERROR are unmapped (counted in `unknown_templates`) unless mapped explicitly. The record's own length byte must equal the packet length, else `decode_errors`.
+
+Two facts learned from a real file (CLX5 MBO, 38,212 records): DBN's `sequence` is the venue's packet sequence, shared by every record from the same exchange packet, so `sequence: message` drops siblings as duplicates; leave the default `sequence: none` for DBN. And `symbol_id_mode: passthrough` needs `agent.max_symbols` above the largest instrument id (CME ids are in the hundreds of thousands), which makes the dense last-value cache and filter bitsets large (about 3.9 GB RSS at `max_symbols: 1048576`); a sparse LVC for passthrough ids is on the backlog.
+
+On a passthrough partition, session `symbols:` entries are raw instrument ids used as-is; a session may not mix passthrough and table partitions.
 
 ## SBE routing decoder
 
@@ -337,7 +366,7 @@ include/flashtick/
   agent.h api_server.h config_manager.h symbol_table.h status_types.h types.h persistence_manager.h
 src/            mirrors include/; src/main.cpp builds the `flashtickd` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
-tools/          sbe_sender.cpp ft_probe.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
+tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
 examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime)
 schemas/        sample_md.xml (referenced by config.yaml)
 tests/          unit/ integration/ data/
@@ -351,6 +380,7 @@ scripts/        ci-build-2204.sh
 
 All built by default (`FLASHTICK_BUILD_TOOLS`).
 
+- `ft_dbn_sim --port N (--file x.dbn | --synthetic) [--rate rec/s] [--clients N] [--prelude dbn|none] [--loop N] [--timing file] [--instruments N] [--count N] [--mix mbo=60,trade=30,mbp1=10] [--gap-every N] [--heartbeat-ms N]`: TCP server that streams DBN like Databento's live gateway, from an uncompressed `.dbn` file or synthetic v3 records (MBO, trade, MBP-1, SYSTEM heartbeats).
 - `ft_sbe_sender --port N [--schema X] [--framing '<yaml>'] [--group G | --host H] [--rate msgs/s] [--count N] [--symbols N] [--per-packet N] [--mix trade=70,quote=25,book=5] [--heartbeat-ms N] [--gap-every N] [--seq-reset-at N] [--unknown-every N] [--dup-every N]`: synthetic publisher using the same schema and framing code as the agent. Can inject gaps, a sequence reset, unknown templates and duplicates.
 - `ft_probe --port N [--schema X] [--framing '<yaml>'] [--group G] [--interface IP] [--packets 100] [--timeout-ms 5000] [--verbose]`: validate a framing block against live packets.
 - `ft_tail <ring path> [--count N] [--follow] [--from-start] [--hex]`: dump ring records (header fields, control event bodies).

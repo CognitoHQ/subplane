@@ -13,6 +13,10 @@ foreach(tool ft_sbe_sender ft_probe)
     target_compile_definitions(${tool} PRIVATE FT_DEFAULT_SCHEMA="${FT_DEFAULT_SCHEMA}")
 endforeach()
 
+add_executable(ft_dbn_sim dbn_sim.cpp)
+target_link_libraries(ft_dbn_sim PRIVATE flashtick_core flashtick_warnings)
+target_include_directories(ft_dbn_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(ft_tail ft_tail.cpp)
 target_link_libraries(ft_tail PRIVATE flashtick_core flashtick_warnings)
 
@@ -46,4 +50,8 @@ if(BUILD_TESTING OR FLASHTICK_BUILD_TESTS)
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_cme_probe.sh
                 $<TARGET_FILE:ft_replay> $<TARGET_FILE:ft_probe> ${CMAKE_BINARY_DIR}/cme-sample)
     set_tests_properties(cme_probe PROPERTIES SKIP_RETURN_CODE 77)
+    # DBN over TCP: simulator -> agent -> ring, synthetic records, no data files needed.
+    add_test(NAME dbn_sim
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_dbn_sim.sh
+                $<TARGET_FILE:ft_dbn_sim> $<TARGET_FILE:flashtickd> $<TARGET_FILE:ft_tail>)
 endif()

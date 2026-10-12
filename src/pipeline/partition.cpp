@@ -4,6 +4,14 @@
 
 namespace flashtick {
 
+const char* decoder_type_name(DecoderType t) {
+    switch (t) {
+        case DecoderType::SBE_ROUTING: return "sbe_routing";
+        case DecoderType::DBN:         return "dbn";
+    }
+    return "unknown";
+}
+
 const char* partition_state_name(PartitionState s) {
     switch (s) {
         case PartitionState::INIT:     return "init";
@@ -59,30 +67,63 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
         return false;
     }
 
-    DecoderConfig dcfg;
-    if (!parse_decoder_config(cfg_.decoder_node, dcfg, err)) {
-        err = "partition " + cfg_.name + ": " + err;
+    // Encoding is per-partition configuration: `decoder.type` selects the
+    // decoder; the transport never knows what it carries.
+    std::string dtype = "sbe_routing";
+    try {
+        if (cfg_.decoder_node && cfg_.decoder_node.IsMap() && cfg_.decoder_node["type"])
+            dtype = cfg_.decoder_node["type"].as<std::string>();
+    } catch (const YAML::Exception& e) {
+        err = "partition " + cfg_.name + ": decoder.type: " + e.what();
         return false;
     }
-    std::string schema_path = dcfg.schema_path;
-    if (!schema_path.empty() && schema_path[0] != '/' && !cfg_.base_dir.empty()) {
-        schema_path = cfg_.base_dir + "/" + schema_path;
-    }
-    if (!schema_.load_file(schema_path, err)) {
-        err = "partition " + cfg_.name + ": schema " + schema_path + ": " + err;
-        return false;
-    }
-    if (!decoder_.init(dcfg, schema_, err)) {
-        err = "partition " + cfg_.name + ": decoder: " + err;
+    const SbeLengthWalker* walker = nullptr;
+    if (dtype == "sbe_routing") {
+        decoder_type_ = DecoderType::SBE_ROUTING;
+        DecoderConfig dcfg;
+        if (!parse_decoder_config(cfg_.decoder_node, dcfg, err)) {
+            err = "partition " + cfg_.name + ": " + err;
+            return false;
+        }
+        std::string schema_path = dcfg.schema_path;
+        if (!schema_path.empty() && schema_path[0] != '/' && !cfg_.base_dir.empty()) {
+            schema_path = cfg_.base_dir + "/" + schema_path;
+        }
+        if (!schema_.load_file(schema_path, err)) {
+            err = "partition " + cfg_.name + ": schema " + schema_path + ": " + err;
+            return false;
+        }
+        if (!sbe_decoder_.init(dcfg, schema_, err)) {
+            err = "partition " + cfg_.name + ": decoder: " + err;
+            return false;
+        }
+        walker = &sbe_decoder_.walker();
+    } else if (dtype == "dbn") {
+        decoder_type_ = DecoderType::DBN;
+        DbnDecoderConfig dcfg;
+        if (!parse_dbn_decoder_config(cfg_.decoder_node, dcfg, err) || !dbn_decoder_.init(dcfg, err)) {
+            err = "partition " + cfg_.name + ": decoder: " + err;
+            return false;
+        }
+    } else {
+        err = "partition " + cfg_.name + ": unknown decoder type '" + dtype + "'; available:";
+        for (const char* t : decoder_types()) { err += ' '; err += t; }
         return false;
     }
 
     FramingConfig fcfg;
-    if (!FramingConfig::parse(cfg_.framing_node, fcfg, err)) {
+    YAML::Node framing_node = cfg_.framing_node;
+    // INTENT: a default-constructed YAML::Node is a defined Null node, so test
+    // both; an absent `framing:` block looks like either depending on the path.
+    if ((!framing_node.IsDefined() || framing_node.IsNull()) && decoder_type_ == DecoderType::DBN) {
+        // DBN records are self-delimiting and the transport delivers one per packet.
+        framing_node = YAML::Load("{length: packet}");
+    }
+    if (!FramingConfig::parse(framing_node, fcfg, err)) {
         err = "partition " + cfg_.name + ": " + err;
         return false;
     }
-    if (!framer_.init(fcfg, &decoder_.walker(), err)) {
+    if (!framer_.init(fcfg, walker, err)) {
         err = "partition " + cfg_.name + ": " + err;
         return false;
     }

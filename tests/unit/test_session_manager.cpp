@@ -105,7 +105,7 @@ TEST_CASE("SessionManager: create, attach info, data delivery, set_filter, destr
     REQUIRE(rd.poll(v) == ReaderStatus::Ok); // AGENT_RESTARTED
     CHECK(v.hdr->msg_type == static_cast<uint8_t>(ControlCode::AGENT_RESTARTED));
 
-    h.fake->push(trade(h.part.schema(), 42, 1), now_ns());
+    h.fake->push(trade(*h.part.schema(), 42, 1), now_ns());
     h.pipe.run_once();
     REQUIRE(rd.poll(v) == ReaderStatus::Ok); // SYMBOL_MAPPED
     REQUIRE(rd.poll(v) == ReaderStatus::Ok);
@@ -116,7 +116,7 @@ TEST_CASE("SessionManager: create, attach info, data delivery, set_filter, destr
     CHECK(info.filter_generation == 2);
     REQUIRE(rd.poll(v) == ReaderStatus::Ok);
     CHECK(v.hdr->msg_type == static_cast<uint8_t>(ControlCode::FILTER_RELOADED));
-    h.fake->push(trade(h.part.schema(), 42, 2), now_ns());
+    h.fake->push(trade(*h.part.schema(), 42, 2), now_ns());
     h.pipe.run_once();
     CHECK(rd.poll(v) == ReaderStatus::Empty); // trade filtered out now
 

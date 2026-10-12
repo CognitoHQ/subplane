@@ -12,13 +12,13 @@
 #include <yaml-cpp/yaml.h>
 
 #include "flashtick/core/message.h"
+#include "flashtick/decoder/decoder_common.h"
 #include "flashtick/decoder/sbe_schema.h"
 #include "flashtick/framing/sbe_length.h"
 
 namespace flashtick {
 
 struct RoutingFieldMap { std::string symbol, sequence, exchange_ts, venue; }; // empty = unmapped
-enum class SymbolIdMode { TABLE, PASSTHROUGH };
 
 struct TemplateMapping {
     uint16_t template_id = 0;
@@ -34,25 +34,8 @@ struct DecoderConfig {
     std::vector<TemplateMapping> messages;
 };
 
-// Parses the config.yaml `decoder:` block.
+// Parses the config.yaml `decoder:` block (type sbe_routing).
 bool parse_decoder_config(const YAML::Node& node, DecoderConfig& out, std::string& err);
-
-enum class DecodeStatus : uint8_t { OK, UNKNOWN_TEMPLATE, TRUNCATED, SCHEMA_MISMATCH, MALFORMED };
-
-struct DecodeResult {
-    DecodeStatus status    = DecodeStatus::MALFORMED;
-    uint32_t     total_len = 0; // full message length via the walker; 0 when unknown
-};
-
-// Minimal interface so the decoder does not depend on the SymbolTable.
-// TODO: replace with a template parameter / direct SymbolTable call; one
-// virtual call per message is accepted for now.
-class SymbolResolver {
-public:
-    virtual ~SymbolResolver() = default;
-    virtual uint32_t resolve_u64(uint64_t key) noexcept = 0;
-    virtual uint32_t resolve_str(const char* s, uint32_t len) noexcept = 0;
-};
 
 class SbeRoutingDecoder {
 public:
@@ -63,6 +46,7 @@ public:
     DecodeResult decode(const uint8_t* msg, uint32_t avail, TickHeader& out, SymbolResolver& syms) const noexcept;
 
     const SbeLengthWalker& walker() const noexcept { return walker_; }
+    bool symbol_passthrough() const noexcept { return passthrough_; }
     const std::vector<std::string>& warnings() const { return warnings_; }
 
 private:

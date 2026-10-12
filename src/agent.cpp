@@ -114,7 +114,7 @@ bool Agent::build_partitions(std::string& err) {
         }
         auto p = std::make_unique<Partition>();
         if (!p->build(cfg, err)) return false;
-        for (const auto& w : p->decoder().warnings()) LogRegistry::instance().warn("PARTITION", cfg.name, w);
+        for (const auto& w : p->decoder_warnings()) LogRegistry::instance().warn("PARTITION", cfg.name, w);
         partitions_.push_back(std::move(p));
         ++idx;
     }

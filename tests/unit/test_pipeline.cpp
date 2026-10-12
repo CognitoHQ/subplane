@@ -117,7 +117,7 @@ struct Harness {
         REQUIRE(pipe.commands_applied() == pipe.commands_posted());
     }
 
-    const SbeSchema& schema() const { return part.schema(); }
+    const SbeSchema& schema() const { return *part.schema(); }
 };
 
 struct Rec { TickHeader hdr; std::vector<uint8_t> payload; };

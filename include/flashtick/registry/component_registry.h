@@ -23,6 +23,11 @@ struct ComponentEntry {
 
 std::span<const ComponentEntry<Transport>> transport_components();
 
+// Decoders are not constructed through a factory (they are held by value in
+// Partition to avoid per-message virtual dispatch); this is the list of valid
+// `decoder.type` values for validation and error messages.
+std::span<const char* const> decoder_types();
+
 // Finds `type` in the table and constructs it. On an unknown type, err lists
 // the available types so a config typo is a one-line fix.
 template <class Iface>

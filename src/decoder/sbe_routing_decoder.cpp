@@ -23,7 +23,7 @@ constexpr NameCode kAdmin[] = {
 };
 
 template <size_t N>
-bool lookup(const NameCode (&tbl)[N], const std::string& n, uint8_t& code) {
+bool lookup(const NameCode (&tbl)[N], std::string_view n, uint8_t& code) {
     for (const auto& e : tbl) if (n == e.name) { code = e.code; return true; }
     return false;
 }
@@ -37,6 +37,14 @@ bool is_int_prim(SbePrim p) {
 }
 
 } // namespace
+
+bool parse_msg_type_name(std::string_view name, uint8_t& code) { return lookup(kMsgTypes, name, code); }
+bool parse_admin_name(std::string_view name, uint8_t& code) { return lookup(kAdmin, name, code); }
+bool parse_symbol_id_mode(std::string_view name, SymbolIdMode& out) {
+    if (name == "table") { out = SymbolIdMode::TABLE; return true; }
+    if (name == "passthrough") { out = SymbolIdMode::PASSTHROUGH; return true; }
+    return false;
+}
 
 bool parse_decoder_config(const YAML::Node& node, DecoderConfig& out, std::string& err) {
     try {
@@ -61,9 +69,7 @@ bool parse_decoder_config(const YAML::Node& node, DecoderConfig& out, std::strin
             }
         }
         const std::string mode = node["symbol_id_mode"] ? node["symbol_id_mode"].as<std::string>() : "table";
-        if (mode == "table") out.symbol_mode = SymbolIdMode::TABLE;
-        else if (mode == "passthrough") out.symbol_mode = SymbolIdMode::PASSTHROUGH;
-        else { err = "decoder.symbol_id_mode must be table or passthrough, got '" + mode + "'"; return false; }
+        if (!parse_symbol_id_mode(mode, out.symbol_mode)) { err = "decoder.symbol_id_mode must be table or passthrough, got '" + mode + "'"; return false; }
 
         const auto msgs = node["messages"];
         if (!msgs || !msgs.IsSequence() || msgs.size() == 0) { err = "decoder.messages must be a non-empty list"; return false; }
@@ -158,6 +164,7 @@ DecodeResult SbeRoutingDecoder::decode(const uint8_t* msg, uint32_t avail, TickH
     const uint64_t sid = sbe_read_uint(msg + hdr_.schema_id_off, hdr_.schema_id_size, little_);
     if (sid != schema_id_) { r.status = DecodeStatus::SCHEMA_MISMATCH; return r; }
     const uint64_t tid = sbe_read_uint(msg + hdr_.template_id_off, hdr_.template_id_size, little_);
+    out.template_id = static_cast<uint16_t>(tid > 0xFFFF ? 0xFFFF : tid); // visible to last_unknown_template
     if (tid >= by_template_.size() || !by_template_[tid].present) {
         r.status = DecodeStatus::UNKNOWN_TEMPLATE;
         return r;

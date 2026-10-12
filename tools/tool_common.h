@@ -5,7 +5,11 @@
 // length-walker loading.
 
 #include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdint>
+#include <ctime>
+#include <thread>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
@@ -107,6 +111,31 @@ struct LoadedSchema {
         if (!schema.load_file(path, err)) return false;
         return walker.build(schema, err);
     }
+};
+
+// Monotonic clock for pacing.
+inline uint64_t mono_ns() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+// Fixed-rate pacer: sleep until the next deadline (spinning the last 50 us).
+// interval_ns == 0 disables pacing. `stop` aborts the wait early.
+class Pacer {
+public:
+    explicit Pacer(uint64_t interval_ns) : interval_(interval_ns), deadline_(mono_ns()) {}
+    void wait(const volatile std::sig_atomic_t& stop) {
+        if (interval_ == 0) return;
+        deadline_ += interval_;
+        for (;;) {
+            const uint64_t now = mono_ns();
+            if (now >= deadline_ || stop) break;
+            if (deadline_ - now > 100000) std::this_thread::sleep_for(std::chrono::nanoseconds(deadline_ - now - 50000));
+        }
+    }
+private:
+    uint64_t interval_, deadline_;
 };
 
 } // namespace fttool

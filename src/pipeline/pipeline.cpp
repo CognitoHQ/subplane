@@ -80,6 +80,11 @@ void Pipeline::loop() noexcept {
 int Pipeline::run_once() noexcept {
     int handled = 0;
     const uint64_t now = now_ns();
+    // INTENT: apply session commands before polling. A session posted before
+    // the first packet (every static YAML session at startup) must see that
+    // packet; applying after the poll lost the first few thousand records of
+    // a fast TCP stream to "no session attached yet".
+    apply_commands(now);
     for (Partition* pp : partitions_) {
         Partition& p = *pp;
         if (!p.has_transport()) continue;
@@ -163,7 +168,7 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
     h.partition_id = p.id();
     h.payload_len = len;
 
-    const DecodeResult r = p.decoder().decode(msg, len, h, resolver_);
+    const DecodeResult r = p.decode(msg, len, h, resolver_);
     switch (r.status) {
         case DecodeStatus::OK: break;
         case DecodeStatus::UNKNOWN_TEMPLATE:

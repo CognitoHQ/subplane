@@ -6,6 +6,7 @@
 // pipeline thread.
 
 #include "flashtick/core/counters.h"
+#include "flashtick/decoder/dbn_decoder.h"
 #include "flashtick/decoder/sbe_routing_decoder.h"
 #include "flashtick/decoder/sbe_schema.h"
 #include "flashtick/framing/framing.h"
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <yaml-cpp/yaml.h>
 
@@ -38,6 +40,8 @@ struct PartitionConfig {
 };
 
 enum class PartitionState : uint8_t { INIT = 0, ACTIVE = 1, DEGRADED = 2 };
+enum class DecoderType : uint8_t { SBE_ROUTING = 0, DBN = 1 };
+const char* decoder_type_name(DecoderType t);
 const char* partition_state_name(PartitionState s);
 
 class Partition {
@@ -55,9 +59,26 @@ public:
     const std::string& name() const noexcept { return cfg_.name; }
     uint16_t id() const noexcept { return cfg_.id; }
     uint64_t heartbeat_timeout_ns() const noexcept { return static_cast<uint64_t>(cfg_.heartbeat_timeout_ms) * 1'000'000ull; }
-    const SbeSchema& schema() const noexcept { return schema_; }
-    const SbeRoutingDecoder& decoder() const noexcept { return decoder_; }
+    DecoderType decoder_type() const noexcept { return decoder_type_; }
+    // SBE only: nullptr for other decoders.
+    const SbeSchema* schema() const noexcept { return decoder_type_ == DecoderType::SBE_ROUTING ? &schema_ : nullptr; }
+    const SbeRoutingDecoder& sbe_decoder() const noexcept { return sbe_decoder_; }
+    const DbnDecoder& dbn_decoder() const noexcept { return dbn_decoder_; }
+    const std::vector<std::string>& decoder_warnings() const noexcept {
+        return decoder_type_ == DecoderType::DBN ? dbn_decoder_.warnings() : sbe_decoder_.warnings();
+    }
     const Framer& framer() const noexcept { return framer_; }
+    // True when symbol_id on this partition is the raw instrument id, not a table id.
+    bool symbol_passthrough() const noexcept {
+        return decoder_type_ == DecoderType::DBN ? dbn_decoder_.symbol_passthrough() : sbe_decoder_.symbol_passthrough();
+    }
+
+    // Hot. Dispatches to the configured decoder with a branch, not a virtual
+    // call (INV: one indirect call per packet batch, which the transport uses).
+    DecodeResult decode(const uint8_t* msg, uint32_t avail, TickHeader& out, SymbolResolver& syms) const noexcept {
+        return decoder_type_ == DecoderType::DBN ? dbn_decoder_.decode(msg, avail, out, syms)
+                                                 : sbe_decoder_.decode(msg, avail, out, syms);
+    }
     Transport& transport() noexcept { return *transport_; }
     bool has_transport() const noexcept { return transport_ != nullptr; }
     const PartitionConfig& config() const noexcept { return cfg_; }
@@ -85,8 +106,10 @@ public:
 
 private:
     PartitionConfig            cfg_;
-    SbeSchema                  schema_;
-    SbeRoutingDecoder          decoder_;
+    DecoderType                decoder_type_ = DecoderType::SBE_ROUTING;
+    SbeSchema                  schema_;        // SBE only
+    SbeRoutingDecoder          sbe_decoder_;   // one of these two is initialised
+    DbnDecoder                 dbn_decoder_;
     Framer                     framer_;
     std::unique_ptr<Transport> transport_;
 };

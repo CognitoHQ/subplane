@@ -34,6 +34,7 @@ enum class Kind : uint8_t {
 enum class WireFormat : uint8_t {
     UNKNOWN = 0,
     SBE     = 30,
+    DBN     = 31, // Databento Binary Encoding (fixed 16-byte record header)
 };
 
 // Data message types (msg_type < 0x80). Mapped from SBE templateId by config.

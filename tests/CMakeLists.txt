@@ -23,3 +23,5 @@ flashtick_unit_test(test_pipeline unit/test_pipeline.cpp)
 flashtick_unit_test(test_session_manager unit/test_session_manager.cpp)
 # M6 control channel
 flashtick_unit_test(test_control unit/test_control.cpp)
+# DBN decoder, TCP stream transport, DBN through the pipeline
+flashtick_unit_test(test_dbn unit/test_dbn_decoder.cpp unit/test_tcp_stream.cpp unit/test_dbn_pipeline.cpp)

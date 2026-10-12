@@ -209,7 +209,7 @@ TEST_CASE("control: hello, dynamic session lifecycle, snapshot, symbols, linger,
     CHECK(hi.record_version == RECORD_VERSION);
     CHECK(hi.proto_version == CONTROL_PROTO_VERSION);
     CHECK(hi.max_symbols == 1024);
-    CHECK(hi.schema_id == h.part.schema().schema_id());
+    CHECK(hi.schema_id == h.part.schema()->schema_id());
     REQUIRE(hi.partitions.size() == 1);
     CHECK(hi.partitions[0].id == 0);
     CHECK(hi.partitions[0].name == "p0");
@@ -239,8 +239,8 @@ TEST_CASE("control: hello, dynamic session lifecycle, snapshot, symbols, linger,
     CHECK(th.msg_type == code(ControlCode::AGENT_RESTARTED));
 
     // Trade + quote through the live pipeline thread; only the trade passes.
-    const auto t1 = sbe_msg(h.part.schema(), 1, 1001, 1);
-    const auto q1 = sbe_msg(h.part.schema(), 2, 1001, 2);
+    const auto t1 = sbe_msg(*h.part.schema(), 1, 1001, 1);
+    const auto q1 = sbe_msg(*h.part.schema(), 2, 1001, 2);
     std::vector<uint8_t> pkt = t1;
     pkt.insert(pkt.end(), q1.begin(), q1.end());
     h.fake->push(pkt, now_ns());

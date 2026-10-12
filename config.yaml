@@ -55,6 +55,24 @@ partitions:
     heartbeat_timeout_ms: 2000
     dup_window: 1024       # backward seq jumps larger than this are treated as a publisher restart
 
+  # A second partition carrying a different encoding over a different transport.
+  # Encoding is per-partition configuration; the ring contract is the same.
+  # Try it: build/tools/ft_dbn_sim --port 9550 --synthetic   (or --file x.dbn)
+  # - name: db-p0
+  #   transport:
+  #     type: tcp_stream
+  #     host: 127.0.0.1
+  #     port: 9550
+  #     record_length: { offset: 0, size: 1, scale: 4 }   # DBN: u8 length in 4-byte words
+  #     prelude: dbn                                       # "DBN" + version + metadata, skipped per connection
+  #     reconnect_ms: 1000
+  #   framing: { length: packet }      # one record per packet (default for dbn)
+  #   decoder:
+  #     type: dbn
+  #     symbol_id_mode: passthrough    # instrument_id is the symbol id
+  #     # messages: omitted = defaults (MBO->BOOK_UPDATE, trade->TRADE, MBP-1->QUOTE, ..., SYSTEM->HEARTBEAT)
+  #   heartbeat_timeout_ms: 5000
+
 # Operator-defined sessions. Apps may also create their own over the control channel.
 sessions:
   - name: alpha

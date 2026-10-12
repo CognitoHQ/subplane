@@ -71,6 +71,22 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
         return false;
     }
 
+    // INTENT: a passthrough partition stamps the raw instrument id as symbol_id,
+    // so a numeric filter entry must be used as-is, not interned. Mixing
+    // passthrough and table partitions in one session would make the same
+    // number mean two different things, so it is rejected.
+    size_t n_pass = 0, n_part = 0;
+    for (const Partition* p : partitions_) {
+        if (!((partition_mask >> p->id()) & 1ull)) continue;
+        ++n_part;
+        if (p->symbol_passthrough()) ++n_pass;
+    }
+    if (n_pass != 0 && n_pass != n_part) {
+        err = "session " + spec.name + ": mixes passthrough and table symbol partitions";
+        return false;
+    }
+    const bool passthrough = n_pass != 0;
+
     fs.all_symbols = spec.all_symbols;
     for (const auto& sym : spec.symbols) {
         // INTENT: interning on the cold path is allowed (table is lock-free and
@@ -84,7 +100,14 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
         char* end = nullptr;
         const unsigned long long v = sym.empty() ? 0 : strtoull(sym.c_str(), &end, 10);
         const bool numeric = !sym.empty() && end && *end == '\0';
-        if (numeric) {
+        if (passthrough) {
+            if (!numeric || v == 0 || v >= cfg_.max_symbols) {
+                err = "session " + spec.name + ": symbol '" + sym + "' must be an instrument id in 1.." +
+                      std::to_string(cfg_.max_symbols - 1) + " on a passthrough partition";
+                return false;
+            }
+            id = static_cast<uint32_t>(v);
+        } else if (numeric) {
             id = symbols_.lookup_u64(v);
             if (id == 0) id = symbols_.lookup(sym);
             if (id == 0) id = symbols_.intern_u64(v);

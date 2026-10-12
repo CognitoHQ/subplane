@@ -50,9 +50,11 @@ add_library(flashtick_core STATIC
     src/core/filter_table.cpp
     src/decoder/sbe_schema.cpp
     src/decoder/sbe_routing_decoder.cpp
+    src/decoder/dbn_decoder.cpp
     src/framing/sbe_length.cpp
     src/framing/framing.cpp
     src/transport/udp_multicast.cpp
+    src/transport/tcp_stream.cpp
     src/registry/builtin_components.cpp
     src/pipeline/session.cpp
     src/pipeline/partition.cpp

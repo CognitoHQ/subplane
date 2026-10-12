@@ -34,12 +34,6 @@ namespace {
 volatile std::sig_atomic_t g_stop = 0;
 void on_sigint(int) { g_stop = 1; }
 
-uint64_t mono_ns() {
-    timespec ts{};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
-}
-
 void usage() {
     std::fputs(
         "usage: ft_sbe_sender --port N [options]\n"
