@@ -1,0 +1,96 @@
+# flashtick agent configuration.
+#
+# Vocabulary: a *component* is compiled into the binary (transport, framing,
+# decoder). An *activation* (each entry under `partitions`) selects components
+# and parameterizes them. A *session* is an app subscription with its own
+# filter and shared-memory ring; the `sessions` section is reloadable at
+# runtime, everything else requires a restart.
+
+agent:
+  name: flashtick
+  version: 2.0.0-dev
+  max_symbols: 65536
+  thread_groups:
+    - name: g0
+      cpu: -1            # pin to this core; -1 = unpinned
+      partitions: [eq-p0]
+
+# One entry per bus partition this box subscribes to.
+partitions:
+  - name: eq-p0
+    transport:
+      type: udp_multicast
+      group: 239.1.1.1   # empty string = plain UDP unicast (CI)
+      port: 30001
+      interface: ""      # bind interface address; empty = INADDR_ANY
+      rcvbuf: 16777216
+      busy_poll_us: 50
+      mtu: 1500
+      batch: 32
+    framing:
+      # Declarative packet layout. Only the SBE schema is a hard requirement;
+      # message length defaults to the schema walk when no prefix is present.
+      packet_header:
+        - { name: seq,   type: u64le }
+        - { name: count, type: u16le }
+      message_prefix:
+        - { name: len,   type: u16le }
+      sequence: packet_header.seq      # packet_header.<f> | message.<SchemaField> | none
+      length:   message_prefix.len     # message_prefix.<f> | schema
+    decoder:
+      type: sbe_routing
+      schema: schemas/sample_md.xml
+      fields:
+        symbol:      SecurityID
+        sequence:    SeqNum
+        exchange_ts: TransactTime
+        venue:       MarketSegmentID
+      symbol_id_mode: table            # table | passthrough
+      messages:
+        - { template: 1,   msg_type: TRADE }
+        - { template: 2,   msg_type: QUOTE }
+        - { template: 3,   msg_type: BOOK_UPDATE }
+        - { template: 100, admin: HEARTBEAT }
+        - { template: 101, admin: SEQ_RESET }
+    heartbeat_timeout_ms: 2000
+    dup_window: 1024       # backward seq jumps larger than this are treated as a publisher restart
+
+# Operator-defined sessions. Apps may also create their own over the control channel.
+sessions:
+  - name: alpha
+    ring:
+      capacity_mb: 64
+      max_payload: 4096
+    partitions: [eq-p0]
+    symbols: ["*"]
+    msg_types: [TRADE, QUOTE]
+    deliver:
+      bus_admin: true
+      agent_control: true
+
+fanout:
+  ring_dir: /dev/shm
+
+control:
+  socket_path: /run/flashtick/flashtick.sock
+  fallback_socket_path: /tmp/flashtick.sock
+  linger_ms: 5000
+
+lvc:
+  max_payload: 512
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080
+
+metrics:
+  enabled: true
+  report_interval_seconds: 60
+  output_format: json
+  console_output: false
+
+logging:
+  level: info
+  console_output: true
+  output_format: text

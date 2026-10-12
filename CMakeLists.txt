@@ -1,0 +1,85 @@
+cmake_minimum_required(VERSION 3.20)
+project(flashtick VERSION 2.0.0 LANGUAGES CXX)
+
+# INV-007: C++20, GCC 11 on Ubuntu 22.04 is the target toolchain.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# -O2 over -O3 by decision (see .flashtick/decisions.md).
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
+
+option(FLASHTICK_BUILD_TESTS "Build unit and integration tests" ON)
+option(FLASHTICK_BUILD_TOOLS "Build operator tools (sender, probe, tail, replay, soak)" ON)
+option(FLASHTICK_WERROR "Treat warnings as errors" ON)
+
+find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(YAML_CPP REQUIRED IMPORTED_TARGET yaml-cpp)
+
+# Common warnings for all first-party targets.
+add_library(flashtick_warnings INTERFACE)
+target_compile_options(flashtick_warnings INTERFACE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
+if(FLASHTICK_WERROR)
+    target_compile_options(flashtick_warnings INTERFACE -Werror)
+endif()
+
+# Vendored third-party (no warnings enforced).
+add_library(pugixml STATIC third_party/pugixml/pugixml.cpp)
+target_include_directories(pugixml PUBLIC third_party/pugixml)
+set_target_properties(pugixml PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_library(doctest INTERFACE)
+target_include_directories(doctest INTERFACE third_party/doctest)
+
+# Core library: everything except main().
+add_library(flashtick_core STATIC
+    src/agent.cpp
+    src/api_server.cpp
+    src/config_manager.cpp
+    src/logging/log_registry.cpp
+    src/metrics/metrics_manager.cpp
+    src/persistence_manager.cpp
+    src/symbol_table.cpp
+    src/core/filter_table.cpp
+    src/decoder/sbe_schema.cpp
+    src/decoder/sbe_routing_decoder.cpp
+    src/framing/sbe_length.cpp
+    src/framing/framing.cpp
+    src/transport/udp_multicast.cpp
+    src/registry/builtin_components.cpp
+    src/pipeline/session.cpp
+    src/pipeline/partition.cpp
+    src/pipeline/lvc.cpp
+    src/pipeline/pipeline.cpp
+    src/pipeline/session_manager.cpp
+    src/control/control_server.cpp
+)
+target_include_directories(flashtick_core PUBLIC include)
+target_link_libraries(flashtick_core
+    PUBLIC PkgConfig::YAML_CPP Threads::Threads
+    PRIVATE flashtick_warnings pugixml
+)
+
+add_executable(flashtickd src/main.cpp)
+target_link_libraries(flashtickd PRIVATE flashtick_core flashtick_warnings)
+install(TARGETS flashtickd DESTINATION bin)
+
+if(FLASHTICK_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/examples/CMakeLists.txt)
+    add_subdirectory(examples)
+endif()
+
+if(FLASHTICK_BUILD_TOOLS AND EXISTS ${CMAKE_SOURCE_DIR}/tools/CMakeLists.txt)
+    add_subdirectory(tools)
+endif()

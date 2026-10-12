@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="sample.md" id="7" version="2" semanticVersion="1.0"
+                   byteOrder="littleEndian" headerType="messageHeader">
+  <types>
+    <composite name="messageHeader">
+      <type name="blockLength" primitiveType="uint16"/>
+      <type name="templateId" primitiveType="uint16"/>
+      <type name="schemaId" primitiveType="uint16"/>
+      <type name="version" primitiveType="uint16"/>
+    </composite>
+    <composite name="groupSizeEncoding">
+      <type name="blockLength" primitiveType="uint16"/>
+      <type name="numInGroup" primitiveType="uint16"/>
+    </composite>
+    <composite name="varStringEncoding">
+      <type name="length" primitiveType="uint16"/>
+      <type name="varData" primitiveType="uint8" length="0"/>
+    </composite>
+    <enum name="SideEnum" encodingType="uint8">
+      <validValue name="Buy">1</validValue>
+      <validValue name="Sell">2</validValue>
+    </enum>
+    <type name="Symbol8" primitiveType="char" length="8"/>
+    <type name="Qty32" primitiveType="uint32"/>
+  </types>
+
+  <sbe:message name="Trade" id="1">
+    <field name="SecurityID" id="1" type="uint64"/>
+    <field name="SeqNum" id="2" type="uint64"/>
+    <field name="TransactTime" id="3" type="uint64"/>
+    <field name="MarketSegmentID" id="4" type="uint16"/>
+    <field name="Price" id="5" type="int64"/>
+    <field name="Qty" id="6" type="Qty32"/>
+    <field name="Side" id="7" type="SideEnum"/>
+  </sbe:message>
+
+  <sbe:message name="Quote" id="2">
+    <field name="SecurityID" id="1" type="uint64"/>
+    <field name="SeqNum" id="2" type="uint64"/>
+    <field name="TransactTime" id="3" type="uint64"/>
+    <field name="MarketSegmentID" id="4" type="uint16"/>
+    <field name="BidPx" id="5" type="int64" offset="32"/>
+    <field name="BidQty" id="6" type="Qty32"/>
+    <field name="AskPx" id="7" type="int64"/>
+    <field name="AskQty" id="8" type="Qty32"/>
+  </sbe:message>
+
+  <sbe:message name="BookUpdate" id="3">
+    <field name="SecurityID" id="1" type="uint64"/>
+    <field name="SeqNum" id="2" type="uint64"/>
+    <field name="TransactTime" id="3" type="uint64"/>
+    <field name="MarketSegmentID" id="4" type="uint16"/>
+    <group name="Levels" id="10" dimensionType="groupSizeEncoding">
+      <field name="Px" id="11" type="int64"/>
+      <field name="LevelQty" id="12" type="Qty32"/>
+      <field name="LevelSide" id="13" type="SideEnum"/>
+      <group name="Orders" id="14" dimensionType="groupSizeEncoding">
+        <field name="OrderId" id="15" type="uint64"/>
+        <field name="OrderQty" id="16" type="Qty32"/>
+      </group>
+    </group>
+    <data name="Note" id="20" type="varStringEncoding"/>
+  </sbe:message>
+
+  <sbe:message name="Ticker" id="4">
+    <field name="Symbol" id="1" type="Symbol8"/>
+    <field name="SeqNum" id="2" type="uint64"/>
+    <field name="TransactTime" id="3" type="uint64"/>
+  </sbe:message>
+
+  <sbe:message name="Heartbeat" id="100">
+    <field name="SeqNum" id="1" type="uint64"/>
+  </sbe:message>
+
+  <sbe:message name="SeqReset" id="101">
+    <field name="SeqNum" id="1" type="uint64"/>
+    <field name="NewSeq" id="2" type="uint64"/>
+  </sbe:message>
+</sbe:messageSchema>

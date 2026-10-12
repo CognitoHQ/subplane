@@ -1,0 +1,16 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build-2204-gcc11:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq && apt-get install -y -qq g++ cmake pkg-config libyaml-cpp-dev
+      - name: build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
+      - name: test
+        run: cd build && ctest --output-on-failure
