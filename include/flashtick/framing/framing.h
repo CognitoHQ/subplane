@@ -21,6 +21,7 @@
 //     count:    packet_header.count     # optional; bounds the message loop
 //     length:   message_prefix.len      # | schema (default)
 //     length_includes_prefix: false     # true if the length field counts its own prefix
+//     keep_prefix: false                # true: the delivered message starts at the prefix (whole unit)
 //
 // Any field may carry an explicit `offset:`; otherwise offsets accumulate.
 
@@ -60,6 +61,10 @@ struct FramingConfig {
     LenSource   len_source = LenSource::SCHEMA;
     std::string len_field;      // message_prefix field name
     bool        length_includes_prefix = false;
+    // INTENT: a FlatBuffer built size-prefixed is aligned from the prefix, and
+    // only the whole buffer is decodable, so the prefix must stay with the
+    // delivered bytes. Default false keeps SBE/CME behaviour (prefix stripped).
+    bool        keep_prefix = false;
 
     // Parses the `framing:` block. An absent/null node yields the default
     // (no packet header, no prefix, length from schema, no sequence).

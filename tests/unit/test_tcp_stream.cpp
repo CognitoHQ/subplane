@@ -213,3 +213,32 @@ TEST_CASE("tcp_stream: zstd magic is fatal, bad record length reconnects") {
         CHECK(t.framing_errors() == 1);
     }
 }
+
+TEST_CASE("tcp_stream: record_length.add covers a size prefix that excludes itself") {
+    std::string err;
+    TcpStreamConfig pc;
+    REQUIRE(TcpStreamConfig::parse(YAML::Load("{host: 127.0.0.1, port: 9550, record_length: {offset: 0, size: 4, scale: 1, add: 4}}"), pc, err));
+    CHECK(pc.len_add == 4);
+    CHECK_FALSE(TcpStreamConfig::parse(YAML::Load("{port: 1, record_length: {size: 4, add: 300}}"), pc, err));
+
+    Listener ls;
+    TcpStreamConfig c = dbn_cfg(ls.port);
+    c.prelude = StreamPrelude::NONE;
+    c.len_size = 4; c.len_scale = 1; c.len_add = 4;
+    TcpStreamTransport t(c);
+    REQUIRE_MESSAGE(t.open(err), err);
+    std::vector<uint8_t> stream;
+    auto rec = [&](uint32_t body, uint8_t fill) { for (int i = 0; i < 4; ++i) stream.push_back(static_cast<uint8_t>(body >> (8 * i))); stream.insert(stream.end(), body, fill); };
+    rec(12, 0xA1); rec(40, 0xB2); rec(7, 0xC3);
+    std::thread server([&] { int cfd = ls.accept(); REQUIRE(cfd >= 0); send_chunk(cfd, stream, 0, 9); std::this_thread::sleep_for(std::chrono::milliseconds(15)); send_chunk(cfd, stream, 9, stream.size()); std::this_thread::sleep_for(std::chrono::milliseconds(50)); ::close(cfd); });
+    std::vector<std::vector<uint8_t>> got;
+    REQUIRE(collect(t, got, 3) >= 0);
+    server.join();
+    REQUIRE(got.size() == 3);
+    CHECK(got[0].size() == 16);
+    CHECK(got[1].size() == 44);
+    CHECK(got[2].size() == 11);
+    CHECK(got[1][0] == 40);
+    CHECK(got[1][43] == 0xB2);
+    CHECK(t.framing_errors() == 0);
+}

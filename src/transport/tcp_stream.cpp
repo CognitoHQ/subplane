@@ -27,6 +27,8 @@ bool TcpStreamConfig::parse(const YAML::Node& node, TcpStreamConfig& out, std::s
             out.len_size = static_cast<uint8_t>(sz);
             out.len_scale = rl["scale"].as<uint32_t>(1u);
             if (out.len_scale == 0) { err = "transport.record_length.scale must be >= 1"; return false; }
+            out.len_add = rl["add"].as<int32_t>(0);
+            if (out.len_add < -255 || out.len_add > 255) { err = "transport.record_length.add must be within -255..255"; return false; }
         }
         const std::string pre = node["prelude"].as<std::string>("none");
         if (pre == "none") out.prelude = StreamPrelude::NONE;
@@ -131,6 +133,8 @@ uint32_t TcpStreamTransport::record_len_at(const uint8_t* p) const noexcept {
         default: { uint32_t x; std::memcpy(&x, q, 4); v = x; break; }
     }
     v *= cfg_.len_scale;
+    if (cfg_.len_add < 0 && v < static_cast<uint64_t>(-cfg_.len_add)) return 0; // reported as a framing error by the caller
+    v = static_cast<uint64_t>(static_cast<int64_t>(v) + cfg_.len_add);
     return v > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(v);
 }
 

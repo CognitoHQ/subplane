@@ -73,6 +73,27 @@ partitions:
   #     # messages: omitted = defaults (MBO->BOOK_UPDATE, trade->TRADE, MBP-1->QUOTE, ..., SYSTEM->HEARTBEAT)
   #   heartbeat_timeout_ms: 5000
 
+  # A FlatBuffers bus: routing fields named by field id, no schema file, no library.
+  # Try it: build/tools/ft_replay --pcap tests/fixtures/flatbuffers/fb_sample.pcap --port 30002
+  # - name: fb-p0
+  #   transport: { type: udp, group: "", port: 30002 }
+  #   framing:                         # several size-prefixed buffers per datagram; omit for one per datagram
+  #     message_prefix: [ { name: size, type: u32le } ]
+  #     length: message_prefix.size
+  #     keep_prefix: true              # the ring payload is the whole buffer, prefix included
+  #   decoder:
+  #     type: flatbuffers
+  #     size_prefixed: true
+  #     symbol_id_mode: passthrough
+  #     dispatch: { type_field: { path: [2], type: u8 } }   # Envelope.body_type (union type)
+  #     messages:
+  #       - { type: 1, msg_type: TRADE, symbol: { path: [3, 0, 0], type: u32 }, venue: { path: [3, 0, 1], type: u16 },
+  #           exchange_ts: { path: [1], type: u64 }, sequence: { path: [0], type: u64 } }
+  #       - { type: 2, msg_type: QUOTE, symbol: { path: [3, 0, 0], type: u32 }, venue: { path: [3, 0, 1], type: u16 },
+  #           exchange_ts: { path: [1], type: u64 }, sequence: { path: [0], type: u64 } }
+  #       - { type: 3, admin: HEARTBEAT, sequence: { path: [0], type: u64 } }
+  #   heartbeat_timeout_ms: 5000
+
 # Operator-defined sessions. Apps may also create their own over the control channel.
 sessions:
   - name: alpha

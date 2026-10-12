@@ -258,3 +258,27 @@ TEST_CASE("Framer: init requires a walker when length comes from the schema") {
     Framer fr;
     CHECK_FALSE(fr.init(c, nullptr, err));
 }
+
+TEST_CASE("Framer: keep_prefix delivers each message with its prefix (size-prefixed FlatBuffers style)") {
+    FramingConfig c;
+    std::string err;
+    REQUIRE(FramingConfig::parse(YAML::Load("{message_prefix: [{name: size, type: u32le}], length: message_prefix.size, keep_prefix: true}"), c, err));
+    CHECK(c.keep_prefix);
+    Framer fr;
+    REQUIRE(fr.init(c, nullptr, err));
+    std::vector<uint8_t> pkt = {4, 0, 0, 0, 'A', 'A', 'A', 'A', 2, 0, 0, 0, 'B', 'B'};
+    FrameInfo info;
+    MessageIter it;
+    REQUIRE(fr.parse(view(pkt), info, it));
+    const uint8_t* msg = nullptr;
+    uint32_t len = 0;
+    REQUIRE(fr.next(it, msg, len) == NextStatus::OK);
+    CHECK(msg == pkt.data());
+    CHECK(len == 8);
+    REQUIRE(fr.next(it, msg, len) == NextStatus::OK);
+    CHECK(msg == pkt.data() + 8);
+    CHECK(len == 6);
+    CHECK(fr.next(it, msg, len) == NextStatus::END);
+    CHECK_FALSE(FramingConfig::parse(YAML::Load("{length: packet, keep_prefix: true}"), c, err));
+    CHECK(err.find("keep_prefix") != std::string::npos);
+}

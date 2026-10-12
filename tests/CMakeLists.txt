@@ -25,3 +25,5 @@ flashtick_unit_test(test_session_manager unit/test_session_manager.cpp)
 flashtick_unit_test(test_control unit/test_control.cpp)
 # DBN decoder, TCP stream transport, DBN through the pipeline
 flashtick_unit_test(test_dbn unit/test_dbn_decoder.cpp unit/test_tcp_stream.cpp unit/test_dbn_pipeline.cpp)
+# FlatBuffers wire reader, routing decoder, pipeline (fixture: real flatc output in tests/fixtures/flatbuffers)
+flashtick_unit_test(test_flatbuffers unit/test_flatbuffers_wire.cpp unit/test_flatbuffers_decoder.cpp unit/test_flatbuffers_pipeline.cpp)

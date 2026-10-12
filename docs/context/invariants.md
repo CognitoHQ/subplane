@@ -119,7 +119,7 @@ Each agent start sets a new `epoch` (start time in ns), writes it into every new
 
 ## INV-014: The only hard requirement on a publisher is its schema
 
-flashtick must not require publishers to add headers, framing bytes or a particular sequence field. For SBE, message length comes from walking the schema, so not even a length prefix is required; for encodings that are not self-delimiting (planned: fixed-offset layouts, FlatBuffers, protobuf) the requirement is the schema plus a length prefix, a count, or one message per datagram. Packet layout is described in YAML and checked with `ft_probe`. If a bus cannot be described by the framing block, extend the framing block, not the publisher.
+flashtick must not require publishers to add headers, framing bytes or a particular sequence field. For SBE, message length comes from walking the schema, so not even a length prefix is required. For DBN the record carries its length. For FlatBuffers the requirement is the field ids of the routing fields (from the `.fbs`, no schema file loaded) plus a length: the size prefix, a framer prefix, or one buffer per datagram. For encodings that are not self-delimiting (planned: protobuf, fixed-offset layouts) the requirement is the schema plus a length prefix, a count, or one message per datagram. The payload delivered to apps is the publisher's complete framing unit, bit-identical, never a slice of one (a FlatBuffers sub-table or an SBE group entry is not a message). Packet layout is described in YAML and checked with `ft_probe`. If a bus cannot be described by the framing block, extend the framing block, not the publisher.
 
 **Rationale**: publisher-side requirements were identified as the main adoption risk. SBE already fully describes message length.
 

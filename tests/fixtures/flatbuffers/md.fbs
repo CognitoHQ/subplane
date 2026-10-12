@@ -1,0 +1,20 @@
+// A plausible internal bus schema: one root envelope, message type via union,
+// routing symbol two tables deep, string symbol, explicit ids on the envelope.
+namespace md;
+
+table Instrument { id:uint; venue:ushort; symbol:string; }
+table Trade { instrument:Instrument; price:long; qty:uint; aggressor:byte; }
+table Quote { instrument:Instrument; bid:long; ask:long; bid_qty:uint; ask_qty:uint; }
+table Heartbeat { note:string; }
+
+union Body { Trade, Quote, Heartbeat }
+
+table Envelope {
+  seq:ulong (id: 0);
+  ts:ulong (id: 1);
+  body:Body (id: 3);     // union takes ids 2 (body_type) and 3 (body)
+  flags:ushort (id: 4);  // "added in v2": old producers never set it
+}
+
+root_type Envelope;
+file_identifier "MDv1";

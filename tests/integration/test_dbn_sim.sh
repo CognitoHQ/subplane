@@ -8,12 +8,16 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/s
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 
 # Minimal HTTP GET over bash's /dev/tcp; prints the body.
-http_get() { # port path
-    exec 3<>"/dev/tcp/127.0.0.1/$1" || return 1
-    printf 'GET %s HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n' "$2" >&3
+# Runs in a subshell so a failed connect (nothing listening yet) only fails the
+# call: a failed `exec` redirection would exit a non-interactive bash. SIGPIPE is
+# ignored so a peer that closes early yields a write error, not a dead script.
+http_get() ( # port path
+    trap '' PIPE
+    exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return 1
+    printf 'GET %s HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n' "$2" >&3 || return 1
     tr -d '\r' <&3 | sed '1,/^$/d'
     exec 3<&-
-}
+)
 json_num() { # key json -> first integer value of "key": N
     sed -n "s/.*\"$1\":[[:space:]]*\([0-9][0-9]*\).*/\1/p" <<<"$2" | head -1
 }

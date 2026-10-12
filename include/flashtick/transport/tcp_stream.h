@@ -39,6 +39,7 @@ struct TcpStreamConfig {
     uint32_t      len_offset = 0;
     uint8_t       len_size = 1;       // 1, 2 or 4 bytes, little-endian
     uint32_t      len_scale = 1;
+    int32_t       len_add = 0;        // added after scaling: e.g. 4 for a size prefix that excludes itself
     StreamPrelude prelude = StreamPrelude::NONE;
     uint32_t      rcvbuf = 4u << 20;
     int           batch = PacketBatch::kMax;

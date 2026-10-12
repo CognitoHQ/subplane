@@ -65,7 +65,7 @@ transport:
   type: tcp_stream
   host: 127.0.0.1
   port: 9550
-  record_length: { offset: 0, size: 1, scale: 4 }   # total bytes = little-endian field * scale (size 1, 2 or 4)
+  record_length: { offset: 0, size: 1, scale: 4, add: 0 }   # total bytes = little-endian field * scale + add (size 1, 2 or 4; add: 4 for a size prefix that excludes itself)
   prelude: dbn            # none | dbn: "DBN" u8 version u32 len, then len bytes, skipped once per connection
   rcvbuf: 4194304         # reassembly arena bytes (also SO_RCVBUF); at least 2 * max_record
   batch: 64               # records per poll
@@ -93,14 +93,16 @@ framing:
   count:    packet_header.count   # optional; bounds the message loop
   length:   message_prefix.len    # message_prefix.<f> | schema (default)
   length_includes_prefix: false
+  keep_prefix: false              # true: deliver each message with its prefix (whole unit, e.g. size-prefixed FlatBuffers)
 ```
 
 - Field types: `u8`, `u16le`, `u16be`, `u32le`, `u32be`, `u64le`, `u64be`, `bytes` (needs `size`). An optional `offset:` overrides the running offset.
 - **Length.** With a prefix, length comes from it. Without one (`length: schema`, the default), the length is computed by walking the schema: root `blockLength` from the SBE header, then each group (dimension composite gives `blockLength` and `numInGroup`, recursive up to depth 4) and each varData (length prefix). The walk is compiled per template at schema load into a small op array, so `[sbe][sbe][sbe]` back-to-back packets parse with no framing at all. The walk honours SBE's extension rule: a group or varData whose `sinceVersion` is newer than the `version` in the message header is not on the wire and is skipped. The walker and this framing block are validated against real CME MDP 3.0 packets (wire versions 6 and 9, schemas v9 and v13) by `tests/integration/test_cme_probe.sh` after `scripts/fetch-cme-sample.sh`; the MDP 3.0 block is `packet_header: [seq u32le, sending_time u64le]`, `message_prefix: [len u16le]`, `length_includes_prefix: true`.
 - **Unknown template.** If the length is known (from a prefix, or the template is in the schema so the walk works) but the template has no mapping in `decoder.messages`, the message is skipped and `unknown_templates` is counted, with the last id kept in `last_unknown_template`. If there is no prefix and the template is absent from the schema, the length cannot be computed: the rest of the packet is dropped and `undecodable_tail` is counted. It is never guessed. A schema id mismatch in the SBE header is counted separately as `schema_mismatch`. Truncated or inconsistent messages count as `truncated`, `malformed` or `decode_errors`. Nothing is silent. The operator fix for a new template is the publisher's newer XML plus a restart.
-- **Length `packet`.** `length: packet` makes the whole packet (after any packet header) one message; the decoder validates the length it finds inside. This is the default for the `dbn` decoder, whose records are self-delimiting and arrive one per packet from `tcp_stream`. It cannot be combined with `message_prefix`.
+- **Length `packet`.** `length: packet` makes the whole packet (after any packet header) one message; the decoder validates the length it finds inside. This is the default for the `dbn` and `flatbuffers` decoders, whose units carry their own length and arrive one per packet (or one per `tcp_stream` record). It cannot be combined with `message_prefix`.
+- **Keep the prefix.** By default a `message_prefix` is stripped and the message handed to the decoder (and to the ring) starts after it, which is what SBE buses want. `keep_prefix: true` delivers each message from the start of its prefix with the prefix counted in its length. A size-prefixed FlatBuffer is aligned from its prefix and is only decodable whole, so a datagram of `[u32 size][flatbuffer]...` is framed with `message_prefix: [{name: size, type: u32le}]`, `length: message_prefix.size`, `keep_prefix: true` and each ring payload is the complete buffer the publisher finished.
 - **Sequence sources.** `packet_header.<field>` (one sequence per packet, checked before the messages), `message.<SchemaField>` (each message carries it, mapped through `decoder.fields.sequence`), bare `message` (the decoder fills `TickHeader::sequence` from a format-defined field, as `dbn` does), or `none`. With `none`, gap detection is off for that partition and liveness is by heartbeat timeout only. (Planned: the same three sources for every routing field and for the extension tuple; see the vision roadmap, item 1.)
-- **Encoding is per-partition configuration.** Transports are encoding-blind; the decoder component chosen by `decoder.type` sets `wire_format` on every record. Two decoders exist: `sbe_routing` and `dbn`. `length: schema` is valid only for a decoder that can compute message length (SBE); other encodings use `length: packet` or a length prefix, and the agent rejects an invalid framing/decoder pair at startup (`"framing.length is schema but this decoder cannot compute message length"`). The decoder is held by value in the partition and selected with a branch per message, not a virtual call. Planned: FlatBuffers, protobuf, generic fixed-offset layouts.
+- **Encoding is per-partition configuration.** Transports are encoding-blind; the decoder component chosen by `decoder.type` sets `wire_format` on every record. Three decoders exist: `sbe_routing`, `dbn` and `flatbuffers`. `length: schema` is valid only for a decoder that can compute message length (SBE); other encodings use `length: packet` or a length prefix, and the agent rejects an invalid framing/decoder pair at startup (`"framing.length is schema but this decoder cannot compute message length"`). The decoder is held by value in the partition and selected with a switch per message, not a virtual call. The payload delivered to a ring is always the publisher's complete framing unit, never a slice of one. Planned: protobuf, generic fixed-offset layouts.
 - **`ft_probe`** joins a group (or binds a unicast port), captures N packets and runs the production framer and schema walker over them. It checks that template ids are in the schema, that lengths tile each packet exactly, and that the sequence is monotone, and prints a verdict and the message mix. Exit 0 pass, 1 fail, 2 no packets or usage error.
 
 ## DBN decoder
@@ -110,6 +112,30 @@ framing:
 Two facts learned from a real file (CLX5 MBO, 38,212 records): DBN's `sequence` is the venue's packet sequence, shared by every record from the same exchange packet, so `sequence: message` drops siblings as duplicates; leave the default `sequence: none` for DBN. And `symbol_id_mode: passthrough` needs `agent.max_symbols` above the largest instrument id (CME ids are in the hundreds of thousands), which makes the dense last-value cache and filter bitsets large (about 3.9 GB RSS at `max_symbols: 1048576`); a sparse LVC for passthrough ids is on the backlog.
 
 On a passthrough partition, session `symbols:` entries are raw instrument ids used as-is; a session may not mix passthrough and table partitions.
+
+## FlatBuffers decoder
+
+`decoder/flatbuffers_decoder.h`, `decoder/flatbuffers_wire.h`. Routing fields are read straight off the FlatBuffers wire format by field id: root offset, signed offset to the vtable, u16 slot per id, uoffsets to nested tables and strings, every load bounds-checked against the buffer. No FlatBuffers library, no generated code and no schema file are needed in the agent: YAML names the ids, which come from the `.fbs` (declaration order, or explicit `(id: n)`). A field whose slot lies beyond the producer's vtable (added in a newer schema) reads as absent, value 0.
+
+```yaml
+decoder:
+  type: flatbuffers
+  size_prefixed: true                  # default: buffer starts with u32 size (flatc FinishSizePrefixed)
+  symbol_id_mode: passthrough          # passthrough (integer symbol) | table (integer or string symbol)
+  dispatch: { type_field: { path: [2], type: u8 } }   # or `dispatch: identifier` (4-byte file identifier)
+  messages:
+    - { type: 1, msg_type: TRADE,                     # `identifier: "TRDE"` with identifier dispatch
+        symbol: { path: [3, 0, 0], type: u32 },       # field ids root-first; all but the last are table fields
+        venue:  { path: [3, 0, 1], type: u16 },
+        exchange_ts: { path: [1], type: u64 },
+        sequence:    { path: [0], type: u64 } }
+    - { type: 3, admin: HEARTBEAT }
+```
+
+- **Message type.** FlatBuffers has no message header. `dispatch: type_field` reads a scalar in the root table, typically a union's `_type` field (the union value is the next id), and matches `type:`; `template_id` is that value. `dispatch: identifier` matches the 4-byte file identifier after the root offset; `template_id` is the entry's 1-based position in `messages`. An unmatched message counts as `unknown_templates` with the value seen in `last_unknown_template`.
+- **Delivered unit.** The whole buffer, size prefix included when `size_prefixed` (default). A sub-table is not decodable alone (offsets, vtables and shared strings point outside it) and the producer aligned the buffer from its prefix, so apps call `GetSizePrefixedRoot` on the payload. One buffer per packet is the default framing (`length: packet`); several per datagram need `message_prefix` with `keep_prefix` (see Framing); over `tcp_stream` use `record_length: {offset: 0, size: 4, scale: 1, add: 4}`.
+- **Checks.** A size prefix that does not account for exactly the rest of the unit is `decode_errors` (misaligned stream or wrong framing); a root offset outside the buffer likewise; a unit shorter than a root offset plus a table is `truncated`. `wire_format = FLATBUFFERS (32)`, `schema_id = 0`.
+- **Fixture.** `tests/fixtures/flatbuffers/` holds real `flatc` output (a bus-like schema with a union body, the instrument two tables deep, an old-producer variant with a short vtable) as a `.bin`, a pcap and the expected routing fields; `ctest -R flatbuffers` runs the unit tests and the UDP replay through the agent. Measured on that fixture: about 57 ns per message for dispatch plus four routing fields, bounds-checked, on the dev host.
 
 ## SBE routing decoder
 
@@ -354,9 +380,9 @@ Startup is fail-fast: an unknown component type, a bad schema, a bad framing blo
 include/flashtick/
   core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h
   registry/    component_registry.h
-  transport/   transport.h udp_multicast.h
+  transport/   transport.h udp_multicast.h tcp_stream.h
   framing/     framing.h sbe_length.h
-  decoder/     sbe_schema.h sbe_routing_decoder.h
+  decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h
   pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h
   shm/         ring_layout.h control_events.h        (shared with apps)
   fanout/      ring_writer.h
@@ -369,7 +395,7 @@ src/transport/parked/   Kafka producer code kept for reference, not built
 tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
 examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime)
 schemas/        sample_md.xml (referenced by config.yaml)
-tests/          unit/ integration/ data/
+tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
 scripts/        ci-build-2204.sh
 ```

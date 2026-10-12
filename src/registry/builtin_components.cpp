@@ -11,7 +11,7 @@ constexpr ComponentEntry<Transport> kTransports[] = {
     {"udp",           &UdpMulticastTransport::create}, // alias: unicast when group is empty
     {"tcp_stream",    &TcpStreamTransport::create},
 };
-constexpr const char* kDecoderTypes[] = {"sbe_routing", "dbn"};
+constexpr const char* kDecoderTypes[] = {"sbe_routing", "dbn", "flatbuffers"};
 } // namespace
 
 std::span<const ComponentEntry<Transport>> transport_components() {

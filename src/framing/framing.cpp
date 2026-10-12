@@ -147,6 +147,8 @@ bool FramingConfig::parse(const YAML::Node& node, FramingConfig& out, std::strin
             out.len_field = name;
         }
         out.length_includes_prefix = node["length_includes_prefix"].as<bool>(false);
+        out.keep_prefix = node["keep_prefix"].as<bool>(false);
+        if (out.keep_prefix && out.message_prefix.empty()) { err = "framing.keep_prefix needs a message_prefix"; return false; }
     } catch (const YAML::Exception& e) {
         err = std::string("framing: ") + e.what();
         return false;
@@ -255,6 +257,10 @@ NextStatus Framer::next(MessageIter& it, const uint8_t*& msg, uint32_t& len) con
     }
     it.cur = msg + len;
     ++it.index;
+    if (cfg_.keep_prefix) {
+        msg -= cfg_.message_prefix_size;
+        len += cfg_.message_prefix_size;
+    }
     return NextStatus::OK;
 }
 

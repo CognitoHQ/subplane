@@ -8,6 +8,7 @@ const char* decoder_type_name(DecoderType t) {
     switch (t) {
         case DecoderType::SBE_ROUTING: return "sbe_routing";
         case DecoderType::DBN:         return "dbn";
+        case DecoderType::FLATBUFFERS: return "flatbuffers";
     }
     return "unknown";
 }
@@ -105,6 +106,13 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
             err = "partition " + cfg_.name + ": decoder: " + err;
             return false;
         }
+    } else if (dtype == "flatbuffers") {
+        decoder_type_ = DecoderType::FLATBUFFERS;
+        FlatbuffersDecoderConfig dcfg;
+        if (!parse_flatbuffers_decoder_config(cfg_.decoder_node, dcfg, err) || !fb_decoder_.init(dcfg, err)) {
+            err = "partition " + cfg_.name + ": decoder: " + err;
+            return false;
+        }
     } else {
         err = "partition " + cfg_.name + ": unknown decoder type '" + dtype + "'; available:";
         for (const char* t : decoder_types()) { err += ' '; err += t; }
@@ -115,8 +123,10 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
     YAML::Node framing_node = cfg_.framing_node;
     // INTENT: a default-constructed YAML::Node is a defined Null node, so test
     // both; an absent `framing:` block looks like either depending on the path.
-    if ((!framing_node.IsDefined() || framing_node.IsNull()) && decoder_type_ == DecoderType::DBN) {
-        // DBN records are self-delimiting and the transport delivers one per packet.
+    if ((!framing_node.IsDefined() || framing_node.IsNull()) &&
+        (decoder_type_ == DecoderType::DBN || decoder_type_ == DecoderType::FLATBUFFERS)) {
+        // DBN records and FlatBuffers carry their own length and arrive one per
+        // packet (or per tcp_stream record) unless the framing says otherwise.
         framing_node = YAML::Load("{length: packet}");
     }
     if (!FramingConfig::parse(framing_node, fcfg, err)) {

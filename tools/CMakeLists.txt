@@ -54,4 +54,9 @@ if(BUILD_TESTING OR FLASHTICK_BUILD_TESTS)
     add_test(NAME dbn_sim
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_dbn_sim.sh
                 $<TARGET_FILE:ft_dbn_sim> $<TARGET_FILE:flashtickd> $<TARGET_FILE:ft_tail>)
+    # FlatBuffers over UDP: pcap of real flatc buffers (1..4 per datagram) -> agent -> ring.
+    add_test(NAME flatbuffers_replay
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh
+                $<TARGET_FILE:ft_replay> $<TARGET_FILE:flashtickd> $<TARGET_FILE:ft_tail>
+                ${CMAKE_SOURCE_DIR}/tests/fixtures/flatbuffers)
 endif()

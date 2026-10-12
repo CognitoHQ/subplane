@@ -104,7 +104,7 @@ build/examples/rule_runner --socket /tmp/flashtick.sock --from-start --seconds 1
 
 ### Limits that apply to the elastic and function cases
 
-- **Ring per session.** Memory grows linearly with instances; fifty identical workers means fifty rings. A shared ring for sessions with identical filters is the fix and is on the roadmap because these two cases depend on it.
+- **Ring per session.** Memory grows linearly with instances; fifty identical workers means fifty rings. The fix is a per-partition payload arena with header-only session rings (roadmap item 2), which also keeps fan-out cost per session at one cache line when a bus sends large units such as batched FlatBuffers or book snapshots; it is on the roadmap because these two cases depend on it.
 - **One pipeline core per thread group.** Per-session cost is small, but many sessions on a hot partition still serialize on one core. Thread groups are static at startup, so capacity is provisioned ahead of a burst.
 - **Hard caps.** 256 sessions per partition; fine for apps, tight for a fleet of tiny workers.
 - **Snapshot is last value, not history.** Anything beyond the ring's capacity needs the firm's archive.
@@ -172,6 +172,8 @@ If the bus carries no sequence number, gap detection is off for that partition a
 
 **Second encoding, second transport (2026-10-12).** A real Databento DBN file (CLX5 market-by-order, GLBX.MDP3, 38,212 records of 56 bytes) was served over TCP by `ft_dbn_sim` into a partition configured `transport: tcp_stream`, `decoder: dbn`, `framing: {length: packet}`: every record decoded, none unknown, all 38,212 reached a session filtered to that instrument, recv-to-publish p50 127 ns, p99 383 ns, p99.9 639 ns per record on loopback, unpinned. The same ring contract served both the SBE and the DBN partitions, which is the "encoding is per-partition configuration" rule proved with two formats. Found on the way: DBN's `sequence` is the venue's packet sequence shared by sibling records (so it must not be used for duplicate detection), passthrough instrument ids need `max_symbols` above the largest id and make the dense last-value cache large, and static sessions were attached after the first packets of a fast stream (fixed: commands are applied before polling). `ctest -R dbn_sim` reproduces the synthetic version.
 
+**Third encoding, no library (2026-10-12).** FlatBuffers, routed with a hand-written reader against the published wire format (root offset, vtable, field ids) and no FlatBuffers code in the agent. A fixture of 300 messages built by `flatc` from a bus-like schema (union body, instrument two tables deep, a field old producers never set, file identifier) is routed identically to the generated accessors in the unit tests and replayed over UDP, 1 to 4 buffers per datagram, through the agent to a filtered ring with every payload bit-identical, prefix included (`ctest -R flatbuffers`). Cost on the dev host: about 57 ns per message for dispatch plus four routing fields, bounds-checked. This is step 1 of the encoding-agnostic sequence in the roadmap: apps on a FlatBuffers bus get raw delivery today with their own codecs.
+
 ## Non-goals
 
 - Not an exchange feed handler. No ITCH, FIX or other exchange protocol decoding.
@@ -192,10 +194,10 @@ If the bus carries no sequence number, gap detection is off for that partition a
 
 ## Roadmap
 
-All items are planned, none is implemented. The order is the intended build order; each item is justified by a use case above or a finding in the decision log.
+Items are planned unless marked done. The order is the intended build order; each item is justified by a use case above or a finding in the decision log.
 
 1. **Routing from parent blocks, per-entry symbol routing, and the extension tuple.** One record-version bump covering three related changes. (a) Any routing field (`symbol`, `sequence`, `exchange_ts`, `venue`) may be sourced from `packet_header.<f>`, `message_prefix.<f>` or `message.<Field>`, so discriminators that live in a parent block (CME's sending time and channel) reach the header tuple without the app seeing the parent bytes. (b) A per-partition **extension tuple**: a YAML-declared list of named fixed-width fields sourced the same way, written between the 64-byte header and the payload (`ext_len` in the header's reserved bytes), with the layout published via `HELLO` and `/partitions`; readers that do not care skip it by length, the payload stays bit-identical. (c) **Per-entry symbol routing** for instrument ids inside a repeating group (CME MDP 3.0 incremental refresh): decode the group's symbol field per entry, route the message to every session matching any entry, and write the matched ids into the extension tuple so an app knows which of its instruments the message touched without walking the group.
-2. **Shared ring for sessions with identical filters**, so elastic and function workloads scale in sessions without scaling in memory or per-message cost.
+2. **Payload arena with header-only session rings** (planned): each framing unit written once to a generation-stamped shared-memory arena per partition, session rings carrying the 64-byte header with a reference to it, so fan-out per session costs one cache line whatever the unit size and elastic workloads scale in sessions without scaling in memory. Inline payloads stay the default for tick-sized units. Never ref-counted: an overwritten slot is an overrun, and no reader can stall the writer.
 3. **Generic schema-driven SBE decoder** on the app side: root fields to columns, groups to nested rows, driven by the same XML the agent loads, no generated code. Serves the kdb+ feed, the Python client and the recorder index alike.
 4. **Recorder and replay** (`ft_record`): a bundled consumer that writes ring records to indexed, rotating segment files under a dedicated wildcard session, with the last-value snapshot at the head of each segment and an explicit gap marker on any overrun; `ft_replay` learns to replay segments through the agent so every app runs unmodified against history.
 5. **`shm_ingest` transport**: a local app publishes one-way into a ring the agent reads as a partition (see "What was rejected"). Gives a Databento-fed or bus-less shop a complete on-box data plane and lets derived data reach every app over the standard contract.
@@ -208,3 +210,12 @@ All items are planned, none is implemented. The order is the intended build orde
 12. **Derived feeds** (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings; with `shm_ingest` in place these become the agent's own ingest partitions.
 13. Last-value cache exported into shared memory for direct app reads.
 14. Real bus capture on a production NIC with busy-poll, to replace the loopback numbers; kernel-bypass evaluation after that.
+
+**Encoding-agnostic apps**, a sequence tracked alongside the numbered items; every step ships as a mode that stays:
+
+1. Raw `flatbuffers` decoder: done (2026-10-12). Field ids in YAML, whole buffer delivered bit-identical, no library.
+2. Typed views for flat SBE schemas (planned): a C++ struct, a NumPy dtype and a q column map emitted from any group-less XML.
+3. A canonical flat SBE schema (planned): trade, quote, status and a ten-level book as fixed blocks, shipped with the agent with its views; no transcode yet.
+4. Transcode to the canonical schema (planned): a per-partition mapping in the decoder YAML from source fields to canonical fields, with scale and unit conversion, validated at startup; apps written against the canonical struct run on any bus. Raw delivery stays the default.
+5. App-attached target schema (planned): a session names its own flat SBE XML, the daemon resolves the mapping by field name with aliases, one transcode per distinct schema.
+6. `ft_schema` (planned): projects tick-shaped protobuf or FlatBuffers messages to flat SBE XML and an identity mapping; a convenience over 4 and 5. A raw protobuf decoder follows the shape of step 1 when a user needs one.
