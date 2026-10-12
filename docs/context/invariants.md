@@ -117,9 +117,9 @@ Each agent start sets a new `epoch` (start time in ns), writes it into every new
 
 ---
 
-## INV-014: The only hard requirement on a publisher is its SBE schema
+## INV-014: The only hard requirement on a publisher is its schema
 
-flashtick must not require publishers to add length prefixes, headers, framing bytes or a particular sequence field. Message length comes from walking the schema; packet layout is described in YAML and checked with `ft_probe`. If a bus cannot be described by the framing block, extend the framing block, not the publisher.
+flashtick must not require publishers to add headers, framing bytes or a particular sequence field. For SBE, message length comes from walking the schema, so not even a length prefix is required; for encodings that are not self-delimiting (planned: fixed-offset layouts, FlatBuffers, protobuf) the requirement is the schema plus a length prefix, a count, or one message per datagram. Packet layout is described in YAML and checked with `ft_probe`. If a bus cannot be described by the framing block, extend the framing block, not the publisher.
 
 **Rationale**: publisher-side requirements were identified as the main adoption risk. SBE already fully describes message length.
 
@@ -140,6 +140,7 @@ The ring layout, the 64-byte record header, the control event payloads and the c
 - Every layout is fixed-width, little-endian, with explicit padding and a `static_assert` on size and offset, so it can be implemented in any language from the headers alone.
 - Changes are additive within a version (reserved bytes consumed, new control codes, new ops); any incompatible change bumps `RING_LAYOUT_VERSION`, `RECORD_VERSION` or the control protocol version, and readers refuse mismatches (INV-009).
 - `core/message.h`, `shm/ring_layout.h`, `shm/control_events.h` and `control/control_proto.h` depend only on each other, the C++ standard library and libc. No agent-internal header is included from them.
+- A record is a fixed header tuple followed by the payload bytes. Everything an app needs to route or interpret a payload that lives outside the payload (packet header fields, prefixes, group-resident ids) is lifted into the header tuple or the declared extension tuple (planned); an app is never handed a parent block.
 - A second-language reader (planned: Python) is the acceptance test that the contract is real.
 
 **Rationale**: the agent standardizes how an application box subscribes to a bus. A standard that lives only inside one SDK is a library, not a standard.

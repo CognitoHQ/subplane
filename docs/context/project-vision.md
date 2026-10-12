@@ -173,7 +173,7 @@ If the bus carries no sequence number, gap detection is off for that partition a
 ## Non-goals
 
 - Not an exchange feed handler. No ITCH, FIX or other exchange protocol decoding.
-- Not a broker. No app-to-agent publishing, no app-contributed feeds.
+- Not a broker. No request-reply, no routing back to a producer, no cross-box delivery. (A local app publishing one-way into an ingest ring is planned; see roadmap.)
 - Not a full SBE decoder. Routing fields only; apps own full decode.
 - No dynamic loading of foreign code (no `.so` plugins, no WASM, no embedded scripting).
 - No cross-host fan-out. Fan-out is local to the box.
@@ -185,20 +185,24 @@ If the bus carries no sequence number, gap detection is off for that partition a
 - **Rust rewrite.** No stable ABI, same C-ABI endpoint, ecosystem and familiarity favour C++20. Switching cost is lowest now, and the decision is noted as revisitable.
 - **ITCH as the first target.** ITCH is order-by-order, so nothing app-useful comes out without a book builder. The thesis is bulk tick feeds that already carry trades, quotes and book deltas.
 - **Aeron IPC in v1.** It would add a media driver dependency and make the Aeron client API part of the app contract. The v1 contract is a small header-only reader under our control. Worth revisiting when ingest is Aeron too.
-- **An app publishing API.** An app-to-agent-to-apps path makes flashtick a broker. Apps that publish use the firm's bus.
+- **A general app publishing API** (rejected 2026-10-12, narrowed the same day). A free-form app-to-agent-to-apps path would make flashtick a broker. What is planned instead is `shm_ingest`: a local app writes one-way into a ring the agent reads as just another partition (schema, framing, sequence, routing, fan-out), so derived data produced on the box reaches every other app over the same contract. Flow stays one-way per partition; nothing is routed back to its producer; leaving the box is still the firm's bus's job. Reason for the change: every shop generates derived data and needs a publishing layer, vendors do not offer one, and small shops have no bus for it.
 - **`dlopen` plugins.** They contradict zero-cost dispatch and cross a C++ ABI. YAML activation of compiled-in components gives the operational flexibility without foreign code.
 
 ## Roadmap
 
-All items are planned, none is implemented.
+All items are planned, none is implemented. The order is the intended build order; each item is justified by a use case above or a finding in the decision log.
 
-- Per-entry symbol routing for messages whose instrument id lives in a repeating group (CME MDP 3.0 incremental refresh): decode the group's symbol field per entry and route the message to every session matching any entry.
-- Shared ring for sessions with identical filters, so elastic and function workloads scale in sessions without scaling in memory or per-message cost.
-- Aeron ingest, and an `aeron_ipc` fan-out component (untethered subscriptions) alongside it.
-- Kafka transport (an earlier Kafka producer is parked under `src/transport/parked/` and excluded from the build).
-- Derived feeds (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings.
-- Python client (a thin binding over `shm_reader.h`), also serving as the proof that the app contract is implementable without the C++ SDK.
-- A standalone specification of the ring layout, record header and control protocol, independent of the C++ headers.
-- Last-value cache exported into shared memory for direct app reads.
-- Kernel-bypass evaluation (the current floor is the kernel socket).
-- Real bus capture and a busy-poll run on a production NIC, to replace the loopback numbers above.
+1. **Routing from parent blocks, per-entry symbol routing, and the extension tuple.** One record-version bump covering three related changes. (a) Any routing field (`symbol`, `sequence`, `exchange_ts`, `venue`) may be sourced from `packet_header.<f>`, `message_prefix.<f>` or `message.<Field>`, so discriminators that live in a parent block (CME's sending time and channel) reach the header tuple without the app seeing the parent bytes. (b) A per-partition **extension tuple**: a YAML-declared list of named fixed-width fields sourced the same way, written between the 64-byte header and the payload (`ext_len` in the header's reserved bytes), with the layout published via `HELLO` and `/partitions`; readers that do not care skip it by length, the payload stays bit-identical. (c) **Per-entry symbol routing** for instrument ids inside a repeating group (CME MDP 3.0 incremental refresh): decode the group's symbol field per entry, route the message to every session matching any entry, and write the matched ids into the extension tuple so an app knows which of its instruments the message touched without walking the group.
+2. **Shared ring for sessions with identical filters**, so elastic and function workloads scale in sessions without scaling in memory or per-message cost.
+3. **Generic schema-driven SBE decoder** on the app side: root fields to columns, groups to nested rows, driven by the same XML the agent loads, no generated code. Serves the kdb+ feed, the Python client and the recorder index alike.
+4. **Recorder and replay** (`ft_record`): a bundled consumer that writes ring records to indexed, rotating segment files under a dedicated wildcard session, with the last-value snapshot at the head of each segment and an explicit gap marker on any overrun; `ft_replay` learns to replay segments through the agent so every app runs unmodified against history.
+5. **`shm_ingest` transport**: a local app publishes one-way into a ring the agent reads as a partition (see "What was rejected"). Gives a Databento-fed or bus-less shop a complete on-box data plane and lets derived data reach every app over the standard contract.
+6. **kdb+ feed** (`ft_kdb`): a bundled consumer that decodes with the generic decoder, batches, and publishes to a tickerplant through the kdb+ C API, with template-to-table mapping in YAML; with `shm_ingest`, q processes publish derived data back to the box. Target: a KX-listed interface.
+7. **`databento_live` transport** with a DBN routing decoder (fixed-offset header, no schema walk), so one session per box serves every app.
+8. **Python client** (a thin binding over `shm_reader.h`), also the proof that the app contract is implementable without the C++ SDK, and the host for function-style runtimes.
+9. **Aeron ingest** and an `aeron_ipc` fan-out component (untethered subscriptions).
+10. **Kafka transport** (an earlier producer is parked under `src/transport/parked/`).
+11. **Standalone specification** of the ring layout, record header and control protocol, independent of the C++ headers.
+12. **Derived feeds** (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings; with `shm_ingest` in place these become the agent's own ingest partitions.
+13. Last-value cache exported into shared memory for direct app reads.
+14. Real bus capture on a production NIC with busy-poll, to replace the loopback numbers; kernel-bypass evaluation after that.

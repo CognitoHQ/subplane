@@ -6,7 +6,7 @@ The agent binary is `flashtickd` (CMake target `flashtickd`, `src/main.cpp`). Th
 A single-binary routing agent for the firm's internal SBE bus, one per application box. It subscribes to bus partitions over UDP multicast, finds message boundaries by walking the published SBE schema, decodes only routing fields, filters per application session, and fans the original SBE bytes out through per-session shared-memory rings. Apps decode SBE with their own codecs; they no longer deserialize, filter or route. Not a decoder, not a broker.
 
 ## Project Phase: v1 IMPLEMENTED
-Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline, shm rings, control channel, last-value cache, HTTP cold API, tools, tests, CI. Docs reset done (M9). Next: capture a real bus and validate framing with `ft_probe`, a busy-poll latency run on a real NIC, then Aeron ingest and `aeron_ipc` fan-out.
+Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline, shm rings, control channel, last-value cache, HTTP cold API, tools, tests, CI. Docs reset done (M9). Framing and schema walk validated on real CME MDP 3.0 packets (`scripts/fetch-cme-sample.sh`, `ctest -R cme_probe`). Build order for what comes next is the numbered roadmap in `docs/context/project-vision.md` (per-entry symbol routing, shared rings, generic SBE decoder, recorder, `shm_ingest`, kdb+ feed, Databento, Python, Aeron, Kafka). Licence: Apache-2.0. Repository stays private until it is rebranded under the CognitoHQ organization.
 
 ## Tech Stack
 Only what builds today:
