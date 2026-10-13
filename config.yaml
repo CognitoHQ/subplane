@@ -121,9 +121,10 @@ partitions:
   #       - { template: 100, admin: HEARTBEAT }
   #   heartbeat_timeout_ms: 5000
 
-  # The same canonical stream over Aeron (publishers in the feeds package publish this way).
+  # The same canonical stream over Aeron: what subplane-feeds gateways publish (e.g. `subplane-gateway --pack packs/binance-spot.yaml`).
   # One SBE message per offer, so the whole fragment is the message and Sequence comes from it.
   # Try it: build/tools/subplane aeron-pub --channel aeron:ipc --stream-id 1001 --count 1000   (attaches to the agent's embedded driver)
+  #         or a real feed: subplane-gateway --pack packs/binance-spot.yaml --symbols BTCUSDT --channel aeron:ipc --stream-id 1001 --aeron-dir <this agent's aeron_dir>
   # - name: canonical_aeron
   #   transport:
   #     type: aeron
