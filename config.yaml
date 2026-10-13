@@ -132,7 +132,7 @@ partitions:
   #     stream_id: 1001
   #     aeron_dir: ""                   # empty = Aeron default; must match the publisher's driver for aeron:ipc
   #     driver: { embedded: true, threading_mode: shared }   # omit to use an external aeronmd
-  #   framing: { length: packet, sequence: message.Sequence }
+  #   framing: { length: schema, sequence: message.Sequence }   # a gateway offer holds one or more canonical messages back to back
   #   decoder:
   #     type: sbe_routing
   #     schema: schemas/subplane_canonical.xml
