@@ -1,15 +1,15 @@
 #include <doctest.h>
 
 #include "fb_fixture.h"
-#include "flashtick/decoder/flatbuffers_decoder.h"
+#include "subplane/decoder/flatbuffers_decoder.h"
 
 #include <chrono>
 #include <cstring>
 #include <string>
 #include <vector>
 
-using namespace flashtick;
-using namespace flashtick::test;
+using namespace subplane;
+using namespace subplane::test;
 
 namespace {
 

@@ -1,24 +1,24 @@
-# Example apps. They depend only on the client headers (plus core/clock.h), not on flashtick_core.
+# Example apps. They depend only on the client headers (plus core/clock.h), not on subplane_core.
 add_executable(shm_demo_app shm_demo_app.cpp)
 target_include_directories(shm_demo_app PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(shm_demo_app PRIVATE flashtick_warnings Threads::Threads)
+target_link_libraries(shm_demo_app PRIVATE subplane_warnings Threads::Threads)
 
 add_executable(rule_runner rule_runner.cpp)
 target_include_directories(rule_runner PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(rule_runner PRIVATE flashtick_warnings Threads::Threads)
+target_link_libraries(rule_runner PRIVATE subplane_warnings Threads::Threads)
 
 # Canonical views consumer: the generated header (schemas/CMakeLists.txt) plus the client headers.
-if(TARGET views_flashtick_canonical)
-    add_executable(views_app views_app.cpp ${FT_GENERATED_DIR}/flashtick_canonical_views.h)
-    target_include_directories(views_app PRIVATE ${CMAKE_SOURCE_DIR}/include ${FT_GENERATED_DIR})
-    target_link_libraries(views_app PRIVATE flashtick_warnings Threads::Threads)
-    add_dependencies(views_app views_flashtick_canonical)
+if(TARGET views_subplane_canonical)
+    add_executable(views_app views_app.cpp ${SP_GENERATED_DIR}/subplane_canonical_views.h)
+    target_include_directories(views_app PRIVATE ${CMAKE_SOURCE_DIR}/include ${SP_GENERATED_DIR})
+    target_link_libraries(views_app PRIVATE subplane_warnings Threads::Threads)
+    add_dependencies(views_app views_subplane_canonical)
 endif()
 
 # The smallest publisher the agent can ingest: generated canonical structs + a socket. The file a gateway author copies.
-if(TARGET views_flashtick_canonical)
-    add_executable(canonical_pub canonical_pub.cpp ${FT_GENERATED_DIR}/flashtick_canonical_views.h)
-    target_include_directories(canonical_pub PRIVATE ${FT_GENERATED_DIR})
-    target_link_libraries(canonical_pub PRIVATE flashtick_warnings Threads::Threads)
-    add_dependencies(canonical_pub views_flashtick_canonical)
+if(TARGET views_subplane_canonical)
+    add_executable(canonical_pub canonical_pub.cpp ${SP_GENERATED_DIR}/subplane_canonical_views.h)
+    target_include_directories(canonical_pub PRIVATE ${SP_GENERATED_DIR})
+    target_link_libraries(canonical_pub PRIVATE subplane_warnings Threads::Threads)
+    add_dependencies(canonical_pub views_subplane_canonical)
 endif()

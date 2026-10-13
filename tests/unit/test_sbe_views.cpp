@@ -1,10 +1,10 @@
 #include <doctest.h>
 
-#include "flashtick/decoder/sbe_views.h"
+#include "subplane/decoder/sbe_views.h"
 
 #include <string>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 std::string sample_path() { std::string f = __FILE__; return f.substr(0, f.find_last_of('/')) + "/../data/sample_md.xml"; }
@@ -50,7 +50,7 @@ TEST_CASE("views: C++ emitter text") {
     CHECK(rep.emitted == std::vector<std::string>{"Trade", "Quote", "Ticker", "Heartbeat", "SeqReset"});
     REQUIRE(rep.skipped.size() == 1);
     CHECK(has(rep.skipped[0], "BookUpdate: has groups"));
-    CHECK(has(out, "namespace ft_views {"));
+    CHECK(has(out, "namespace sp_views {"));
     CHECK(has(out, "class Trade {"));
     CHECK(has(out, "Price at offset 34 is not naturally aligned"));
     CHECK(has(out, "int64_t Price() const noexcept { return detail::load<int64_t>(p_, 34); }"));

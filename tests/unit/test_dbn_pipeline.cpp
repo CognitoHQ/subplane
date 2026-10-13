@@ -5,18 +5,18 @@
 #include <doctest.h>
 
 #include "fake_transport.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/pipeline/pipeline.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/pipeline/pipeline.h"
+#include "subplane/shm/control_events.h"
 
 #include <cstring>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
-using namespace flashtick;
-using flashtick::test::FakeTransport;
+using namespace subplane;
+using subplane::test::FakeTransport;
 
 namespace {
 
@@ -71,7 +71,7 @@ TEST_CASE("dbn partition: default framing is length: packet, no schema, records 
     pipe.add_partition(&part);
 
     // Session: instrument 432669 only, trades + book updates, bus admin on.
-    const std::string ring_path = "/dev/shm/flashtick.test.dbn." + std::to_string(getpid()) + ".ring";
+    const std::string ring_path = "/dev/shm/subplane.test.dbn." + std::to_string(getpid()) + ".ring";
     auto s = std::make_unique<Session>();
     s->id = 3; s->name = "t"; s->owner = "config"; s->partition_mask = 1u;
     FilterSpec spec;

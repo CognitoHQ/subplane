@@ -1,6 +1,6 @@
-#include "flashtick/pipeline/session.h"
+#include "subplane/pipeline/session.h"
 
-namespace flashtick {
+namespace subplane {
 
 namespace {
 struct NameCode { const char* name; uint8_t code; };
@@ -96,4 +96,4 @@ bool SessionSpec::parse(const YAML::Node& node, SessionSpec& out, std::string& e
     return true;
 }
 
-} // namespace flashtick
+} // namespace subplane

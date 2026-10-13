@@ -1,6 +1,6 @@
-#include "flashtick/core/filter_table.h"
+#include "subplane/core/filter_table.h"
 
-namespace flashtick {
+namespace subplane {
 
 std::unique_ptr<FilterTable> build_filter(const FilterSpec& spec, uint32_t max_symbols,
                                           uint32_t generation, std::string& err) {
@@ -45,4 +45,4 @@ std::unique_ptr<FilterTable> build_filter(const FilterSpec& spec, uint32_t max_s
     return t;
 }
 
-} // namespace flashtick
+} // namespace subplane

@@ -1,8 +1,8 @@
 #include <doctest.h>
 
-#include "flashtick/api_server.h"
+#include "subplane/api_server.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 TEST_CASE("ApiServer parses request line, headers, query and body") {
     ApiServer server;

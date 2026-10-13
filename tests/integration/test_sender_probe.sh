@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sender -> probe round trip over unicast loopback for two framings.
-# usage: test_sender_probe.sh <ft_sbe_sender> <ft_probe> <schema.xml>
+# usage: test_sender_probe.sh <sp_sbe_sender> <sp_probe> <schema.xml>
 set -u
 SENDER=$1; PROBE=$2; SCHEMA=$3
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null' EXIT

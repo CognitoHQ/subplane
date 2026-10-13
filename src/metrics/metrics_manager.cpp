@@ -1,10 +1,10 @@
-#include "flashtick/metrics/metrics_manager.h"
+#include "subplane/metrics/metrics_manager.h"
 
 #include <fstream>
 #include <iostream>
 #include <yaml-cpp/yaml.h>
 
-namespace flashtick {
+namespace subplane {
 
 MetricsManager::MetricsManager() : running_(false) {}
 
@@ -127,4 +127,4 @@ void MetricsManager::write_metrics_to_file(const std::string& metrics) const {
     file << metrics << "\n";
 }
 
-} // namespace flashtick
+} // namespace subplane

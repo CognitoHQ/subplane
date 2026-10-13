@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# ft_aeron_pub -> Aeron media driver -> flashtickd (`aeron` transport) -> ring -> views_app.
-# usage: test_aeron_ingest.sh <ipc|udp> <ft_aeron_pub> <flashtickd> <views_app> <schema.xml>
+# sp_aeron_pub -> Aeron media driver -> subplaned (`aeron` transport) -> ring -> views_app.
+# usage: test_aeron_ingest.sh <ipc|udp> <sp_aeron_pub> <subplaned> <views_app> <schema.xml>
 #   ipc: the agent embeds the media driver; the publisher attaches to its directory.
 #   udp: publisher and agent each embed a driver (two directories) and talk over UDP loopback.
 set -u
 MODE=$1; PUB=$2; AGENT=$3; APP=$4; SCHEMA=$5
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/flashtick.aerontest.*.ring' EXIT
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.aerontest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 http_get() ( trap '' PIPE; exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return 1; printf 'GET %s HTTP/1.0\r\n\r\n' "$2" >&3 || return 1; tr -d '\r' <&3 | sed '1,/^$/d'; exec 3<&- )
 PORT=$(( 20000 + (RANDOM % 30000) )); API=$(( 20000 + (RANDOM % 30000) )); SOCK="$TMP/ctl.sock"
@@ -42,7 +42,7 @@ for _ in $(seq 1 150); do http_get "$API" /status >/dev/null 2>&1 && break; slee
 kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
 "$PUB" --channel "$CHANNEL" --stream-id 1001 "${PUB_ARGS[@]}" --count 1000 --rate 20000 --heartbeat-every 100 > "$TMP/pub.log" 2>&1 || fail "publisher failed"
 grep -q "sent 1000 messages and 10 heartbeats" "$TMP/pub.log" || fail "publisher report: $(cat "$TMP/pub.log")"
-RING=/dev/shm/flashtick.aerontest.all.ring
+RING=/dev/shm/subplane.aerontest.all.ring
 for _ in $(seq 1 50); do [ -f "$RING" ] && break; sleep 0.1; done
 "$APP" "$RING" --from-start --quiet --seconds 2 > "$TMP/app.log" 2>&1 || fail "views_app exit $?"
 SUMMARY=$(tail -1 "$TMP/app.log"); echo "$SUMMARY"

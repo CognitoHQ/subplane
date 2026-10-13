@@ -1,6 +1,6 @@
-#include "flashtick/transport/tcp_stream.h"
+#include "subplane/transport/tcp_stream.h"
 
-#include "flashtick/core/clock.h"
+#include "subplane/core/clock.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -10,7 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace flashtick {
+namespace subplane {
 
 bool TcpStreamConfig::parse(const YAML::Node& node, TcpStreamConfig& out, std::string& err) {
     try {
@@ -249,4 +249,4 @@ std::string TcpStreamTransport::describe() const {
     return "tcp_stream " + cfg_.host + ":" + std::to_string(cfg_.port) + " (" + st + ")";
 }
 
-} // namespace flashtick
+} // namespace subplane

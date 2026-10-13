@@ -1,19 +1,19 @@
 // The canonical flat schema: every message flat and naturally aligned (struct
-// form), fixed offsets for the common prefix, and the generated ft_canonical
+// form), fixed offsets for the common prefix, and the generated sp_canonical
 // header reading messages built by the test encoder.
 #include <doctest.h>
 
-#include "flashtick/decoder/sbe_views.h"
-#include "flashtick_canonical_views.h"
+#include "subplane/decoder/sbe_views.h"
+#include "subplane_canonical_views.h"
 #include "sbe_encoder.h"
 
 #include <cstring>
 #include <string>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
-std::string schema_path() { std::string f = __FILE__; return f.substr(0, f.find_last_of('/')) + "/../../schemas/flashtick_canonical.xml"; }
+std::string schema_path() { std::string f = __FILE__; return f.substr(0, f.find_last_of('/')) + "/../../schemas/subplane_canonical.xml"; }
 const ViewSlot* slot(const FlatLayout& l, const char* name) { for (const auto& v : l.slots) if (v.name == name) return &v; return nullptr; }
 }
 
@@ -22,7 +22,7 @@ TEST_CASE("canonical: every message is flat, aligned, and carries the same 32-by
     REQUIRE_MESSAGE(s.load_file(schema_path(), err), err);
     CHECK(s.schema_id() == 100);
     CHECK(s.version() == 1);
-    CHECK(s.package() == "flashtick.canonical");
+    CHECK(s.package() == "subplane.canonical");
     CHECK(s.little_endian());
     struct Exp { uint16_t id; const char* name; uint32_t size; };
     const Exp exp[] = {{1, "Trade", 72}, {2, "Quote", 72}, {3, "BookUpdate", 64}, {4, "BookSnapshot", 368}, {5, "Ohlcv", 88},
@@ -52,7 +52,7 @@ TEST_CASE("canonical: every message is flat, aligned, and carries the same 32-by
     CHECK(slot(snap, "AskQty")->offset == 280);
     CHECK(slot(snap, "Depth")->offset == 360);
 
-    ViewsOptions o; o.ns = "ft_canonical"; ViewsReport rep; std::string out;
+    ViewsOptions o; o.ns = "sp_canonical"; ViewsReport rep; std::string out;
     REQUIRE_MESSAGE(emit_cpp(s, o, out, rep, err), err);
     CHECK(rep.emitted.size() == 8);
     CHECK(rep.skipped.empty());
@@ -67,7 +67,7 @@ TEST_CASE("canonical: every message is flat, aligned, and carries the same 32-by
 }
 
 TEST_CASE("canonical: generated struct views read encoded messages") {
-    using namespace ft_canonical;
+    using namespace sp_canonical;
     static_assert(Trade::kIsStruct && Quote::kIsStruct && BookUpdate::kIsStruct && BookSnapshot::kIsStruct &&
                   Ohlcv::kIsStruct && Status::kIsStruct && InstrumentDefinition::kIsStruct && Heartbeat::kIsStruct);
     static_assert(sizeof(Trade) == 72 && sizeof(BookSnapshot) == 368 && sizeof(InstrumentDefinition) == 144 && sizeof(Heartbeat) == 40);
@@ -78,18 +78,18 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
     SbeSchema s; std::string err;
     REQUIRE(s.load_file(schema_path(), err));
     uint8_t buf[512];
-    fttool::MessageBuilder b(s);
+    sptool::MessageBuilder b(s);
 
     const MessageDef& trade = *s.find_message(1);
     b.begin(trade, buf, sizeof buf);
-    REQUIRE(fttool::set_u64(s, buf, trade, "InstrumentId", 7));
-    REQUIRE(fttool::set_u64(s, buf, trade, "VenueId", 3));
-    REQUIRE(fttool::set_u64(s, buf, trade, "Sequence", 1001));
-    REQUIRE(fttool::set_u64(s, buf, trade, "ExchangeTs", 1758742200000000000ull));
-    REQUIRE(fttool::set_u64(s, buf, trade, "Price", 65432100000000ull));   // 65432.1
-    REQUIRE(fttool::set_u64(s, buf, trade, "Qty", 250000000ull));           // 0.25
-    REQUIRE(fttool::set_u64(s, buf, trade, "TradeId", 99));
-    REQUIRE(fttool::set_u64(s, buf, trade, "Aggressor", 2));
+    REQUIRE(sptool::set_u64(s, buf, trade, "InstrumentId", 7));
+    REQUIRE(sptool::set_u64(s, buf, trade, "VenueId", 3));
+    REQUIRE(sptool::set_u64(s, buf, trade, "Sequence", 1001));
+    REQUIRE(sptool::set_u64(s, buf, trade, "ExchangeTs", 1758742200000000000ull));
+    REQUIRE(sptool::set_u64(s, buf, trade, "Price", 65432100000000ull));   // 65432.1
+    REQUIRE(sptool::set_u64(s, buf, trade, "Qty", 250000000ull));           // 0.25
+    REQUIRE(sptool::set_u64(s, buf, trade, "TradeId", 99));
+    REQUIRE(sptool::set_u64(s, buf, trade, "Aggressor", 2));
     REQUIRE(b.size() == 72);
     const Trade* t = view<Trade>(buf, b.size());
     REQUIRE(t != nullptr);
@@ -103,8 +103,8 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
 
     const MessageDef& snap = *s.find_message(4);
     b.begin(snap, buf, sizeof buf);
-    REQUIRE(fttool::set_u64(s, buf, snap, "InstrumentId", 7));
-    REQUIRE(fttool::set_u64(s, buf, snap, "Depth", 10));
+    REQUIRE(sptool::set_u64(s, buf, snap, "InstrumentId", 7));
+    REQUIRE(sptool::set_u64(s, buf, snap, "Depth", 10));
     const FieldDef* bidpx = s.find_field(snap, "BidPx");
     REQUIRE(bidpx); CHECK(bidpx->prim == SbePrim::OPAQUE); CHECK(bidpx->elem_prim == SbePrim::I64); CHECK(bidpx->length == 10);
     for (int i = 0; i < 10; ++i) { const int64_t px = 100000000000ll - i * 1000000000ll; std::memcpy(buf + 8 + bidpx->offset + 8 * i, &px, 8); }
@@ -118,11 +118,11 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
 
     const MessageDef& def = *s.find_message(10);
     b.begin(def, buf, sizeof buf);
-    REQUIRE(fttool::set_u64(s, buf, def, "InstrumentId", 7));
-    REQUIRE(fttool::write_chars(buf + 8, *s.find_field(def, "Symbol"), "BTC-USD"));
-    REQUIRE(fttool::write_chars(buf + 8, *s.find_field(def, "Exchange"), "COINBASE"));
-    REQUIRE(fttool::set_u64(s, buf, def, "TickSize", 10000000ull));
-    REQUIRE(fttool::set_u64(s, buf, def, "Status", 1));
+    REQUIRE(sptool::set_u64(s, buf, def, "InstrumentId", 7));
+    REQUIRE(sptool::write_chars(buf + 8, *s.find_field(def, "Symbol"), "BTC-USD"));
+    REQUIRE(sptool::write_chars(buf + 8, *s.find_field(def, "Exchange"), "COINBASE"));
+    REQUIRE(sptool::set_u64(s, buf, def, "TickSize", 10000000ull));
+    REQUIRE(sptool::set_u64(s, buf, def, "Status", 1));
     REQUIRE(b.size() == 144);
     const InstrumentDefinition* d = view<InstrumentDefinition>(buf, b.size());
     REQUIRE(d != nullptr);
@@ -134,7 +134,7 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
 
     const MessageDef& hb = *s.find_message(100);
     b.begin(hb, buf, sizeof buf);
-    REQUIRE(fttool::set_u64(s, buf, hb, "Sequence", 5));
+    REQUIRE(sptool::set_u64(s, buf, hb, "Sequence", 5));
     const Heartbeat* h = view<Heartbeat>(buf, b.size());
     REQUIRE(h != nullptr);
     CHECK(h->Sequence == 5);

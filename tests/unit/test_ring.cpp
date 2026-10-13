@@ -1,7 +1,7 @@
 #include <doctest.h>
 
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/fanout/ring_writer.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/fanout/ring_writer.h"
 
 #include <atomic>
 #include <chrono>
@@ -15,7 +15,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 
@@ -30,7 +30,7 @@ struct TempRing {
     std::string path;
     TempRing() {
         static std::atomic<int> counter{0};
-        path = temp_dir() + "/flashtick_test_" + std::to_string(::getpid()) + "_" +
+        path = temp_dir() + "/subplane_test_" + std::to_string(::getpid()) + "_" +
                std::to_string(counter.fetch_add(1)) + ".ring";
     }
     ~TempRing() {

@@ -1,11 +1,11 @@
-# flashtick
+# subplane
 
-A single-binary routing agent (`flashtickd`) for an internal SBE bus. One instance runs on each application box. It subscribes to the bus over UDP multicast, finds message boundaries from the published SBE schema, decodes only the routing fields, filters per application, and fans the original SBE bytes out through shared-memory rings. Apps decode SBE with their own codecs and stop doing deserialization, filtering and routing.
+The subscription plane under your market data apps: a single-binary routing agent (`subplaned`) for an internal SBE bus. One instance runs on each application box. It subscribes to the bus over UDP multicast, finds message boundaries from the published SBE schema, decodes only the routing fields, filters per application, and fans the original SBE bytes out through shared-memory rings. Apps decode SBE with their own codecs and stop doing deserialization, filtering and routing.
 
 It is not a decoder and not a broker. The only hard requirement on a publisher is its SBE schema.
 
 ```
-firm feed handler -> internal bus (SBE) -> flashtick (per box) -> shared-memory ring per app session -> apps
+firm feed handler -> internal bus (SBE) -> subplane (per box) -> shared-memory ring per app session -> apps
 ```
 
 ## Why it exists
@@ -20,7 +20,7 @@ A trading box runs a handful of applications, and every one of them needs market
 
 Ten apps on a box means ten subscriptions, ten decoders, ten filters and ten slightly different gap handlers. The cost is paid again every time a short-lived worker starts, and every app team maintains plumbing that has nothing to do with their strategy.
 
-flashtick does that work once per box:
+subplane does that work once per box:
 
 - **One subscription per box.** The agent joins the bus, the apps do not.
 - **Routing, not decoding.** It reads only the fields needed to route (instrument, message type, sequence, timestamp) and leaves the message bytes untouched.
@@ -31,7 +31,7 @@ What it deliberately is not: a decoder (apps keep their own codecs and full deco
 
 ## Quick start
 
-Needs a C++20 compiler (GCC 11 or newer), CMake 3.30+, pkg-config, yaml-cpp (`libyaml-cpp-dev` on Ubuntu) and git: the Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java). `-DFLASHTICK_WITH_AERON=OFF` drops the fetch and the `aeron` transport, and then CMake 3.20 is enough. Ubuntu 22.04's CMake is too old for Aeron; `scripts/deps-2204.sh` installs one from Kitware.
+Needs a C++20 compiler (GCC 11 or newer), CMake 3.30+, pkg-config, yaml-cpp (`libyaml-cpp-dev` on Ubuntu) and git: the Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java). `-DSUBPLANE_WITH_AERON=OFF` drops the fetch and the `aeron` transport, and then CMake 3.20 is enough. Ubuntu 22.04's CMake is too old for Aeron; `scripts/deps-2204.sh` installs one from Kitware.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -41,18 +41,18 @@ cmake --build build -j
 # Local demo config: unicast instead of multicast, so no network setup is needed.
 sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/ft.yaml
 
-build/flashtickd --config /tmp/ft.yaml &
+build/subplaned --config /tmp/ft.yaml &
 
 # Synthetic publisher, using the same framing as config.yaml.
 FRAMING='{packet_header: [{name: seq, type: u64le}, {name: count, type: u16le}], message_prefix: [{name: len, type: u16le}], sequence: packet_header.seq, length: message_prefix.len}'
-build/tools/ft_sbe_sender --port 30001 --framing "$FRAMING" --rate 1000 --per-packet 3 &
+build/tools/sp_sbe_sender --port 30001 --framing "$FRAMING" --rate 1000 --per-packet 3 &
 
 curl -s localhost:8080/status
-build/tools/ft_tail /dev/shm/flashtick.flashtick.alpha.ring --from-start --count 10
-build/examples/shm_demo_app --socket /tmp/flashtick.sock --session demo --seconds 5
+build/tools/sp_tail /dev/shm/subplane.subplane.alpha.ring --from-start --count 10
+build/examples/shm_demo_app --socket /tmp/subplane.sock --session demo --seconds 5
 ```
 
-The control socket is `/run/flashtick/flashtick.sock` if that directory is writable, otherwise `/tmp/flashtick.sock`; the agent logs which one it bound. `GETTING_STARTED.md` walks through this step by step.
+The control socket is `/run/subplane/subplane.sock` if that directory is writable, otherwise `/tmp/subplane.sock`; the agent logs which one it bound. `GETTING_STARTED.md` walks through this step by step.
 
 ## Consumption models
 
@@ -66,11 +66,11 @@ One contract serves three kinds of consumer. Each has a runnable example that de
 
 ```bash
 # elastic workers: three short-lived sessions side by side
-for i in 1 2 3; do build/examples/shm_demo_app --socket /tmp/flashtick.sock --session w$i --trades-only --quiet --seconds 10 & done
+for i in 1 2 3; do build/examples/shm_demo_app --socket /tmp/subplane.sock --session w$i --trades-only --quiet --seconds 10 & done
 curl -s localhost:8080/sessions
 
 # function runtime: dry-run the rules on ring history, then go live
-build/examples/rule_runner --socket /tmp/flashtick.sock --from-start --seconds 10
+build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 ```
 
 `docs/context/project-vision.md` ("Consumption models") explains each case and its current limits. Transports, framing and routing are agent configuration, not application code: apps never learn which bus they are on.
@@ -81,7 +81,7 @@ build/examples/rule_runner --socket /tmp/flashtick.sock --from-start --seconds 1
 - `docs/context/project-vision.md`: identity, thesis, latency budget, non-goals, roadmap.
 - `docs/context/architecture.md`: data flow, ring and record format, control channel, configuration reference, source layout, tools.
 - `docs/context/invariants.md`: the non-negotiable engineering rules.
-- `docs/context/landscape.md`: how flashtick compares with agents, libraries and middleware.
+- `docs/context/landscape.md`: how subplane compares with agents, libraries and middleware.
 
 Everything in the docs is implemented unless marked "(planned)".
 
@@ -89,18 +89,18 @@ Everything in the docs is implemented unless marked "(planned)".
 
 `scripts/fetch-cme-sample.sh` downloads 27 public CME MDP 3.0 packets and CME's schema (v9 and v13), and `ctest -R cme_probe` replays them through the production framer and schema walker with a framing block written from CME's documentation. Every message length from the schema walk matches the wire. The test skips when the sample has not been fetched.
 
-A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/ft_dbn_sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
+A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/sp_dbn_sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
 
-A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc", stream_id: 1001}` subscribes to an Aeron stream (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/ft_aeron_pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `canonical_aeron` partition in `config.yaml` is the configuration.
+A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc", stream_id: 1001}` subscribes to an Aeron stream (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/sp_aeron_pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `canonical_aeron` partition in `config.yaml` is the configuration.
 
 A third encoding with no library: `decoder: {type: flatbuffers}` routes FlatBuffers by field id straight off the wire and delivers the whole buffer, size prefix included. `ctest -R flatbuffers` runs real `flatc` output (`tests/fixtures/flatbuffers/`) through the decoder and over UDP through the agent. The commented `fb-p0` partition in `config.yaml` is the configuration.
 
 ## Typed views without a codec
 
-A flat SBE message (no groups, no varData) is a fixed block behind the 8-byte message header. `ft_schema` turns the schema the agent loads into typed access to that block in three languages, so an app never links a codec or runs a code generator of its own:
+A flat SBE message (no groups, no varData) is a fixed block behind the 8-byte message header. `sp_schema` turns the schema the agent loads into typed access to that block in three languages, so an app never links a codec or runs a code generator of its own:
 
 ```bash
-build/tools/ft_schema --schema schemas/sample_md.xml --views all --out out/
+build/tools/sp_schema --schema schemas/sample_md.xml --views all --out out/
 # wrote out/sample_md_views.h  out/sample_md_views.py  out/sample_md_views.q
 # emitted Trade, Quote, Ticker, Heartbeat, SeqReset; skipped BookUpdate: has groups (Levels)
 ```
@@ -137,12 +137,12 @@ public:
 Reading a ring with them is `examples/views_app.cpp`, built with the other examples; the core of it:
 
 ```cpp
-#include "flashtick/client/shm_reader.h"
-#include "flashtick_canonical_views.h"     // generated at build time from schemas/flashtick_canonical.xml
-using namespace ft_canonical;
+#include "subplane/client/shm_reader.h"
+#include "subplane_canonical_views.h"     // generated at build time from schemas/subplane_canonical.xml
+using namespace sp_canonical;
 
 ShmReader rd;
-rd.open("/dev/shm/flashtick.flashtick.alpha.ring", &err);
+rd.open("/dev/shm/subplane.subplane.alpha.ring", &err);
 RecordView rv;
 while (rd.poll(rv) == ReaderStatus::Ok) {
     if (rv.hdr->kind != static_cast<uint8_t>(Kind::DATA)) continue;
@@ -184,7 +184,7 @@ Unsigned fields widen to the signed q type of the same width; char arrays are cu
 
 The sample schema's views are regenerated and compiled at every build (`ctest -R sbe_views`), so a layout regression fails the build. Little-endian schemas only.
 
-**The canonical schema.** `schemas/flashtick_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a partition carrying it today is ordinary `sbe_routing` configuration (the commented `canonical` partition in `config.yaml`), and `ctest -R canonical_views_app` runs `ft_sbe_sender`, the agent and `views_app` end to end on it. `examples/canonical_pub.cpp` is the other side: the smallest publisher the agent can ingest, generated structs plus a socket, the file to copy when writing a gateway.
+**The canonical schema.** `schemas/subplane_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a partition carrying it today is ordinary `sbe_routing` configuration (the commented `canonical` partition in `config.yaml`), and `ctest -R canonical_views_app` runs `sp_sbe_sender`, the agent and `views_app` end to end on it. `examples/canonical_pub.cpp` is the other side: the smallest publisher the agent can ingest, generated structs plus a socket, the file to copy when writing a gateway.
 
 ## Licence
 

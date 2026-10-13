@@ -1,8 +1,8 @@
-#include "flashtick/decoder/sbe_routing_decoder.h"
+#include "subplane/decoder/sbe_routing_decoder.h"
 
 #include <string_view>
 
-namespace flashtick {
+namespace subplane {
 namespace {
 
 struct NameCode { const char* name; uint8_t code; };
@@ -213,4 +213,4 @@ DecodeResult SbeRoutingDecoder::decode(const uint8_t* msg, uint32_t avail, TickH
     return r;
 }
 
-} // namespace flashtick
+} // namespace subplane

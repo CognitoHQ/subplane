@@ -1,10 +1,10 @@
-#include "flashtick/persistence_manager.h"
+#include "subplane/persistence_manager.h"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
 
-namespace flashtick {
+namespace subplane {
 
 PersistenceManager::PersistenceManager() = default;
 
@@ -364,4 +364,4 @@ bool PersistenceManager::is_expired(const std::chrono::system_clock::time_point&
     return age > config_.retention_hours;
 }
 
-} // namespace flashtick
+} // namespace subplane

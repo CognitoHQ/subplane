@@ -1,16 +1,16 @@
 #include <doctest.h>
 
 #include "fake_transport.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/pipeline/session_manager.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/pipeline/session_manager.h"
 
 #include <cstring>
 #include <sys/stat.h>
 #include <unistd.h>
 
-using namespace flashtick;
-using flashtick::test::FakeTransport;
+using namespace subplane;
+using subplane::test::FakeTransport;
 
 namespace {
 

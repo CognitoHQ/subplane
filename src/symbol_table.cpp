@@ -1,9 +1,9 @@
-#include "flashtick/symbol_table.h"
+#include "subplane/symbol_table.h"
 
 #include <bit>
 #include <cstring>
 
-namespace flashtick {
+namespace subplane {
 
 namespace {
 uint64_t hash_bytes(std::string_view s) noexcept { // FNV-1a
@@ -119,4 +119,4 @@ bool SymbolTable::resolve(uint32_t id, std::string& out) const {
     return true;
 }
 
-} // namespace flashtick
+} // namespace subplane

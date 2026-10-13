@@ -3,9 +3,9 @@
 #include <signal.h>
 #include <memory>
 #include <thread>
-#include "flashtick/agent.h"
+#include "subplane/agent.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 std::unique_ptr<Agent> g_agent;
 
@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
             print_usage(argv[0]);
             return 0;
         } else if (arg == "--version" || arg == "-v") {
-            std::cout << "flashtickd version 2.0.0-dev\n";
+            std::cout << "subplaned version 2.0.0-dev\n";
             return 0;
         } else if (arg == "--config" && i + 1 < argc) {
             config_path = argv[++i];
@@ -54,26 +54,26 @@ int main(int argc, char* argv[]) {
         // Create and initialize agent
         g_agent = std::make_unique<Agent>();
         
-        std::cout << "Initializing flashtickd..." << std::endl;
+        std::cout << "Initializing subplaned..." << std::endl;
         if (!g_agent->initialize(config_path)) {
             std::cerr << "Failed to initialize agent" << std::endl;
             return 1;
         }
         
-        std::cout << "Starting flashtick agent..." << std::endl;
+        std::cout << "Starting subplane agent..." << std::endl;
         if (!g_agent->start()) {
             std::cerr << "Failed to start agent" << std::endl;
             return 1;
         }
         
-        std::cout << "flashtick agent is running. Press Ctrl+C to stop." << std::endl;
+        std::cout << "subplane agent is running. Press Ctrl+C to stop." << std::endl;
         
         // Wait for shutdown signal
         while (g_agent->is_running()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         
-        std::cout << "flashtick agent stopped." << std::endl;
+        std::cout << "subplane agent stopped." << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

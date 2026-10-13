@@ -1,18 +1,18 @@
 #include <doctest.h>
 
 #include "fake_transport.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/pipeline/pipeline.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/pipeline/pipeline.h"
+#include "subplane/shm/control_events.h"
 
 #include <cstring>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
-using namespace flashtick;
-using flashtick::test::FakeTransport;
+using namespace subplane;
+using subplane::test::FakeTransport;
 
 namespace {
 
@@ -86,7 +86,7 @@ struct Harness {
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft)), err);
         REQUIRE(part.open(err));
         pipe.add_partition(&part);
-        ring_path = "/dev/shm/flashtick.test." + std::to_string(getpid()) + "." + std::to_string(reinterpret_cast<uintptr_t>(this) & 0xffff) + ".ring";
+        ring_path = "/dev/shm/subplane.test." + std::to_string(getpid()) + "." + std::to_string(reinterpret_cast<uintptr_t>(this) & 0xffff) + ".ring";
     }
     ~Harness() { RingWriter::unlink_ring(ring_path); }
 

@@ -1,9 +1,9 @@
 #include <doctest.h>
 
-#include "flashtick/core/message.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/core/message.h"
+#include "subplane/shm/control_events.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 TEST_CASE("TickHeader is a frozen 64-byte ABI") {
     CHECK(sizeof(TickHeader) == 64);

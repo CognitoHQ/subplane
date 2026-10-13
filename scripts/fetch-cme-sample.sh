@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch public CME MDP 3.0 sample packets and schemas for the real-bus check.
 #
-# Nothing here is redistributed with flashtick (the source repositories carry
+# Nothing here is redistributed with subplane (the source repositories carry
 # no licence, the schema is CME's), so this script downloads at use time:
 #   - 4 raw MDP 3.0 UDP payloads (schema v9 on the wire) from dkumsh/sbe_gen
 #   - 5 small captures (schema v6 on the wire) from p4fpga/p4fpga-examples

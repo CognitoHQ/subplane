@@ -1,8 +1,8 @@
-#include "flashtick/framing/sbe_length.h"
+#include "subplane/framing/sbe_length.h"
 
 #include <algorithm>
 
-namespace flashtick {
+namespace subplane {
 namespace {
 
 bool emit_group(const GroupDef& g, std::vector<WalkOp>& ops, unsigned depth, std::string& err) {
@@ -165,4 +165,4 @@ WalkStatus SbeLengthWalker::walk_program(const WalkProgram& prog, const uint8_t*
     return WalkStatus::OK;
 }
 
-} // namespace flashtick
+} // namespace subplane

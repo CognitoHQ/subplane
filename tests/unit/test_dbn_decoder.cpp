@@ -1,12 +1,12 @@
 #include <doctest.h>
 
-#include "flashtick/decoder/dbn_decoder.h"
+#include "subplane/decoder/dbn_decoder.h"
 
 #include <cstring>
 #include <string>
 #include <vector>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 

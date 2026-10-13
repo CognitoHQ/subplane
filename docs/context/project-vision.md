@@ -1,10 +1,10 @@
-# Project Vision: flashtick
+# Project Vision: subplane
 
 Status key: everything below is implemented unless marked "(planned)".
 
 ## Identity
 
-flashtick is a single-binary routing agent. One instance runs on each application box. It subscribes to the firm's internal SBE bus, decodes only the fields needed for routing, filters per application, and fans the original SBE bytes out to local apps through shared memory.
+subplane is the subscription plane under the apps: a single-binary routing agent, one instance on each application box. It subscribes to the firm's internal SBE bus, decodes only the fields needed for routing, filters per application, and fans the original SBE bytes out to local apps through shared memory.
 
 It is not a decoder: it never fully decodes a message, and apps decode SBE with their own generated codecs. It is not a broker: data flows one way (bus to agent to apps) and apps never publish through it.
 
@@ -26,7 +26,7 @@ UDP multicast (and plain UDP unicast), TCP byte streams and Aeron (IPC, UDP unic
 
 Apps that read a bus directly are coupled to the transport three times over: they link its client library (a media driver for Aeron, librdkafka for Kafka), they encode its framing (length prefixes, per-packet batching, where the sequence lives), and they inherit its failure model (a multicast gap looks nothing like a Kafka rebalance). Change the bus and every app changes.
 
-flashtick collapses all three into one contract: a ring of 64-byte `TickHeader` records followed by the original SBE bytes, plus a fixed control vocabulary (gap, degraded, recovered, restarted, filter reloaded, session closing, symbol mapped, bus heartbeat, sequence reset). Transport, framing and liveness semantics are mapped onto that vocabulary inside the agent, so an app never learns which bus it is on.
+subplane collapses all three into one contract: a ring of 64-byte `TickHeader` records followed by the original SBE bytes, plus a fixed control vocabulary (gap, degraded, recovered, restarted, filter reloaded, session closing, symbol mapped, bus heartbeat, sequence reset). Transport, framing and liveness semantics are mapped onto that vocabulary inside the agent, so an app never learns which bus it is on.
 
 What that buys a firm:
 
@@ -41,9 +41,9 @@ The one-line version: one app contract for any bus; transport, framing and routi
 
 ## Why open source, when every large shop could build this
 
-Every shop with many apps per box already has a home-grown "subscribe to the bus, filter my symbols, hand me the bytes" layer, usually a library linked into each app. That is not an argument against flashtick; it is the same situation Aeron faced. Every serious shop had its own reliable multicast transport, and Aeron still won, because once a good open implementation existed the custom one became a liability: nobody wants to maintain it, new hires do not know it, and vendors do not speak it. The argument was never "you cannot build this", it was "you should stop owning this".
+Every shop with many apps per box already has a home-grown "subscribe to the bus, filter my symbols, hand me the bytes" layer, usually a library linked into each app. That is not an argument against subplane; it is the same situation Aeron faced. Every serious shop had its own reliable multicast transport, and Aeron still won, because once a good open implementation existed the custom one became a liability: nobody wants to maintain it, new hires do not know it, and vendors do not speak it. The argument was never "you cannot build this", it was "you should stop owning this".
 
-The same applies one layer up. Aeron standardized how bytes move between processes; flashtick aims to standardize how an application box subscribes to them. What makes that credible rather than aspirational:
+The same applies one layer up. Aeron standardized how bytes move between processes; subplane aims to standardize how an application box subscribes to them. What makes that credible rather than aspirational:
 
 - A published contract (two headers, a documented record, a versioned ring layout, a control protocol) that anyone can implement in any language without linking our code.
 - Publisher requirements near zero (INV-014). A standard that demands publishers change loses before it starts.
@@ -59,7 +59,7 @@ The same contract serves three kinds of consumer. Each has a runnable example; a
 The classic case: a strategy or pricing process that runs all day. It creates or attaches to a session with its filter, seeds state from the snapshot, then tails the ring (the late-join idiom). Example: `examples/shm_demo_app.cpp`.
 
 ```bash
-build/examples/shm_demo_app --socket /tmp/flashtick.sock --session pricer --symbols 1,2,3
+build/examples/shm_demo_app --socket /tmp/subplane.sock --session pricer --symbols 1,2,3
 ```
 
 The equivalent static session in YAML, for apps that should not have to create their own:
@@ -83,7 +83,7 @@ Example: the demo app with a time limit is a burst worker. Run several concurren
 
 ```bash
 for i in 1 2 3; do
-  build/examples/shm_demo_app --socket /tmp/flashtick.sock --session worker$i --trades-only --quiet --seconds 10 &
+  build/examples/shm_demo_app --socket /tmp/subplane.sock --session worker$i --trades-only --quiet --seconds 10 &
 done
 curl -s localhost:8080/sessions
 ```
@@ -99,7 +99,7 @@ A runtime on top is one long-lived host process per box that attaches a session 
 Example: `examples/rule_runner.cpp`, a minimal runtime. Rules declare a trigger and a body; the runtime unions the triggers into one session filter, seeds through the snapshot, and dispatches. `--from-start` replays ring history through the rules first.
 
 ```bash
-build/examples/rule_runner --socket /tmp/flashtick.sock --from-start --seconds 10
+build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 ```
 
 ### Limits that apply to the elastic and function cases
@@ -117,7 +117,7 @@ build/examples/rule_runner --socket /tmp/flashtick.sock --from-start --seconds 1
 ```
 Exchange -> firm feed handler -> internal bus (topics x partitions, published SBE schema)
                                         |
-                              flashtick agent (one per app box)
+                              subplane agent (one per app box)
                   subscribe -> frame -> routing decode -> filter -> route
                                         |
                           shared-memory ring per session (/dev/shm)
@@ -125,7 +125,7 @@ Exchange -> firm feed handler -> internal bus (topics x partitions, published SB
                   local apps (decode SBE themselves with generated codecs)
 ```
 
-flashtick does not talk to exchanges. Its input is the firm's own bus, which already carries SBE messages described by a published schema.
+subplane does not talk to exchanges. Its input is the firm's own bus, which already carries SBE messages described by a published schema.
 
 ## What apps get
 
@@ -137,15 +137,15 @@ flashtick does not talk to exchanges. Its input is the firm's own bus, which alr
 
 ## What apps do themselves
 
-Apps decode the SBE payload with their own codecs generated from the publisher's schema. flashtick delivers the bytes bit-identical to the bus. It does not normalize, convert, or reinterpret payloads.
+Apps decode the SBE payload with their own codecs generated from the publisher's schema. subplane delivers the bytes bit-identical to the bus. It does not normalize, convert, or reinterpret payloads.
 
 ## Latency budget
 
 Tier: tens of microseconds on kernel sockets (`recvmmsg`, optional busy-poll). A "low microseconds" claim was withdrawn: kernel UDP alone is 5 to 20 microseconds, so single-digit microseconds was never reachable without kernel bypass.
 
-First measured numbers (from `.flashtick/decisions.md`, 2026-10-12). These are loopback and in-process figures on a 12-core dev box, not a production NIC:
+First measured numbers (from `.subplane/decisions.md`, 2026-10-12). These are loopback and in-process figures on a 12-core dev box, not a production NIC:
 
-- In-process bench (`ft_replay --bench`, pinned pipeline thread, no busy-poll, 3 SBE messages per packet, 100 symbols, batch 32, 16 MB rings). Frame, routing decode and filter cost about 100 ns per message. Each attached session adds about 30 ns per message (filter check plus ring memcpy).
+- In-process bench (`sp_replay --bench`, pinned pipeline thread, no busy-poll, 3 SBE messages per packet, 100 symbols, batch 32, 16 MB rings). Frame, routing decode and filter cost about 100 ns per message. Each attached session adds about 30 ns per message (filter check plus ring memcpy).
 
   | Sessions | p50 ns | p99 ns | p99.9 ns | msgs/s |
   |---|---|---|---|---|
@@ -164,19 +164,19 @@ The only hard requirement on a bus publisher is its SBE schema.
 
 - Message length is computed by walking the schema (root block, groups, varData), so no length prefix is required. Back-to-back SBE messages in a datagram parse with no framing at all.
 - Packet framing (packet header fields, per-message prefixes, where the sequence number lives) is described declaratively in YAML, not coded.
-- `ft_probe` validates a candidate framing block against live packets, so an operator can write a framing block for a bus they do not control.
+- `sp_probe` validates a candidate framing block against live packets, so an operator can write a framing block for a bus they do not control.
 
 If the bus carries no sequence number, gap detection is off for that partition and liveness relies on the heartbeat timeout alone.
 
-**Checked against a real bus (2026-10-12).** Public CME MDP 3.0 packets (27 packets, 31 messages, wire schema versions 6 and 9, from three public repositories and a Databento sample) were replayed through `ft_probe` with a framing block written from CME's documentation alone. With CME's v9 schema every template is known and every message length from the schema walk matches the declared length; with the v13 schema the two retired templates are reported unknown and nothing else changes. Two walker bugs were found and fixed on the way (program-relative jumps for multi-entry groups, and `sinceVersion` skipping). One limitation was found: CME's incremental messages carry the instrument id inside a repeating group, one message per several instruments, so that bus routes by message type until per-entry symbol routing exists (roadmap). `scripts/fetch-cme-sample.sh` plus `tests/integration/test_cme_probe.sh` reproduce the check.
+**Checked against a real bus (2026-10-12).** Public CME MDP 3.0 packets (27 packets, 31 messages, wire schema versions 6 and 9, from three public repositories and a Databento sample) were replayed through `sp_probe` with a framing block written from CME's documentation alone. With CME's v9 schema every template is known and every message length from the schema walk matches the declared length; with the v13 schema the two retired templates are reported unknown and nothing else changes. Two walker bugs were found and fixed on the way (program-relative jumps for multi-entry groups, and `sinceVersion` skipping). One limitation was found: CME's incremental messages carry the instrument id inside a repeating group, one message per several instruments, so that bus routes by message type until per-entry symbol routing exists (roadmap). `scripts/fetch-cme-sample.sh` plus `tests/integration/test_cme_probe.sh` reproduce the check.
 
-**Second encoding, second transport (2026-10-12).** A real Databento DBN file (CLX5 market-by-order, GLBX.MDP3, 38,212 records of 56 bytes) was served over TCP by `ft_dbn_sim` into a partition configured `transport: tcp_stream`, `decoder: dbn`, `framing: {length: packet}`: every record decoded, none unknown, all 38,212 reached a session filtered to that instrument, recv-to-publish p50 127 ns, p99 383 ns, p99.9 639 ns per record on loopback, unpinned. The same ring contract served both the SBE and the DBN partitions, which is the "encoding is per-partition configuration" rule proved with two formats. Found on the way: DBN's `sequence` is the venue's packet sequence shared by sibling records (so it must not be used for duplicate detection), passthrough instrument ids need `max_symbols` above the largest id and make the dense last-value cache large, and static sessions were attached after the first packets of a fast stream (fixed: commands are applied before polling). `ctest -R dbn_sim` reproduces the synthetic version.
+**Second encoding, second transport (2026-10-12).** A real Databento DBN file (CLX5 market-by-order, GLBX.MDP3, 38,212 records of 56 bytes) was served over TCP by `sp_dbn_sim` into a partition configured `transport: tcp_stream`, `decoder: dbn`, `framing: {length: packet}`: every record decoded, none unknown, all 38,212 reached a session filtered to that instrument, recv-to-publish p50 127 ns, p99 383 ns, p99.9 639 ns per record on loopback, unpinned. The same ring contract served both the SBE and the DBN partitions, which is the "encoding is per-partition configuration" rule proved with two formats. Found on the way: DBN's `sequence` is the venue's packet sequence shared by sibling records (so it must not be used for duplicate detection), passthrough instrument ids need `max_symbols` above the largest id and make the dense last-value cache large, and static sessions were attached after the first packets of a fast stream (fixed: commands are applied before polling). `ctest -R dbn_sim` reproduces the synthetic version.
 
 **Third encoding, no library (2026-10-12).** FlatBuffers, routed with a hand-written reader against the published wire format (root offset, vtable, field ids) and no FlatBuffers code in the agent. A fixture of 300 messages built by `flatc` from a bus-like schema (union body, instrument two tables deep, a field old producers never set, file identifier) is routed identically to the generated accessors in the unit tests and replayed over UDP, 1 to 4 buffers per datagram, through the agent to a filtered ring with every payload bit-identical, prefix included (`ctest -R flatbuffers`). Cost on the dev host: about 57 ns per message for dispatch plus four routing fields, bounds-checked. This is step 1 of the encoding-agnostic sequence in the roadmap: apps on a FlatBuffers bus get raw delivery today with their own codecs.
 
 ## Non-goals
 
-- The agent is not an exchange feed handler: no ITCH, FIX, WebSocket or other exchange protocol decoding in the core. Feed handlers ship beside it as separate gateway processes in the `flashtick-feeds` package (planned), publishing canonical SBE into `shm_ingest`.
+- The agent is not an exchange feed handler: no ITCH, FIX, WebSocket or other exchange protocol decoding in the core. Feed handlers ship beside it as separate gateway processes in the `subplane-feeds` package (planned), publishing canonical SBE into `shm_ingest`.
 - Not a broker. No request-reply, no routing back to a producer, no cross-box delivery. (A local app publishing one-way into an ingest ring is planned; see roadmap.)
 - Not a full SBE decoder. Routing fields only; apps own full decode.
 - No dynamic loading of foreign code (no `.so` plugins, no WASM, no embedded scripting).
@@ -189,7 +189,7 @@ If the bus carries no sequence number, gap detection is off for that partition a
 - **Rust rewrite.** No stable ABI, same C-ABI endpoint, ecosystem and familiarity favour C++20. Switching cost is lowest now, and the decision is noted as revisitable.
 - **ITCH as the first target.** ITCH is order-by-order, so nothing app-useful comes out without a book builder. The thesis is bulk tick feeds that already carry trades, quotes and book deltas.
 - **Aeron IPC as the v1 app contract.** It would make the Aeron client API part of the app contract. The v1 contract is a small header-only reader under our control. Aeron ingest is implemented (2026-10-13; the media driver is now a build dependency), so an `aeron_ipc` fan-out component beside the shared-memory ring is back on the roadmap (item 9), as an option, not the contract.
-- **A general app publishing API** (rejected 2026-10-12, narrowed the same day). A free-form app-to-agent-to-apps path would make flashtick a broker. What is planned instead is `shm_ingest`: a local app writes one-way into a ring the agent reads as just another partition (schema, framing, sequence, routing, fan-out), so derived data produced on the box reaches every other app over the same contract. Flow stays one-way per partition; nothing is routed back to its producer; leaving the box is still the firm's bus's job. Reason for the change: every shop generates derived data and needs a publishing layer, vendors do not offer one, and small shops have no bus for it.
+- **A general app publishing API** (rejected 2026-10-12, narrowed the same day). A free-form app-to-agent-to-apps path would make subplane a broker. What is planned instead is `shm_ingest`: a local app writes one-way into a ring the agent reads as just another partition (schema, framing, sequence, routing, fan-out), so derived data produced on the box reaches every other app over the same contract. Flow stays one-way per partition; nothing is routed back to its producer; leaving the box is still the firm's bus's job. Reason for the change: every shop generates derived data and needs a publishing layer, vendors do not offer one, and small shops have no bus for it.
 - **`dlopen` plugins.** They contradict zero-cost dispatch and cross a C++ ABI. YAML activation of compiled-in components gives the operational flexibility without foreign code.
 
 ## Roadmap
@@ -199,9 +199,9 @@ Items are planned unless marked done. The order is the intended build order; eac
 1. **Routing from parent blocks, per-entry symbol routing, and the extension tuple.** One record-version bump covering three related changes. (a) Any routing field (`symbol`, `sequence`, `exchange_ts`, `venue`) may be sourced from `packet_header.<f>`, `message_prefix.<f>` or `message.<Field>`, so discriminators that live in a parent block (CME's sending time and channel) reach the header tuple without the app seeing the parent bytes. (b) A per-partition **extension tuple**: a YAML-declared list of named fixed-width fields sourced the same way, written between the 64-byte header and the payload (`ext_len` in the header's reserved bytes), with the layout published via `HELLO` and `/partitions`; readers that do not care skip it by length, the payload stays bit-identical. (c) **Per-entry symbol routing** for instrument ids inside a repeating group (CME MDP 3.0 incremental refresh): decode the group's symbol field per entry, route the message to every session matching any entry, and write the matched ids into the extension tuple so an app knows which of its instruments the message touched without walking the group.
 2. **Payload arena with header-only session rings** (planned): each framing unit written once to a generation-stamped shared-memory arena per partition, session rings carrying the 64-byte header with a reference to it, so fan-out per session costs one cache line whatever the unit size and elastic workloads scale in sessions without scaling in memory. Inline payloads stay the default for tick-sized units. Never ref-counted: an overwritten slot is an overrun, and no reader can stall the writer.
 3. **Generic schema-driven SBE decoder** on the app side: root fields to columns, groups to nested rows, driven by the same XML the agent loads, no generated code. Serves the kdb+ feed, the Python client and the recorder index alike.
-4. **Recorder and replay** (`ft_record`): a bundled consumer that writes ring records to indexed, rotating segment files under a dedicated wildcard session, with the last-value snapshot at the head of each segment and an explicit gap marker on any overrun; `ft_replay` learns to replay segments through the agent so every app runs unmodified against history.
+4. **Recorder and replay** (`sp_record`): a bundled consumer that writes ring records to indexed, rotating segment files under a dedicated wildcard session, with the last-value snapshot at the head of each segment and an explicit gap marker on any overrun; `sp_replay` learns to replay segments through the agent so every app runs unmodified against history.
 5. **`shm_ingest` transport**: a local app publishes one-way into a ring the agent reads as a partition (see "What was rejected"). Gives a Databento-fed or bus-less shop a complete on-box data plane and lets derived data reach every app over the standard contract.
-6. **kdb+ feed** (`ft_kdb`): a bundled consumer that decodes with the generic decoder, batches, and publishes to a tickerplant through the kdb+ C API, with template-to-table mapping in YAML; with `shm_ingest`, q processes publish derived data back to the box. Target: a KX-listed interface.
+6. **kdb+ feed** (`sp_kdb`): a bundled consumer that decodes with the generic decoder, batches, and publishes to a tickerplant through the kdb+ C API, with template-to-table mapping in YAML; with `shm_ingest`, q processes publish derived data back to the box. Target: a KX-listed interface.
 7. **`databento_live`**: the DBN decoder and the `tcp_stream` transport are implemented (2026-10-12, see "Checked against a real bus"); the live gateway adapter (CRAM authentication, subscription messages, symbology) on top of `tcp_stream` is left for a later contribution, possibly from outside the core team, and is not scheduled.
 8. **Python client** (a thin binding over `shm_reader.h`), also the proof that the app contract is implementable without the C++ SDK, and the host for function-style runtimes.
 9. **Aeron**: ingest done (2026-10-13; the `aeron` transport, Aeron C client and media driver fetched at build time, publishers in the feeds package publish Aeron streams of canonical SBE); an `aeron_ipc` fan-out component (untethered subscriptions) remains planned.
@@ -210,13 +210,13 @@ Items are planned unless marked done. The order is the intended build order; eac
 12. **Derived feeds** (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings; with `shm_ingest` in place these become the agent's own ingest partitions.
 13. Last-value cache exported into shared memory for direct app reads.
 14. Real bus capture on a production NIC with busy-poll, to replace the loopback numbers; kernel-bypass evaluation after that.
-15. **Feeds package** (`flashtick-feeds`, a sister repository, crypto first): a shared gateway framework (WebSocket client, JSON scanner, subscriptions, sequencing, rate limits) and one gateway process per exchange that publishes canonical SBE plus an exchange-specific pack into `shm_ingest`, so a box holds one exchange connection and every app reads a filtered ring. Depends on 5. The same shape makes the agent the only Kafka consumer on a box once 10 exists. The sister repo depends only on the agent's public contract and never the reverse.
+15. **Feeds package** (`subplane-feeds`, a sister repository, crypto first): a shared gateway framework (WebSocket client, JSON scanner, subscriptions, sequencing, rate limits) and one gateway process per exchange that publishes canonical SBE plus an exchange-specific pack into `shm_ingest`, so a box holds one exchange connection and every app reads a filtered ring. Depends on 5. The same shape makes the agent the only Kafka consumer on a box once 10 exists. The sister repo depends only on the agent's public contract and never the reverse.
 
 **Encoding-agnostic apps**, a sequence tracked alongside the numbered items; every step ships as a mode that stays:
 
 1. Raw `flatbuffers` decoder: done (2026-10-12). Field ids in YAML, whole buffer delivered bit-identical, no library.
-2. Typed views for flat SBE schemas: done (2026-10-12). `ft_schema --views` emits a C++ struct or memcpy view (decided by alignment, never packed), a NumPy dtype and a q `1:` spec from any group-less XML; the sample schema's views are generated and compiled at every build.
-3. The canonical flat SBE schema: done (2026-10-12). `schemas/flashtick_canonical.xml`: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat as fixed, naturally aligned blocks with a common 32-byte prefix and int64 prices scaled by 10^-9; every message is a struct view, generated and compiled at every build, with `examples/views_app.cpp` consuming it end to end. No transcode yet.
+2. Typed views for flat SBE schemas: done (2026-10-12). `sp_schema --views` emits a C++ struct or memcpy view (decided by alignment, never packed), a NumPy dtype and a q `1:` spec from any group-less XML; the sample schema's views are generated and compiled at every build.
+3. The canonical flat SBE schema: done (2026-10-12). `schemas/subplane_canonical.xml`: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat as fixed, naturally aligned blocks with a common 32-byte prefix and int64 prices scaled by 10^-9; every message is a struct view, generated and compiled at every build, with `examples/views_app.cpp` consuming it end to end. No transcode yet.
 4. Transcode to the canonical schema (planned): a per-partition mapping in the decoder YAML from source fields to canonical fields, with scale and unit conversion, validated at startup; apps written against the canonical struct run on any bus. Raw delivery stays the default.
 5. App-attached target schema (planned): a session names its own flat SBE XML, the daemon resolves the mapping by field name with aliases, one transcode per distinct schema.
-6. `ft_schema` (planned): projects tick-shaped protobuf or FlatBuffers messages to flat SBE XML and an identity mapping; a convenience over 4 and 5. A raw protobuf decoder follows the shape of step 1 when a user needs one.
+6. `sp_schema` (planned): projects tick-shaped protobuf or FlatBuffers messages to flat SBE XML and an identity mapping; a convenience over 4 and 5. A raw protobuf decoder follows the shape of step 1 when a user needs one.

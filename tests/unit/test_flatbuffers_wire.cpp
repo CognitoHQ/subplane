@@ -1,13 +1,13 @@
 #include <doctest.h>
 
 #include "fb_fixture.h"
-#include "flashtick/decoder/flatbuffers_wire.h"
+#include "subplane/decoder/flatbuffers_wire.h"
 
 #include <cstring>
 #include <vector>
 
-using namespace flashtick;
-using namespace flashtick::test;
+using namespace subplane;
+using namespace subplane::test;
 
 namespace {
 void u16(std::vector<uint8_t>& b, uint16_t v) { b.push_back(static_cast<uint8_t>(v)); b.push_back(static_cast<uint8_t>(v >> 8)); }

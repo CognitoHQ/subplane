@@ -22,16 +22,16 @@
 #include <thread>
 #include <vector>
 
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/fanout/ring_writer.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/fanout/ring_writer.h"
+#include "subplane/shm/control_events.h"
 #include "tool_common.h"
 
 namespace {
 
-using namespace flashtick;
-using fttool::Args;
+using namespace subplane;
+using sptool::Args;
 
 void usage() {
     std::fputs(
@@ -268,7 +268,7 @@ int run_harness(const Args& a, std::string& err) {
     uint64_t nreaders = 4, seconds = 2, rate = 500000;
     if (!a.u64("readers", 4, nreaders, err) || !a.u64("seconds", 2, seconds, err) || !a.u64("rate", 500000, rate, err)) return 2;
     if (nreaders == 0 || nreaders > 64 || seconds < 2) { err = "--readers 1..64, --seconds >= 2"; return 2; }
-    const std::string path = subst_pid(a.str("path", "/dev/shm/flashtick.soak.<pid>.ring"));
+    const std::string path = subst_pid(a.str("path", "/dev/shm/subplane.soak.<pid>.ring"));
     ::unlink(path.c_str());
     ::unlink((path + ".tmp").c_str());
 

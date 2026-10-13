@@ -1,8 +1,8 @@
-#include "flashtick/api_server.h"
+#include "subplane/api_server.h"
 
-#include "flashtick/agent.h"
-#include "flashtick/logging/log_registry.h"
-#include "flashtick/metrics/metrics_manager.h"
+#include "subplane/agent.h"
+#include "subplane/logging/log_registry.h"
+#include "subplane/metrics/metrics_manager.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -13,7 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace flashtick {
+namespace subplane {
 
 ApiServer::ApiServer()
     : agent_(nullptr), running_(false), should_stop_(false), port_(0), server_socket_(-1) {}
@@ -394,4 +394,4 @@ StringType ApiServer::serialize_status(const AgentStatus& status) {
     return j.str();
 }
 
-} // namespace flashtick
+} // namespace subplane

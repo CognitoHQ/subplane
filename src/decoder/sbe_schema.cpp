@@ -1,4 +1,4 @@
-#include "flashtick/decoder/sbe_schema.h"
+#include "subplane/decoder/sbe_schema.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -7,7 +7,7 @@
 
 #include "pugixml.hpp"
 
-namespace flashtick {
+namespace subplane {
 namespace {
 
 struct Member {
@@ -359,4 +359,4 @@ bool SbeSchema::is_nested_field(const MessageDef& m, std::string_view name) cons
     return false;
 }
 
-} // namespace flashtick
+} // namespace subplane

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace flashtick::test {
+namespace subplane::test {
 
 inline std::string fb_fixture_path(const char* name) {
     std::string f = __FILE__;
@@ -45,4 +45,4 @@ inline std::vector<FbExpected> fb_fixture_expected() {
     return out;
 }
 
-} // namespace flashtick::test
+} // namespace subplane::test

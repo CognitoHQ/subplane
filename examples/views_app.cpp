@@ -1,17 +1,17 @@
-// views_app: read a flashtick ring with the generated canonical views, no codec.
+// views_app: read a subplane ring with the generated canonical views, no codec.
 //
 //   views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start]
 //
-// Dispatches every data record through ft_canonical::view<T>() (a pointer into
+// Dispatches every data record through sp_canonical::view<T>() (a pointer into
 // the ring, checked against length, template id and schema id), prints a line
 // per message unless --quiet, and ends with one summary line:
 //   trades=N quotes=N books=N snapshots=N other=N heartbeats=N bad=N
 // `bad` counts data records that no view accepted (wrong schema, short payload).
-// Depends only on the client headers and the generated flashtick_canonical_views.h.
+// Depends only on the client headers and the generated subplane_canonical_views.h.
 
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick_canonical_views.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane_canonical_views.h"
 
 #include <chrono>
 #include <cstdio>
@@ -20,8 +20,8 @@
 #include <string>
 #include <thread>
 
-using namespace flashtick;
-using namespace ft_canonical;
+using namespace subplane;
+using namespace sp_canonical;
 
 namespace {
 double px(int64_t v) { return static_cast<double>(v) / 1e9; } // PriceExponent = -9

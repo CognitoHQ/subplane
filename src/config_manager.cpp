@@ -1,8 +1,8 @@
-#include "flashtick/config_manager.h"
+#include "subplane/config_manager.h"
 #include <iostream>
 #include <fstream>
 
-namespace flashtick {
+namespace subplane {
 
 ConfigManager::ConfigManager() = default;
 
@@ -109,4 +109,4 @@ YAML::Node ConfigManager::get_node(const std::string& key) const {
     return node;
 }
 
-} // namespace flashtick
+} // namespace subplane

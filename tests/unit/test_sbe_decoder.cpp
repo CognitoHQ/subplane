@@ -4,9 +4,9 @@
 #include <string>
 #include <vector>
 
-#include "flashtick/decoder/sbe_routing_decoder.h"
+#include "subplane/decoder/sbe_routing_decoder.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 std::string sample_path() {

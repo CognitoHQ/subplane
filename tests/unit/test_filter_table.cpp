@@ -1,8 +1,8 @@
 #include <doctest.h>
 
-#include "flashtick/core/filter_table.h"
+#include "subplane/core/filter_table.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 TickHeader hdr(Kind k, uint8_t type, uint32_t sym, uint16_t part, uint16_t venue = 1) {

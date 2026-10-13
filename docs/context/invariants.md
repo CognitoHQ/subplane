@@ -1,4 +1,4 @@
-# flashtick: Non-Negotiable Requirements
+# subplane: Non-Negotiable Requirements
 
 These are hard rules. Every change must honour all of them. Numbers are stable: a retired number is not reused.
 
@@ -6,7 +6,7 @@ These are hard rules. Every change must honour all of them. Numbers are stable: 
 
 ## INV-001: Retired
 
-Was "Plugin ABI stability". Retired because flashtick no longer loads plugins: it is a single static binary with compiled-in components selected by YAML (no `dlopen`, no `.so`). The ABI that matters now is the ring and record layout, covered by INV-009.
+Was "Plugin ABI stability". Retired because subplane no longer loads plugins: it is a single static binary with compiled-in components selected by YAML (no `dlopen`, no `.so`). The ABI that matters now is the ring and record layout, covered by INV-009.
 
 ---
 
@@ -103,7 +103,7 @@ Ring files are mapped `PROT_READ` by readers. Readers hold no locks, write no sh
 
 ## INV-012: Payload bytes are bit-identical to the bus
 
-The payload of a DATA or BUS_ADMIN record is exactly the SBE message bytes received from the bus (SBE header included). flashtick routes; it does not rewrite, normalize, truncate or reorder payloads. The only exception is the last-value cache, which truncates oversize payloads to the header and flags it (`FLAG_LVC_TRUNCATED`); live ring records are never truncated.
+The payload of a DATA or BUS_ADMIN record is exactly the SBE message bytes received from the bus (SBE header included). subplane routes; it does not rewrite, normalize, truncate or reorder payloads. The only exception is the last-value cache, which truncates oversize payloads to the header and flags it (`FLAG_LVC_TRUNCATED`); live ring records are never truncated.
 
 **Rationale**: apps decode with the publisher's own generated codecs. Any alteration breaks that contract and moves schema ownership into the agent.
 
@@ -119,7 +119,7 @@ Each agent start sets a new `epoch` (start time in ns), writes it into every new
 
 ## INV-014: The only hard requirement on a publisher is its schema
 
-flashtick must not require publishers to add headers, framing bytes or a particular sequence field. For SBE, message length comes from walking the schema, so not even a length prefix is required. For DBN the record carries its length. For FlatBuffers the requirement is the field ids of the routing fields (from the `.fbs`, no schema file loaded) plus a length: the size prefix, a framer prefix, or one buffer per datagram. For encodings that are not self-delimiting (planned: protobuf, fixed-offset layouts) the requirement is the schema plus a length prefix, a count, or one message per datagram. The payload delivered to apps is the publisher's complete framing unit, bit-identical, never a slice of one (a FlatBuffers sub-table or an SBE group entry is not a message). Packet layout is described in YAML and checked with `ft_probe`. If a bus cannot be described by the framing block, extend the framing block, not the publisher.
+subplane must not require publishers to add headers, framing bytes or a particular sequence field. For SBE, message length comes from walking the schema, so not even a length prefix is required. For DBN the record carries its length. For FlatBuffers the requirement is the field ids of the routing fields (from the `.fbs`, no schema file loaded) plus a length: the size prefix, a framer prefix, or one buffer per datagram. For encodings that are not self-delimiting (planned: protobuf, fixed-offset layouts) the requirement is the schema plus a length prefix, a count, or one message per datagram. The payload delivered to apps is the publisher's complete framing unit, bit-identical, never a slice of one (a FlatBuffers sub-table or an SBE group entry is not a message). Packet layout is described in YAML and checked with `sp_probe`. If a bus cannot be described by the framing block, extend the framing block, not the publisher.
 
 **Rationale**: publisher-side requirements were identified as the main adoption risk. SBE already fully describes message length.
 

@@ -1,6 +1,6 @@
 // shm_demo_app: the complete app-side contract in one file.
 //
-//   shm_demo_app --socket /run/flashtick/flashtick.sock [--session demo]
+//   shm_demo_app --socket /run/subplane/subplane.sock [--session demo]
 //                [--symbols 1,2,3] [--trades-only] [--seconds N] [--quiet]
 //
 // 1. connect to the agent's control socket and say hello
@@ -14,10 +14,10 @@
 // print the routing header. No part of this file depends on anything but the
 // two client headers.
 
-#include "flashtick/client/control_client.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/client/control_client.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/shm/control_events.h"
 
 #include <csignal>
 #include <cstdio>
@@ -29,7 +29,7 @@
 #include <unordered_map>
 #include <vector>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 
@@ -81,7 +81,7 @@ void on_control(Book& b, const TickHeader& h, const uint8_t* p, uint32_t len, bo
 } // namespace
 
 int main(int argc, char** argv) {
-    std::string socket_path = "/run/flashtick/flashtick.sock";
+    std::string socket_path = "/run/subplane/subplane.sock";
     std::string session = "demo";
     std::vector<std::string> symbols;
     bool trades_only = false, quiet = false;

@@ -1,14 +1,14 @@
 #include <doctest.h>
 
-#include "flashtick/decoder/sbe_schema.h"
-#include "flashtick/framing/framing.h"
-#include "flashtick/framing/sbe_length.h"
+#include "subplane/decoder/sbe_schema.h"
+#include "subplane/framing/framing.h"
+#include "subplane/framing/sbe_length.h"
 
 #include <cstring>
 #include <string>
 #include <vector>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 

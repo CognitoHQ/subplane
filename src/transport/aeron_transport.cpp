@@ -1,6 +1,6 @@
-#include "flashtick/transport/aeron_transport.h"
+#include "subplane/transport/aeron_transport.h"
 
-#include "flashtick/core/clock.h"
+#include "subplane/core/clock.h"
 
 #include <aeronc.h>
 #include <aeronmd.h>
@@ -8,7 +8,7 @@
 #include <cstring>
 #include <sched.h>
 
-namespace flashtick {
+namespace subplane {
 
 bool AeronTransportConfig::parse(const YAML::Node& node, AeronTransportConfig& out, std::string& err) {
     try {
@@ -83,7 +83,7 @@ bool AeronTransport::open(std::string& err) {
         err = std::string("aeron dir: ") + aeron_errmsg(); close(); return false;
     }
     aeron_context_set_driver_timeout_ms(ctx_, cfg_.driver_timeout_ms);
-    aeron_context_set_client_name(ctx_, "flashtickd");
+    aeron_context_set_client_name(ctx_, "subplaned");
     aeron_context_set_error_handler(ctx_, &AeronTransport::on_client_error, this);
     if (aeron_init(&client_, ctx_) < 0) { err = std::string("aeron init (is the media driver running?): ") + aeron_errmsg(); close(); return false; }
     if (aeron_start(client_) < 0) { err = std::string("aeron start: ") + aeron_errmsg(); close(); return false; }
@@ -166,4 +166,4 @@ std::string AeronTransport::describe() const {
     return s;
 }
 
-} // namespace flashtick
+} // namespace subplane

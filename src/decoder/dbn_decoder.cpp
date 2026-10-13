@@ -1,8 +1,8 @@
-#include "flashtick/decoder/dbn_decoder.h"
+#include "subplane/decoder/dbn_decoder.h"
 
 #include <cstring>
 
-namespace flashtick {
+namespace subplane {
 namespace {
 
 // Record types and the offset of their u32 `sequence` field (DBN v3 layouts,
@@ -170,4 +170,4 @@ DecodeResult DbnDecoder::decode(const uint8_t* msg, uint32_t avail, TickHeader& 
     return r;
 }
 
-} // namespace flashtick
+} // namespace subplane

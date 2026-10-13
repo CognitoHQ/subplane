@@ -9,7 +9,7 @@
 #include <thread>
 #include <atomic>
 
-namespace flashtick {
+namespace subplane {
 
 class KafkaProducer : public ProducerPlugin {
 public:
@@ -34,8 +34,8 @@ public:
 private:
     struct KafkaConfig {
         std::string bootstrap_servers = "localhost:9092";
-        std::string group_id = "flashtick";
-        std::string client_id = "flashtick-client";
+        std::string group_id = "subplane";
+        std::string client_id = "subplane-client";
         std::string security_protocol = "plaintext";
         std::string sasl_mechanism;
         std::string sasl_username;
@@ -74,4 +74,4 @@ private:
     void cleanup();
 };
 
-} // namespace flashtick
+} // namespace subplane

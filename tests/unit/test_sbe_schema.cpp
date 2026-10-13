@@ -4,9 +4,9 @@
 #include <sstream>
 #include <string>
 
-#include "flashtick/decoder/sbe_schema.h"
+#include "subplane/decoder/sbe_schema.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 std::string sample_path() {

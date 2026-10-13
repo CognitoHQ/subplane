@@ -1,8 +1,8 @@
 #include <doctest.h>
 
-#include "flashtick/core/histogram.h"
+#include "subplane/core/histogram.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 TEST_CASE("histogram bucket edges") {
     for (uint64_t v : std::initializer_list<uint64_t>{1ull, 2ull, 3ull, 4ull, 5ull, 7ull, 8ull, 100ull, 1000ull, 123456789ull, UINT64_MAX}) {

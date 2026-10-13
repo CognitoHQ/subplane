@@ -1,6 +1,6 @@
 // rule_runner: function-style consumption of a session.
 //
-//   rule_runner --socket /run/flashtick/flashtick.sock [--session rules]
+//   rule_runner --socket /run/subplane/subplane.sock [--session rules]
 //               [--from-start] [--seconds N]
 //
 // The agent is the event source; this process is a tiny function runtime.
@@ -17,10 +17,10 @@
 // payload with the publisher's generated codec, exactly as the demo app
 // comment says; the runtime does not care.
 
-#include "flashtick/client/control_client.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/client/control_client.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/shm/control_events.h"
 
 #include <csignal>
 #include <cstdio>
@@ -32,7 +32,7 @@
 #include <unordered_map>
 #include <vector>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 
@@ -65,7 +65,7 @@ bool matches(const Trigger& t, const TickHeader& h) {
 } // namespace
 
 int main(int argc, char** argv) {
-    std::string socket_path = "/run/flashtick/flashtick.sock";
+    std::string socket_path = "/run/subplane/subplane.sock";
     std::string session = "rules";
     bool from_start = false;
     int seconds = 0;

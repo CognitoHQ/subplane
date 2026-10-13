@@ -1,7 +1,7 @@
-#include "flashtick/control/control_server.h"
+#include "subplane/control/control_server.h"
 
-#include "flashtick/core/clock.h"
-#include "flashtick/logging/log_registry.h"
+#include "subplane/core/clock.h"
+#include "subplane/logging/log_registry.h"
 
 #include <algorithm>
 #include <cctype>
@@ -15,7 +15,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-namespace flashtick {
+namespace subplane {
 
 namespace {
 
@@ -669,4 +669,4 @@ bool ControlServer::op_ping(Client& c, const CtlHeader& h, const uint8_t* body) 
     return reply(c, h, CtlStatus::OK, &r, sizeof(r));
 }
 
-} // namespace flashtick
+} // namespace subplane

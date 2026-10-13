@@ -3,14 +3,14 @@
 # Pinned tag, fetched at configure time; no Java, no archive, no tests, no samples.
 # Offline or vendored builds point FETCHCONTENT_SOURCE_DIR_AERON at a checkout.
 # Aeron's own CMake needs >= 3.30 (Ubuntu 22.04 apt ships 3.22: scripts/ci-build-2204.sh
-# installs CMake from Kitware). FLASHTICK_WITH_AERON=OFF builds exactly the pre-Aeron agent.
+# installs CMake from Kitware). SUBPLANE_WITH_AERON=OFF builds exactly the pre-Aeron agent.
 include(FetchContent)
 
-set(FLASHTICK_AERON_TAG "1.53.3" CACHE STRING "Aeron git tag to build against")
+set(SUBPLANE_AERON_TAG "1.53.3" CACHE STRING "Aeron git tag to build against")
 
 if(CMAKE_VERSION VERSION_LESS 3.30)
-    message(FATAL_ERROR "Aeron ${FLASHTICK_AERON_TAG} needs CMake >= 3.30 (have ${CMAKE_VERSION}). "
-                        "Install a newer CMake or configure with -DFLASHTICK_WITH_AERON=OFF.")
+    message(FATAL_ERROR "Aeron ${SUBPLANE_AERON_TAG} needs CMake >= 3.30 (have ${CMAKE_VERSION}). "
+                        "Install a newer CMake or configure with -DSUBPLANE_WITH_AERON=OFF.")
 endif()
 
 # Aeron's options default from STANDALONE_BUILD, which is off when it is a sub-project,
@@ -26,7 +26,7 @@ set(AERON_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(aeron
     GIT_REPOSITORY https://github.com/aeron-io/aeron.git
-    GIT_TAG        ${FLASHTICK_AERON_TAG}
+    GIT_TAG        ${SUBPLANE_AERON_TAG}
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   FALSE
     EXCLUDE_FROM_ALL
@@ -36,10 +36,10 @@ FetchContent_MakeAvailable(aeron)
 # INTENT: aeron_driver_static already contains the whole C client (Aeron builds the
 # driver archive from client + driver sources), so the agent links that one archive.
 # Linking aeron_static as well would duplicate every client symbol.
-add_library(flashtick_aeron INTERFACE)
-target_link_libraries(flashtick_aeron INTERFACE aeron_driver_static)
+add_library(subplane_aeron INTERFACE)
+target_link_libraries(subplane_aeron INTERFACE aeron_driver_static)
 # Aeron headers are third-party: keep -Wpedantic/-Wconversion (and -Werror) off them.
-target_include_directories(flashtick_aeron SYSTEM INTERFACE
+target_include_directories(subplane_aeron SYSTEM INTERFACE
     ${aeron_SOURCE_DIR}/aeron-client/src/main/c
     ${aeron_SOURCE_DIR}/aeron-driver/src/main/c)
-target_compile_definitions(flashtick_aeron INTERFACE FLASHTICK_WITH_AERON=1)
+target_compile_definitions(subplane_aeron INTERFACE SUBPLANE_WITH_AERON=1)

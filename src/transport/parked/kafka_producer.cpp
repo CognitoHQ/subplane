@@ -1,9 +1,9 @@
-#include "flashtick/producer/kafka_producer.h"
+#include "subplane/producer/kafka_producer.h"
 #include <iostream>
 #include <sstream>
 #include <yaml-cpp/yaml.h>
 
-namespace flashtick {
+namespace subplane {
 
 KafkaProducer::KafkaProducer() : connected_(false), running_(false) {
 }
@@ -222,8 +222,8 @@ bool KafkaProducer::parse_config(const std::string& config_str) {
         YAML::Node config = YAML::Load(config_str);
         
         config_.bootstrap_servers = config["bootstrap_servers"].as<std::string>("localhost:9092");
-        config_.group_id = config["group_id"].as<std::string>("flashtick");
-        config_.client_id = config["client_id"].as<std::string>("flashtick-client");
+        config_.group_id = config["group_id"].as<std::string>("subplane");
+        config_.client_id = config["client_id"].as<std::string>("subplane-client");
         config_.security_protocol = config["security_protocol"].as<std::string>("plaintext");
         config_.session_timeout_ms = config["session_timeout_ms"].as<int>(30000);
         config_.heartbeat_interval_ms = config["heartbeat_interval_ms"].as<int>(3000);
@@ -303,4 +303,4 @@ void KafkaProducer::cleanup() {
     }
 }
 
-} // namespace flashtick
+} // namespace subplane

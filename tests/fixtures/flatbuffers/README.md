@@ -12,7 +12,7 @@ never depends on the FlatBuffers library.
   `flags`, so its vtable is shorter than the schema's.
 - `fb_sample.bin`: the 300 buffers back to back (each `u32 size` + buffer).
 - `fb_sample.pcap`: the same buffers as UDP/IPv4/Ethernet datagrams, 1..4 per
-  datagram, for `ft_replay --pcap`.
+  datagram, for `sp_replay --pcap`.
 - `fb_sample.expected`: one line per message: `kind seq ts instrument venue symbol flags`
   (kind 1 trade, 2 quote, 3 heartbeat; instrument/venue 0 and symbol `-` for heartbeats).
 

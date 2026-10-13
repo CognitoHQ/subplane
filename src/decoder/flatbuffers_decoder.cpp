@@ -1,10 +1,10 @@
-#include "flashtick/decoder/flatbuffers_decoder.h"
+#include "subplane/decoder/flatbuffers_decoder.h"
 
-#include "flashtick/decoder/flatbuffers_wire.h"
+#include "subplane/decoder/flatbuffers_wire.h"
 
 #include <cstring>
 
-namespace flashtick {
+namespace subplane {
 namespace {
 
 struct ScalarName { const char* name; FbScalar type; };
@@ -240,4 +240,4 @@ DecodeResult FlatbuffersDecoder::decode(const uint8_t* msg, uint32_t avail, Tick
     return r;
 }
 
-} // namespace flashtick
+} // namespace subplane

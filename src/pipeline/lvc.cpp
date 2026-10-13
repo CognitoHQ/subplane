@@ -1,8 +1,8 @@
-#include "flashtick/pipeline/lvc.h"
+#include "subplane/pipeline/lvc.h"
 
 #include <cstring>
 
-namespace flashtick {
+namespace subplane {
 
 namespace {
 constexpr size_t kVerBytes = 64;
@@ -100,4 +100,4 @@ bool Lvc::read(uint32_t symbol_id, uint8_t msg_type, TickHeader& hdr, std::vecto
     return false;
 }
 
-} // namespace flashtick
+} // namespace subplane

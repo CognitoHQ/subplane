@@ -1,4 +1,4 @@
-// ft_sbe_sender: synthetic bus publisher for tests and benchmarks.
+// sp_sbe_sender: synthetic bus publisher for tests and benchmarks.
 //
 // Publishes SBE messages for any schema laid out by a `framing:` block, over
 // UDP multicast or unicast. Templates generated: Trade(1), Quote(2),
@@ -22,12 +22,12 @@
 
 #include "packet_gen.h"
 
-#ifndef FT_DEFAULT_SCHEMA
-#define FT_DEFAULT_SCHEMA "tests/data/sample_md.xml"
+#ifndef SP_DEFAULT_SCHEMA
+#define SP_DEFAULT_SCHEMA "tests/data/sample_md.xml"
 #endif
 
-using namespace flashtick;
-using namespace fttool;
+using namespace subplane;
+using namespace sptool;
 
 namespace {
 
@@ -36,7 +36,7 @@ void on_sigint(int) { g_stop = 1; }
 
 void usage() {
     std::fputs(
-        "usage: ft_sbe_sender --port N [options]\n"
+        "usage: sp_sbe_sender --port N [options]\n"
         "  --schema <xml>          SBE schema (default: tests/data/sample_md.xml)\n"
         "  --framing <yaml|file>   framing block (default: bare concatenation)\n"
         "  --group <ip>            multicast group (empty = unicast)\n"

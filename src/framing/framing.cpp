@@ -1,9 +1,9 @@
-#include "flashtick/framing/framing.h"
+#include "subplane/framing/framing.h"
 
 #include <bit>
 #include <cstring>
 
-namespace flashtick {
+namespace subplane {
 
 namespace {
 
@@ -264,4 +264,4 @@ NextStatus Framer::next(MessageIter& it, const uint8_t*& msg, uint32_t& len) con
     return NextStatus::OK;
 }
 
-} // namespace flashtick
+} // namespace subplane

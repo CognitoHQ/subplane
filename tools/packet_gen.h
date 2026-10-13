@@ -1,6 +1,6 @@
 #pragma once
 
-// Synthetic SBE packet generator shared by ft_sbe_sender and ft_replay --bench.
+// Synthetic SBE packet generator shared by sp_sbe_sender and sp_replay --bench.
 // Builds datagrams for any schema laid out by a `framing:` block. Cold-path
 // tool code (the generator itself is not on the agent's hot path).
 
@@ -10,20 +10,20 @@
 #include <string>
 #include <vector>
 
-#include "flashtick/core/clock.h"
+#include "subplane/core/clock.h"
 #include "sbe_encoder.h"
 #include "tool_common.h"
 
-#ifndef FT_DEFAULT_SCHEMA
-#define FT_DEFAULT_SCHEMA "tests/data/sample_md.xml"
+#ifndef SP_DEFAULT_SCHEMA
+#define SP_DEFAULT_SCHEMA "tests/data/sample_md.xml"
 #endif
 
-namespace fttool {
+namespace sptool {
 
-using namespace flashtick;
+using namespace subplane;
 
 struct GenOptions {
-    std::string schema = FT_DEFAULT_SCHEMA, framing, group, host = "127.0.0.1", interface;
+    std::string schema = SP_DEFAULT_SCHEMA, framing, group, host = "127.0.0.1", interface;
     uint64_t port = 0, rate = 0, count = 0, symbols = 10, per_packet = 1, heartbeat_ms = 0;
     uint64_t gap_every = 0, seq_reset_at = 0, unknown_every = 0, dup_every = 0;
     unsigned mix_trade = 70, mix_quote = 25, mix_book = 5;
@@ -118,7 +118,7 @@ public:
             !bind_tpl(hb_, 100, o_.heartbeat_ms > 0, "Heartbeat") ||
             !bind_tpl(reset_, 101, o_.seq_reset_at > 0, "SeqReset")) return false;
         // Canonical prices are int64 scaled by 1e-9: make the synthetic numbers read as sane prices/sizes.
-        canonical_ = s_.package() == "flashtick.canonical";
+        canonical_ = s_.package() == "subplane.canonical";
 
         auto find_ff = [](const std::vector<FramingField>& v, const std::string& n) -> const FramingField* {
             for (const auto& f : v) if (f.name == n) return &f;
@@ -270,4 +270,4 @@ private:
     GenStats st_;
 };
 
-} // namespace fttool
+} // namespace sptool

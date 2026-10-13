@@ -3,9 +3,9 @@
 #include <string>
 #include <vector>
 
-#include "flashtick/framing/sbe_length.h"
+#include "subplane/framing/sbe_length.h"
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 std::string sample_path() {

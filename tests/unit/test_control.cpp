@@ -1,11 +1,11 @@
 #include <doctest.h>
 
 #include "fake_transport.h"
-#include "flashtick/client/control_client.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/control/control_server.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/pipeline/session_manager.h"
+#include "subplane/client/control_client.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/control/control_server.h"
+#include "subplane/core/clock.h"
+#include "subplane/pipeline/session_manager.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,8 +19,8 @@
 #include <unistd.h>
 #include <vector>
 
-using namespace flashtick;
-using flashtick::test::FakeTransport;
+using namespace subplane;
+using subplane::test::FakeTransport;
 
 namespace {
 
@@ -117,7 +117,7 @@ struct CH {
         const int n = g_seq.fetch_add(1);
         agent = "ctltest" + std::to_string(getpid()) + "_" + std::to_string(n);
         ring_dir = ::access("/dev/shm", W_OK) == 0 ? "/dev/shm" : tmp_dir();
-        sock_path = tmp_dir() + "/ft_ctl_" + std::to_string(getpid()) + "_" + std::to_string(n) + ".sock";
+        sock_path = tmp_dir() + "/sp_ctl_" + std::to_string(getpid()) + "_" + std::to_string(n) + ".sock";
 
         SessionManagerConfig sc;
         sc.ring_dir = ring_dir;
@@ -143,7 +143,7 @@ struct CH {
         pipe.stop();
         CHECK_FALSE(exists(sock_path));
         // No ring left behind for this agent.
-        const std::string prefix = "flashtick." + agent + ".";
+        const std::string prefix = "subplane." + agent + ".";
         if (DIR* d = ::opendir(ring_dir.c_str())) {
             while (dirent* e = ::readdir(d)) {
                 CHECK_MESSAGE(std::strncmp(e->d_name, prefix.c_str(), prefix.size()) != 0, e->d_name);
@@ -403,7 +403,7 @@ TEST_CASE("control: hello, dynamic session lifecycle, snapshot, symbols, linger,
 }
 
 TEST_CASE("control: bad version, short and oversized datagrams do not kill the server; fallback path") {
-    CH h("/nonexistent-flashtick-dir/ctl.sock"); // ENOENT -> fallback (asserted in CH)
+    CH h("/nonexistent-subplane-dir/ctl.sock"); // ENOENT -> fallback (asserted in CH)
     ControlClient cli;
     REQUIRE(cli.connect(h.sock_path));
 

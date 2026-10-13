@@ -1,22 +1,22 @@
-#include "flashtick/agent.h"
+#include "subplane/agent.h"
 
-#include "flashtick/api_server.h"
-#include "flashtick/config_manager.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/logging/log_registry.h"
-#include "flashtick/metrics/metrics_manager.h"
-#include "flashtick/pipeline/lvc.h"
-#include "flashtick/pipeline/partition.h"
-#include "flashtick/pipeline/pipeline.h"
-#include "flashtick/pipeline/session.h"
-#include "flashtick/pipeline/session_manager.h"
-#include "flashtick/symbol_table.h"
-#include "flashtick/control/control_server.h"
+#include "subplane/api_server.h"
+#include "subplane/config_manager.h"
+#include "subplane/core/clock.h"
+#include "subplane/logging/log_registry.h"
+#include "subplane/metrics/metrics_manager.h"
+#include "subplane/pipeline/lvc.h"
+#include "subplane/pipeline/partition.h"
+#include "subplane/pipeline/pipeline.h"
+#include "subplane/pipeline/session.h"
+#include "subplane/pipeline/session_manager.h"
+#include "subplane/symbol_table.h"
+#include "subplane/control/control_server.h"
 
 #include <iostream>
 #include <unistd.h>
 
-namespace flashtick {
+namespace subplane {
 
 Agent::Agent() : running_(false) {
     config_manager_ = std::make_unique<ConfigManager>();
@@ -44,10 +44,10 @@ bool Agent::initialize(const std::string& config_path) {
         std::cerr << "failed to initialize logging" << std::endl;
         return false;
     }
-    LogRegistry::instance().process_started("flashtick", std::to_string(getpid()));
+    LogRegistry::instance().process_started("subplane", std::to_string(getpid()));
     LogRegistry::instance().config_loaded(config_path);
 
-    name_ = config_manager_->get_value<std::string>("agent.name", "flashtick");
+    name_ = config_manager_->get_value<std::string>("agent.name", "subplane");
     version_ = config_manager_->get_value<std::string>("agent.version", "2.0.0-dev");
     max_symbols_ = config_manager_->get_value<uint32_t>("agent.max_symbols", 65536u);
 
@@ -254,8 +254,8 @@ bool Agent::start() {
 
     {
         ControlServer::Config cc;
-        cc.socket_path = config_manager_->get_value<std::string>("control.socket_path", "/run/flashtick/" + name_ + ".sock");
-        cc.fallback_socket_path = config_manager_->get_value<std::string>("control.fallback_socket_path", "/tmp/flashtick." + name_ + ".sock");
+        cc.socket_path = config_manager_->get_value<std::string>("control.socket_path", "/run/subplane/" + name_ + ".sock");
+        cc.fallback_socket_path = config_manager_->get_value<std::string>("control.fallback_socket_path", "/tmp/subplane." + name_ + ".sock");
         cc.linger_ns = smc.linger_ns;
         control_ = std::make_unique<ControlServer>(cc, *sessions_, *symbols_, praw, name_, epoch_);
         if (!control_->start(err)) {
@@ -296,7 +296,7 @@ void Agent::stop() {
     for (auto& g : groups_) g->stop();
     for (auto& p : partitions_) p->close();
     sessions_.reset();
-    LogRegistry::instance().process_stopped("flashtick", std::to_string(getpid()));
+    LogRegistry::instance().process_stopped("subplane", std::to_string(getpid()));
 }
 
 AgentStatus Agent::get_status() const {
@@ -385,23 +385,23 @@ std::vector<std::pair<uint32_t, std::string>> Agent::symbols(uint32_t from_id, u
 std::string Agent::render_metrics(const std::string& format) const {
     const AgentStatus st = get_status();
     if (format == "text") {
-        std::string o = "flashtick_uptime_seconds " + std::to_string(st.uptime_seconds) + "\n";
+        std::string o = "subplane_uptime_seconds " + std::to_string(st.uptime_seconds) + "\n";
         for (const auto& p : partitions_) {
             const auto c = p->counters.snapshot();
             const std::string l = "{partition=\"" + p->name() + "\"}";
-            o += "flashtick_partition_packets" + l + " " + std::to_string(c.packets) + "\n";
-            o += "flashtick_partition_messages" + l + " " + std::to_string(c.messages) + "\n";
-            o += "flashtick_partition_gaps" + l + " " + std::to_string(c.gaps) + "\n";
-            o += "flashtick_partition_unknown_templates" + l + " " + std::to_string(c.unknown_templates) + "\n";
-            o += "flashtick_partition_undecodable_tail" + l + " " + std::to_string(c.undecodable_tail) + "\n";
+            o += "subplane_partition_packets" + l + " " + std::to_string(c.packets) + "\n";
+            o += "subplane_partition_messages" + l + " " + std::to_string(c.messages) + "\n";
+            o += "subplane_partition_gaps" + l + " " + std::to_string(c.gaps) + "\n";
+            o += "subplane_partition_unknown_templates" + l + " " + std::to_string(c.unknown_templates) + "\n";
+            o += "subplane_partition_undecodable_tail" + l + " " + std::to_string(c.undecodable_tail) + "\n";
         }
         for (const auto& g : groups_) {
             const auto h = g->hist_recv_to_publish().snapshot();
             const std::string l = "{group=\"" + g->name() + "\"}";
-            o += "flashtick_recv_to_publish_ns_p50" + l + " " + std::to_string(percentile(h, 0.50)) + "\n";
-            o += "flashtick_recv_to_publish_ns_p99" + l + " " + std::to_string(percentile(h, 0.99)) + "\n";
-            o += "flashtick_recv_to_publish_ns_p999" + l + " " + std::to_string(percentile(h, 0.999)) + "\n";
-            o += "flashtick_recv_to_publish_count" + l + " " + std::to_string(h.count) + "\n";
+            o += "subplane_recv_to_publish_ns_p50" + l + " " + std::to_string(percentile(h, 0.50)) + "\n";
+            o += "subplane_recv_to_publish_ns_p99" + l + " " + std::to_string(percentile(h, 0.99)) + "\n";
+            o += "subplane_recv_to_publish_ns_p999" + l + " " + std::to_string(percentile(h, 0.999)) + "\n";
+            o += "subplane_recv_to_publish_count" + l + " " + std::to_string(h.count) + "\n";
         }
         return o;
     }
@@ -432,4 +432,4 @@ std::string Agent::render_metrics(const std::string& format) const {
     return o;
 }
 
-} // namespace flashtick
+} // namespace subplane

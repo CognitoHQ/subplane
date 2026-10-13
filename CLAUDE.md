@@ -1,6 +1,6 @@
-# flashtick: Co-Located Market Data Agent
+# subplane: Co-Located Market Data Agent
 
-The agent binary is `flashtickd` (CMake target `flashtickd`, `src/main.cpp`). The name `flashtick` is reserved for a future operator CLI.
+The agent binary is `subplaned` (CMake target `subplaned`, `src/main.cpp`). The name `subplane` is reserved for a future operator CLI.
 
 ## What This Is
 A single-binary routing agent for the firm's internal SBE bus, one per application box. It subscribes to bus partitions over UDP multicast, finds message boundaries by walking the published SBE schema, decodes only routing fields, filters per application session, and fans the original SBE bytes out through per-session shared-memory rings. Apps decode SBE with their own codecs; they no longer deserialize, filter or route. Not a decoder, not a broker.
@@ -11,9 +11,9 @@ Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline
 ## Tech Stack
 Only what builds today:
 - **Language**: C++20 (GCC 11, Ubuntu 22.04), CMake 3.20+, `-Werror`
-- **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`; Aeron C client + media driver fetched at configure time (`cmake/aeron.cmake`, pinned tag, no Java; needs CMake 3.30+; `FLASHTICK_WITH_AERON=OFF` to drop it)
+- **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`; Aeron C client + media driver fetched at configure time (`cmake/aeron.cmake`, pinned tag, no Java; needs CMake 3.30+; `SUBPLANE_WITH_AERON=OFF` to drop it)
 - **Ingest**: UDP multicast / unicast (`recvmmsg`, optional busy-poll and kernel timestamps); TCP byte stream reassembled into records (`tcp_stream`); Aeron streams, IPC or UDP, optional embedded media driver (`aeron`)
-- **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/flashtick_canonical.xml`) with typed C++/Python/q views generated at build time by `ft_schema`.
+- **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/subplane_canonical.xml`) with typed C++/Python/q views generated at build time by `sp_schema`.
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK
 - **Control**: Unix `SOCK_SEQPACKET` control channel (dynamic sessions, snapshots)
 - **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/reload`)
@@ -31,16 +31,16 @@ Only what builds today:
 - **[Invariants](docs/context/invariants.md)**: non-negotiable engineering rules
 - **[Landscape](docs/context/landscape.md)**: agent vs library vs middleware (Fluent Bit, Helix, OpenMAMA, Aeron, etc.)
 
-**Private docs** (gitignored, in `.flashtick/`):
-- **[Decisions](.flashtick/decisions.md)**: Design decision log
-- **[Plan](.flashtick/plan.md)**: Current/next sprint plan
-- **[Tasks](.flashtick/tasks.md)**: Backlog and unplanned work
-- **[Lessons](.flashtick/lessons.md)**: Corrections and patterns to avoid
+**Private docs** (gitignored, in `.subplane/`):
+- **[Decisions](.subplane/decisions.md)**: Design decision log
+- **[Plan](.subplane/plan.md)**: Current/next sprint plan
+- **[Tasks](.subplane/tasks.md)**: Backlog and unplanned work
+- **[Lessons](.subplane/lessons.md)**: Corrections and patterns to avoid
 
 ## Philosophy
 - **On-box agent, not middleware.** Runs next to the apps it serves. One bus subscription per box, not per app. One-way flow: bus to agent to apps, no app publishing.
 - **Component / activation / session.** Components are compiled in; YAML activates them; sessions are runtime app subscriptions. No `.so` loading, no `dlopen`.
-- **Apps decode SBE, flashtick routes.** The agent decodes only routing fields and delivers the original bytes bit-identical. The only hard requirement on a publisher is its SBE schema.
+- **Apps decode SBE, subplane routes.** The agent decodes only routing fields and delivers the original bytes bit-identical. The only hard requirement on a publisher is its SBE schema.
 - **Narrow core, flexible edges.** Subscribe, route, fan out, and nothing else, so the core can be optimized hard; transports and fan-outs vary behind one app contract.
 - **Latency is a budget, simplification is the product.** Tens of microseconds on kernel sockets. Hot path: no heap, no mutex, no I/O, no `std::function`, one virtual call per packet batch. Measure everything.
 - **Docs mark implemented vs planned.** Every claim in `docs/context` is implemented or tagged "(planned)".
@@ -52,11 +52,11 @@ Only what builds today:
 - **Update docs as we go.** Every decision/finding gets captured in the right doc.
 - **Lean CLAUDE.md.** Details live in context docs, lazy-loaded when needed.
 - **Measure before optimizing.** Use latency metrics to justify performance changes.
-- **Private docs stay private.** Strategy and research in `.flashtick/` (gitignored).
+- **Private docs stay private.** Strategy and research in `.subplane/` (gitignored).
 
 ## Engineering Philosophy
 - **No quick hacks.** This is infrastructure: correctness and stability over velocity.
 - **`// INTENT:` comments on critical code.** Explain *why* non-obvious logic exists and *what breaks* if removed. Lock-free sections, ring/record ABI, component lifecycle code.
 - **Simplicity first.** Make every change as simple as possible. Three similar lines > premature abstraction.
 - **Autonomous bug fixing.** Point at logs, errors, failing tests: then resolve them.
-- **Capture lessons.** After any correction, update `.flashtick/lessons.md` with the pattern.
+- **Capture lessons.** After any correction, update `.subplane/lessons.md` with the pattern.

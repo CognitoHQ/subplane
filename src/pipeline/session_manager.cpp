@@ -1,11 +1,11 @@
-#include "flashtick/pipeline/session_manager.h"
+#include "subplane/pipeline/session_manager.h"
 
-#include "flashtick/core/clock.h"
-#include "flashtick/logging/log_registry.h"
+#include "subplane/core/clock.h"
+#include "subplane/logging/log_registry.h"
 
 #include <algorithm>
 
-namespace flashtick {
+namespace subplane {
 
 SessionManager::SessionManager(SessionManagerConfig cfg, SymbolTable& symbols, Lvc& lvc,
                                std::vector<Partition*> partitions, std::vector<Pipeline*> groups)
@@ -17,7 +17,7 @@ SessionManager::~SessionManager() {
 }
 
 std::string SessionManager::ring_path(const std::string& name) const {
-    return cfg_.ring_dir + "/flashtick." + cfg_.agent_name + "." + name + ".ring";
+    return cfg_.ring_dir + "/subplane." + cfg_.agent_name + "." + name + ".ring";
 }
 
 SessionManager::Entry* SessionManager::find_locked(const std::string& name) {
@@ -438,4 +438,4 @@ bool SessionManager::snapshot(const std::string& name, uint64_t& ring_head_at_sn
     return true;
 }
 
-} // namespace flashtick
+} // namespace subplane

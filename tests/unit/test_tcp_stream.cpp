@@ -1,7 +1,7 @@
 #include <doctest.h>
 
-#include "flashtick/registry/component_registry.h"
-#include "flashtick/transport/tcp_stream.h"
+#include "subplane/registry/component_registry.h"
+#include "subplane/transport/tcp_stream.h"
 
 #include <arpa/inet.h>
 #include <chrono>
@@ -12,7 +12,7 @@
 #include <unistd.h>
 #include <vector>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 

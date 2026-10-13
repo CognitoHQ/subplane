@@ -1,7 +1,7 @@
 #include <doctest.h>
 
-#include "flashtick/registry/component_registry.h"
-#include "flashtick/transport/udp_multicast.h"
+#include "subplane/registry/component_registry.h"
+#include "subplane/transport/udp_multicast.h"
 
 #include <arpa/inet.h>
 #include <cstring>
@@ -10,7 +10,7 @@
 #include <thread>
 #include <unistd.h>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 
@@ -66,7 +66,7 @@ TEST_CASE("registry constructs udp_multicast and rejects unknown types") {
     CHECK(err.find("udp_multicast") != std::string::npos);
 }
 
-#if FLASHTICK_WITH_AERON
+#if SUBPLANE_WITH_AERON
 TEST_CASE("aeron transport config: required keys and bounds, no driver needed") {
     std::string err;
     CHECK_FALSE(make_component(transport_components(), "aeron", YAML::Load("{stream_id: 1}"), err));

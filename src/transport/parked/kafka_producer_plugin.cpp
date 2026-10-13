@@ -1,7 +1,7 @@
-#include "flashtick/producer/kafka_producer.h"
+#include "subplane/producer/kafka_producer.h"
 
 extern "C" {
-    flashtick::Plugin* create_plugin() {
-        return new flashtick::KafkaProducer();
+    subplane::Plugin* create_plugin() {
+        return new subplane::KafkaProducer();
     }
 }

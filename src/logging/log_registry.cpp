@@ -1,4 +1,4 @@
-#include "flashtick/logging/log_registry.h"
+#include "subplane/logging/log_registry.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <yaml-cpp/yaml.h>
 
-namespace flashtick {
+namespace subplane {
 
 bool LogRegistry::initialize(const std::string& config) {
     try {
@@ -195,4 +195,4 @@ void LogRegistry::trim_entries() {
     }
 }
 
-} // namespace flashtick
+} // namespace subplane

@@ -1,16 +1,16 @@
-// ft_aeron_pub: canonical-schema publisher over Aeron, the proof and the test
+// sp_aeron_pub: canonical-schema publisher over Aeron, the proof and the test
 // peer for the `aeron` transport. One SBE message per offer (Trade, Quote
 // alternating, a Heartbeat every --heartbeat-every messages), all sharing one
 // Sequence counter so the agent's framing can track gaps with
 // `sequence: message.Sequence`.
 //
-//   ft_aeron_pub --channel aeron:ipc --stream-id 1001 [--aeron-dir DIR] [--count N] [--rate msg/s]
+//   sp_aeron_pub --channel aeron:ipc --stream-id 1001 [--aeron-dir DIR] [--count N] [--rate msg/s]
 //                [--symbols N] [--heartbeat-every N] [--embedded-driver] [--driver-timeout-ms N]
 //
 // --embedded-driver starts a media driver in this process (its own threads) so
 // a UDP test needs no aeronmd; the IPC case attaches to the agent's driver dir.
 
-#include "flashtick_canonical_views.h"
+#include "subplane_canonical_views.h"
 
 #include <aeronc.h>
 #include <aeronmd.h>
@@ -23,7 +23,7 @@
 #include <string>
 #include <thread>
 
-using namespace ft_canonical;
+using namespace sp_canonical;
 
 namespace {
 
@@ -43,7 +43,7 @@ void begin(T& m, uint32_t instrument, uint64_t seq) {
     m.RecvTs = m.ExchangeTs;
 }
 
-int fail(const char* what) { std::fprintf(stderr, "ft_aeron_pub: %s: %s\n", what, aeron_errmsg()); return 1; }
+int fail(const char* what) { std::fprintf(stderr, "sp_aeron_pub: %s: %s\n", what, aeron_errmsg()); return 1; }
 
 // Offers until accepted; back pressure and admin actions retry, anything else is fatal.
 bool offer(aeron_exclusive_publication_t* pub, const void* msg, size_t len, uint64_t timeout_ns) {
@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string k = argv[i];
         if (k == "--embedded-driver") { embedded = true; continue; }
-        if (i + 1 >= argc) { std::fprintf(stderr, "ft_aeron_pub: %s needs a value\n", k.c_str()); return 2; }
+        if (i + 1 >= argc) { std::fprintf(stderr, "sp_aeron_pub: %s needs a value\n", k.c_str()); return 2; }
         const std::string v = argv[++i];
         if (k == "--channel") channel = v;
         else if (k == "--stream-id") stream_id = std::strtol(v.c_str(), nullptr, 10);
@@ -77,9 +77,9 @@ int main(int argc, char** argv) {
         else if (k == "--symbols") symbols = std::strtoull(v.c_str(), nullptr, 10);
         else if (k == "--heartbeat-every") hb_every = std::strtoull(v.c_str(), nullptr, 10);
         else if (k == "--driver-timeout-ms") driver_timeout_ms = std::strtoull(v.c_str(), nullptr, 10);
-        else { std::fprintf(stderr, "ft_aeron_pub: unknown option %s\n", k.c_str()); return 2; }
+        else { std::fprintf(stderr, "sp_aeron_pub: unknown option %s\n", k.c_str()); return 2; }
     }
-    if (symbols == 0) { std::fputs("ft_aeron_pub: --symbols must be > 0\n", stderr); return 2; }
+    if (symbols == 0) { std::fputs("sp_aeron_pub: --symbols must be > 0\n", stderr); return 2; }
 
     aeron_driver_context_t* dctx = nullptr;
     aeron_driver_t* driver = nullptr;
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
     if (aeron_context_init(&ctx) < 0) return fail("context");
     if (!dir.empty() && aeron_context_set_dir(ctx, dir.c_str()) < 0) return fail("dir");
     aeron_context_set_driver_timeout_ms(ctx, driver_timeout_ms);
-    aeron_context_set_client_name(ctx, "ft_aeron_pub");
+    aeron_context_set_client_name(ctx, "sp_aeron_pub");
     if (aeron_init(&client, ctx) < 0) return fail("init (is the media driver running?)");
     if (aeron_start(client) < 0) return fail("start");
 
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
     // Wait for the subscriber (the agent) so the first offers are not dropped as NOT_CONNECTED.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(driver_timeout_ms);
     while (!aeron_exclusive_publication_is_connected(pub)) {
-        if (std::chrono::steady_clock::now() > deadline) { std::fputs("ft_aeron_pub: no subscriber connected\n", stderr); return 1; }
+        if (std::chrono::steady_clock::now() > deadline) { std::fputs("sp_aeron_pub: no subscriber connected\n", stderr); return 1; }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
@@ -133,11 +133,11 @@ int main(int argc, char** argv) {
             q.BidPx = px - 10'000'000; q.BidQty = 1'000'000'000; q.AskPx = px + 10'000'000; q.AskQty = 2'000'000'000;
             ok = offer(pub, &q, sizeof q, offer_timeout_ns);
         }
-        if (!ok) { std::fprintf(stderr, "ft_aeron_pub: offer failed after %llu messages\n", static_cast<unsigned long long>(sent)); return 1; }
+        if (!ok) { std::fprintf(stderr, "sp_aeron_pub: offer failed after %llu messages\n", static_cast<unsigned long long>(sent)); return 1; }
         ++sent;
         if (hb_every && sent % hb_every == 0) {
             Heartbeat h; begin(h, 0, ++seq);
-            if (!offer(pub, &h, sizeof h, offer_timeout_ns)) { std::fputs("ft_aeron_pub: heartbeat offer failed\n", stderr); return 1; }
+            if (!offer(pub, &h, sizeof h, offer_timeout_ns)) { std::fputs("sp_aeron_pub: heartbeat offer failed\n", stderr); return 1; }
             ++heartbeats;
         }
         if (interval.count()) { next += interval; std::this_thread::sleep_until(next); }

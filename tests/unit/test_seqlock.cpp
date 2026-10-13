@@ -1,11 +1,11 @@
 #include <doctest.h>
 
-#include "flashtick/core/seqlock.h"
+#include "subplane/core/seqlock.h"
 
 #include <atomic>
 #include <thread>
 
-using namespace flashtick;
+using namespace subplane;
 
 namespace {
 struct Pair { uint64_t a, b, c; };

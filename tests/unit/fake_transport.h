@@ -3,13 +3,13 @@
 // In-memory Transport for pipeline tests: packets pushed from the test are
 // returned by poll() in order, batch at a time.
 
-#include "flashtick/transport/transport.h"
+#include "subplane/transport/transport.h"
 
 #include <cstring>
 #include <deque>
 #include <vector>
 
-namespace flashtick::test {
+namespace subplane::test {
 
 class FakeTransport final : public Transport {
 public:
@@ -52,4 +52,4 @@ private:
     std::deque<Pkt> queue_;
 };
 
-} // namespace flashtick::test
+} // namespace subplane::test

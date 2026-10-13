@@ -1,13 +1,13 @@
-#include "flashtick/pipeline/pipeline.h"
+#include "subplane/pipeline/pipeline.h"
 
-#include "flashtick/core/clock.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/core/clock.h"
+#include "subplane/shm/control_events.h"
 
 #include <cstring>
 #include <pthread.h>
 #include <sched.h>
 
-namespace flashtick {
+namespace subplane {
 
 namespace {
 constexpr uint64_t kRingHeartbeatNs = 1'000'000; // 1 ms
@@ -413,4 +413,4 @@ void Pipeline::heartbeat_rings(uint64_t now) noexcept {
     for (uint32_t i = 0; i < n_sessions_; ++i) sessions_[i]->ring.heartbeat(now);
 }
 
-} // namespace flashtick
+} // namespace subplane

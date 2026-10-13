@@ -1,4 +1,4 @@
-// canonical_pub: the smallest publisher that flashtick can ingest. Copy this to
+// canonical_pub: the smallest publisher that subplane can ingest. Copy this to
 // start a gateway: it depends on nothing but the generated canonical struct
 // header and sockets. No agent code, no SDK.
 //
@@ -10,7 +10,7 @@
 // filled in place: header fields first, then the canonical prefix, then the body.
 // Prices and quantities are int64 scaled by 1e-9.
 
-#include "flashtick_canonical_views.h"
+#include "subplane_canonical_views.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -24,7 +24,7 @@
 #include <string>
 #include <thread>
 
-using namespace ft_canonical;
+using namespace sp_canonical;
 
 namespace {
 

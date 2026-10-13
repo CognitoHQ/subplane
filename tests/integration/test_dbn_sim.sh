@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# DBN over TCP end to end: ft_dbn_sim (synthetic) -> flashtickd (tcp_stream + dbn) -> ring.
+# DBN over TCP end to end: sp_dbn_sim (synthetic) -> subplaned (tcp_stream + dbn) -> ring.
 # Needs only bash, grep and sed (no curl/python: the CI container is minimal).
-# usage: test_dbn_sim.sh <ft_dbn_sim> <flashtickd> <ft_tail>
+# usage: test_dbn_sim.sh <sp_dbn_sim> <subplaned> <sp_tail>
 set -u
 SIM=$1; AGENT=$2; TAIL=$3
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/flashtick.dbntest.*.ring' EXIT
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.dbntest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 
 # Minimal HTTP GET over bash's /dev/tcp; prints the body.
@@ -74,9 +74,9 @@ DERR=$(json_num decode_errors "$PART"); TERR=$(json_num transport_errors "$PART"
 grep -q '"state": *"active"' <<<"$PART" || fail "partition not active"
 echo "partition ok: $MSGS messages"
 
-RING=/dev/shm/flashtick.dbntest.three.ring
+RING=/dev/shm/subplane.dbntest.three.ring
 [ -f "$RING" ] || fail "ring missing"
-"$TAIL" "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "ft_tail failed"
+"$TAIL" "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "sp_tail failed"
 DATA=$(grep -c " kind=0 " "$TMP/tail.log")
 HB=$(grep -c "BUS_HEARTBEAT" "$TMP/tail.log")
 BAD=$(grep " kind=0 " "$TMP/tail.log" | grep -vc "sym=100[012] ")

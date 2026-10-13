@@ -1,10 +1,10 @@
-// ft_dbn_sim: serves DBN (Databento Binary Encoding) over TCP the way the
+// sp_dbn_sim: serves DBN (Databento Binary Encoding) over TCP the way the
 // Databento live gateway does after Start(): a "DBN" prelude with metadata,
 // then a stream of records. Source is either an uncompressed .dbn file or
 // synthetic v3 records (MBO, trade, MBP-1, periodic SYSTEM heartbeats).
 //
-//   ft_dbn_sim --port 9550 --file CLX5_mbo.dbn [--loop N] [--rate R] [--timing file]
-//   ft_dbn_sim --port 9550 --synthetic --instruments 10 --count 100000 --mix mbo=60,trade=30,mbp1=10
+//   sp_dbn_sim --port 9550 --file CLX5_mbo.dbn [--loop N] [--rate R] [--timing file]
+//   sp_dbn_sim --port 9550 --synthetic --instruments 10 --count 100000 --mix mbo=60,trade=30,mbp1=10
 //              [--gap-every K] [--heartbeat-ms N]
 //   common: [--bind 127.0.0.1] [--prelude dbn|none] [--clients N]   (0 = serve forever)
 //
@@ -29,7 +29,7 @@
 
 #include "tool_common.h"
 
-using namespace fttool;
+using namespace sptool;
 
 namespace {
 
@@ -38,7 +38,7 @@ void on_sigint(int) { g_stop = 1; }
 
 void usage() {
     std::fputs(
-        "usage: ft_dbn_sim --port N (--file <x.dbn> | --synthetic) [options]\n"
+        "usage: sp_dbn_sim --port N (--file <x.dbn> | --synthetic) [options]\n"
         "  --bind <ip>           listen address (default 127.0.0.1)\n"
         "  --port <n>            listen port\n"
         "  --clients <n>         connections to serve then exit, 0 = forever (default 0)\n"
@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
     a.sin_port = htons(static_cast<uint16_t>(o.port));
     if (inet_pton(AF_INET, o.bind.c_str(), &a.sin_addr) != 1) { std::fprintf(stderr, "error: bad --bind\n"); return 2; }
     if (::bind(lfd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) < 0 || ::listen(lfd, 4) < 0) { std::perror("bind/listen"); return 1; }
-    std::fprintf(stderr, "ft_dbn_sim: listening on %s:%llu (%s)\n", o.bind.c_str(), static_cast<unsigned long long>(o.port),
+    std::fprintf(stderr, "sp_dbn_sim: listening on %s:%llu (%s)\n", o.bind.c_str(), static_cast<unsigned long long>(o.port),
                  o.synthetic ? "synthetic" : o.file.c_str());
 
     uint64_t served = 0, total_records = 0, total_bytes = 0;
@@ -328,7 +328,7 @@ int main(int argc, char** argv) {
         }
         ::close(cfd);
         total_records += records; total_bytes += bytes;
-        std::fprintf(stderr, "ft_dbn_sim: client %llu done: records=%llu bytes=%llu%s\n", static_cast<unsigned long long>(served),
+        std::fprintf(stderr, "sp_dbn_sim: client %llu done: records=%llu bytes=%llu%s\n", static_cast<unsigned long long>(served),
                      static_cast<unsigned long long>(records), static_cast<unsigned long long>(bytes),
                      alive ? "" : " (peer went away)");
     }

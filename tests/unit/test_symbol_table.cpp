@@ -1,12 +1,12 @@
 #include <doctest.h>
 
-#include "flashtick/symbol_table.h"
+#include "subplane/symbol_table.h"
 
 #include <string>
 #include <thread>
 #include <vector>
 
-using namespace flashtick;
+using namespace subplane;
 
 TEST_CASE("symbol table intern/lookup/resolve") {
     SymbolTable t(100);

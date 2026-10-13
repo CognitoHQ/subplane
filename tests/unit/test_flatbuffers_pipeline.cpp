@@ -6,10 +6,10 @@
 
 #include "fake_transport.h"
 #include "fb_fixture.h"
-#include "flashtick/client/shm_reader.h"
-#include "flashtick/core/clock.h"
-#include "flashtick/pipeline/pipeline.h"
-#include "flashtick/shm/control_events.h"
+#include "subplane/client/shm_reader.h"
+#include "subplane/core/clock.h"
+#include "subplane/pipeline/pipeline.h"
+#include "subplane/shm/control_events.h"
 
 #include <cstring>
 #include <set>
@@ -17,8 +17,8 @@
 #include <unistd.h>
 #include <vector>
 
-using namespace flashtick;
-using namespace flashtick::test;
+using namespace subplane;
+using namespace subplane::test;
 
 namespace {
 
@@ -68,7 +68,7 @@ struct Harness {
         REQUIRE(part.open(err));
         pipe = std::make_unique<Pipeline>("g0", 99, symbols, lvc);
         pipe->add_partition(&part);
-        ring_path = "/dev/shm/flashtick.test.fb." + std::to_string(getpid()) + "." + std::to_string(ids.size()) + ".ring";
+        ring_path = "/dev/shm/subplane.test.fb." + std::to_string(getpid()) + "." + std::to_string(ids.size()) + ".ring";
         s = std::make_unique<Session>();
         s->id = 3; s->name = "t"; s->owner = "config"; s->partition_mask = 1u;
         FilterSpec spec;

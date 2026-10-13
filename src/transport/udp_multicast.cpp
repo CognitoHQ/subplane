@@ -1,6 +1,6 @@
-#include "flashtick/transport/udp_multicast.h"
+#include "subplane/transport/udp_multicast.h"
 
-#include "flashtick/core/clock.h"
+#include "subplane/core/clock.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -15,7 +15,7 @@
 #define SO_BUSY_POLL 46
 #endif
 
-namespace flashtick {
+namespace subplane {
 
 bool UdpMulticastConfig::parse(const YAML::Node& node, UdpMulticastConfig& out, std::string& err) {
     try {
@@ -234,4 +234,4 @@ std::string UdpMulticastTransport::describe() const {
     return s + ":" + std::to_string(cfg_.port);
 }
 
-} // namespace flashtick
+} // namespace subplane

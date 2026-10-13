@@ -1,8 +1,8 @@
-#include "flashtick/pipeline/partition.h"
+#include "subplane/pipeline/partition.h"
 
-#include "flashtick/registry/component_registry.h"
+#include "subplane/registry/component_registry.h"
 
-namespace flashtick {
+namespace subplane {
 
 const char* decoder_type_name(DecoderType t) {
     switch (t) {
@@ -187,4 +187,4 @@ bool Partition::detach(Session* s) noexcept {
     return false;
 }
 
-} // namespace flashtick
+} // namespace subplane

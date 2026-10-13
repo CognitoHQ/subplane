@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and test flashtick inside ubuntu:22.04 (GCC 11), the INV-007 target toolchain.
+# Build and test subplane inside ubuntu:22.04 (GCC 11), the INV-007 target toolchain.
 # Usage: scripts/ci-build-2204.sh            (from the repo root)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

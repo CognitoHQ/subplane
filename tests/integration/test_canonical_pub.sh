@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The sample publisher (examples/canonical_pub.cpp) -> flashtickd -> ring -> views_app.
-# usage: test_canonical_pub.sh <canonical_pub> <flashtickd> <views_app> <schema.xml>
+# The sample publisher (examples/canonical_pub.cpp) -> subplaned -> ring -> views_app.
+# usage: test_canonical_pub.sh <canonical_pub> <subplaned> <views_app> <schema.xml>
 set -u
 PUB=$1; AGENT=$2; APP=$3; SCHEMA=$4
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/flashtick.pubtest.*.ring' EXIT
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.pubtest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 http_get() ( trap '' PIPE; exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return 1; printf 'GET %s HTTP/1.0\r\n\r\n' "$2" >&3 || return 1; tr -d '\r' <&3 | sed '1,/^$/d'; exec 3<&- )
 PORT=$(( 20000 + (RANDOM % 30000) )); API=$(( 20000 + (RANDOM % 30000) )); SOCK="$TMP/ctl.sock"
@@ -34,7 +34,7 @@ for _ in $(seq 1 100); do http_get "$API" /status >/dev/null 2>&1 && break; slee
 kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
 "$PUB" --port "$PORT" --count 1000 --rate 10000 > "$TMP/pub.log" 2>&1 || fail "publisher failed"
 grep -q "sent 1000 messages in 500 packets" "$TMP/pub.log" || fail "publisher report: $(cat "$TMP/pub.log")"
-RING=/dev/shm/flashtick.pubtest.all.ring
+RING=/dev/shm/subplane.pubtest.all.ring
 for _ in $(seq 1 50); do [ -f "$RING" ] && break; sleep 0.1; done
 "$APP" "$RING" --from-start --quiet --seconds 2 > "$TMP/app.log" 2>&1 || fail "views_app exit $?"
 SUMMARY=$(tail -1 "$TMP/app.log"); echo "$SUMMARY"

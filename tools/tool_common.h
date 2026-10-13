@@ -18,11 +18,11 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include "flashtick/decoder/sbe_schema.h"
-#include "flashtick/framing/framing.h"
-#include "flashtick/framing/sbe_length.h"
+#include "subplane/decoder/sbe_schema.h"
+#include "subplane/framing/framing.h"
+#include "subplane/framing/sbe_length.h"
 
-namespace fttool {
+namespace sptool {
 
 // `--key value`, `--key=value` and bare `--flag`. Unknown options are errors.
 class Args {
@@ -72,8 +72,8 @@ private:
 // `arg` is a YAML file path or an inline YAML string. The document may be the
 // framing map itself, a map with a `framing:` key, or a full config.yaml
 // (partitions[0].framing is used). Empty arg = default (bare concatenation).
-inline bool load_framing(const std::string& arg, flashtick::FramingConfig& out, std::string& err) {
-    if (arg.empty()) return flashtick::FramingConfig::parse(YAML::Node(), out, err);
+inline bool load_framing(const std::string& arg, subplane::FramingConfig& out, std::string& err) {
+    if (arg.empty()) return subplane::FramingConfig::parse(YAML::Node(), out, err);
     YAML::Node root;
     try {
         std::error_code ec;
@@ -97,13 +97,13 @@ inline bool load_framing(const std::string& arg, flashtick::FramingConfig& out, 
         err = std::string("framing yaml: ") + e.what();
         return false;
     }
-    return flashtick::FramingConfig::parse(node, out, err);
+    return subplane::FramingConfig::parse(node, out, err);
 }
 
 // Not movable: Framer keeps a pointer to the walker.
 struct LoadedSchema {
-    flashtick::SbeSchema schema;
-    flashtick::SbeLengthWalker walker;
+    subplane::SbeSchema schema;
+    subplane::SbeLengthWalker walker;
     LoadedSchema() = default;
     LoadedSchema(const LoadedSchema&) = delete;
     LoadedSchema& operator=(const LoadedSchema&) = delete;
@@ -138,4 +138,4 @@ private:
     uint64_t interval_, deadline_;
 };
 
-} // namespace fttool
+} // namespace sptool

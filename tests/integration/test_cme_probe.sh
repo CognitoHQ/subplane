@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Real-bus check: replay public CME MDP 3.0 packets through ft_probe with the
+# Real-bus check: replay public CME MDP 3.0 packets through sp_probe with the
 # MDP 3.0 framing block. Skips (exit 77) when the sample has not been fetched
 # (scripts/fetch-cme-sample.sh needs network).
-# usage: test_cme_probe.sh <ft_replay> <ft_probe> <sample-dir>
+# usage: test_cme_probe.sh <sp_replay> <sp_probe> <sample-dir>
 set -u
 REPLAY=$1; PROBE=$2; DIR=$3
 [ -f "$DIR/cme_all.pcap" ] || { echo "SKIP: no CME sample in $DIR (run scripts/fetch-cme-sample.sh)"; exit 77; }

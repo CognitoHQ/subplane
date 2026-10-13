@@ -1,4 +1,4 @@
-# Architecture: flashtick
+# Architecture: subplane
 
 Status key: everything below is implemented unless marked "(planned)". The code is the source of truth; where a header comment and this document disagree, fix this document.
 
@@ -16,7 +16,7 @@ Operators may still say "plugin" for an activation. In code, a "partition" is on
 
 ## Deployment
 
-One `flashtickd` process (the agent binary) per application box, next to the apps it serves. It joins the multicast group once; apps do not. It runs as an ordinary Linux process (C++20, GCC 11 target, Ubuntu 22.04). Apps and agent share `/dev/shm` (ring files) and a Unix socket path (control channel). Nothing leaves the box except the bus subscription.
+One `subplaned` process (the agent binary) per application box, next to the apps it serves. It joins the multicast group once; apps do not. It runs as an ordinary Linux process (C++20, GCC 11 target, Ubuntu 22.04). Apps and agent share `/dev/shm` (ring files) and a Unix socket path (control channel). Nothing leaves the box except the bus subscription.
 
 ```
 bus (UDP multicast) -> [ partition thread group ] -> ring per session (/dev/shm) -> apps
@@ -41,7 +41,7 @@ Payload bytes are copied once, from the receive arena to each accepting ring.
 
 ## Component registry
 
-`registry/component_registry.h`: explicit static tables, no self-registering statics. The table lives in `src/registry/builtin_components.cpp` and is greppable. Only the transport table exists today: `udp_multicast` (and `udp` as an alias, unicast when `group` is empty), `tcp_stream` and `aeron` (present when built with `FLASHTICK_WITH_AERON`, the default). An unknown `type:` is a startup error that lists the available types.
+`registry/component_registry.h`: explicit static tables, no self-registering statics. The table lives in `src/registry/builtin_components.cpp` and is greppable. Only the transport table exists today: `udp_multicast` (and `udp` as an alias, unicast when `group` is empty), `tcp_stream` and `aeron` (present when built with `SUBPLANE_WITH_AERON`, the default). An unknown `type:` is a startup error that lists the available types.
 
 The framer and the decoder are not looked up through the registry. The framer is built from the `framing:` block, and `decoder.type` accepts only `sbe_routing`. Decoder and derivation tables are planned.
 
@@ -76,7 +76,7 @@ transport:
 
 - Non-blocking connect completed inside `poll()`. `poll()` reads once into one arena allocated in `open()`, then cuts complete records (up to `batch`) as views into the arena; a record split across reads waits for the next poll. One clock read per batch.
 - Peer close or a socket error closes the connection; with `reconnect_ms > 0` the transport reconnects with that backoff and `poll()` returns 0 meanwhile, so the partition reports DEGRADED through the normal heartbeat timeout. A record length of 0 or above `max_record` means the stream is misaligned: counted as a framing error and reconnected. A zstd-compressed DBN stream is fatal with a message (decompress with the `dbn` CLI).
-- `ft_dbn_sim` serves DBN over TCP the way Databento's live gateway does after `Start()` (prelude, metadata, records) from an uncompressed `.dbn` file or synthetically; see Tools.
+- `sp_dbn_sim` serves DBN over TCP the way Databento's live gateway does after `Start()` (prelude, metadata, records) from an uncompressed `.dbn` file or synthetically; see Tools.
 
 `aeron` (`AeronTransport`): one Aeron stream (IPC, UDP unicast or multicast) through the Aeron C client; every reassembled message is one packet to the pipeline. Encoding-blind: the message is whatever the publisher offered.
 
@@ -96,7 +96,7 @@ transport:
 - `poll()` calls `aeron_subscription_poll` with a fragment assembler (messages larger than the MTU arrive whole) and a fragment limit equal to `batch`. The handler copies each message into the next slot of one arena of `batch * max_message` bytes allocated in `open()`, because Aeron's log-buffer bytes are only guaranteed while the handler runs and the pipeline reads the batch after `poll()` returns. One clock read per poll is the receive timestamp. No allocation, no mutex on the poll thread (the C client's image list is lock-free).
 - Framing: one message per packet, so `length: packet` (or the schema default) with `sequence: message.<Field>` when the publisher stamps a sequence, or `none`. Liveness is the partition's heartbeat timeout as for any transport; image arrivals and departures and client errors are counted on the transport.
 - Measured on the dev host (GCC 13, unpinned, embedded driver, `aeron:ipc`, 200k canonical messages offered back to back): 0 gaps, pipeline `recv_to_publish` p50 3.1 µs, p99 12 µs. That is poll to ring; the Aeron hop (offer to poll) is in front of it.
-- `ft_aeron_pub` is the test peer and proof: canonical Trade/Quote/Heartbeat over an exclusive publication, with an optional embedded driver. `ctest -R aeron` runs it through the agent to `views_app` over IPC (publisher attached to the agent's embedded driver) and over UDP loopback (two drivers).
+- `sp_aeron_pub` is the test peer and proof: canonical Trade/Quote/Heartbeat over an exclusive publication, with an optional embedded driver. `ctest -R aeron` runs it through the agent to `views_app` over IPC (publisher attached to the agent's embedded driver) and over UDP loopback (two drivers).
 
 ## Framing
 
@@ -123,7 +123,7 @@ framing:
 - **Keep the prefix.** By default a `message_prefix` is stripped and the message handed to the decoder (and to the ring) starts after it, which is what SBE buses want. `keep_prefix: true` delivers each message from the start of its prefix with the prefix counted in its length. A size-prefixed FlatBuffer is aligned from its prefix and is only decodable whole, so a datagram of `[u32 size][flatbuffer]...` is framed with `message_prefix: [{name: size, type: u32le}]`, `length: message_prefix.size`, `keep_prefix: true` and each ring payload is the complete buffer the publisher finished.
 - **Sequence sources.** `packet_header.<field>` (one sequence per packet, checked before the messages), `message.<SchemaField>` (each message carries it, mapped through `decoder.fields.sequence`), bare `message` (the decoder fills `TickHeader::sequence` from a format-defined field, as `dbn` does), or `none`. With `none`, gap detection is off for that partition and liveness is by heartbeat timeout only. (Planned: the same three sources for every routing field and for the extension tuple; see the vision roadmap, item 1.)
 - **Encoding is per-partition configuration.** Transports are encoding-blind; the decoder component chosen by `decoder.type` sets `wire_format` on every record. Three decoders exist: `sbe_routing`, `dbn` and `flatbuffers`. `length: schema` is valid only for a decoder that can compute message length (SBE); other encodings use `length: packet` or a length prefix, and the agent rejects an invalid framing/decoder pair at startup (`"framing.length is schema but this decoder cannot compute message length"`). The decoder is held by value in the partition and selected with a switch per message, not a virtual call. The payload delivered to a ring is always the publisher's complete framing unit, never a slice of one. Planned: protobuf, generic fixed-offset layouts.
-- **`ft_probe`** joins a group (or binds a unicast port), captures N packets and runs the production framer and schema walker over them. It checks that template ids are in the schema, that lengths tile each packet exactly, and that the sequence is monotone, and prints a verdict and the message mix. Exit 0 pass, 1 fail, 2 no packets or usage error.
+- **`sp_probe`** joins a group (or binds a unicast port), captures N packets and runs the production framer and schema walker over them. It checks that template ids are in the schema, that lengths tile each packet exactly, and that the sequence is monotone, and prints a verdict and the message mix. Exit 0 pass, 1 fail, 2 no packets or usage error.
 
 ## DBN decoder
 
@@ -202,13 +202,13 @@ Per partition, `expected_seq` (0 = unknown). The first sequence seen seeds it; n
 
 ## Ring and record format
 
-Every record is two parts: a fixed header tuple that the agent fills from wherever the discriminators live (message root block today; packet header and message prefix fields, plus a per-partition extension tuple, are planned under roadmap item 1), then the payload bytes exactly as received. Apps never need a parent block to interpret a payload. Header-only shared definitions live in `shm/ring_layout.h` (app-facing ABI; changing it bumps `RING_LAYOUT_VERSION`). One file per session: `<fanout.ring_dir>/flashtick.<agent>.<session>.ring`, created as `.tmp`, sized, mapped, filled, marked ACTIVE, then atomically renamed. Layout is `[RingHeader: 4096 B][data region: capacity B]`. Capacity is a power of two, at least 64 KiB; `max_payload` is at most `capacity / 4`. Pages are pre-faulted at creation (`MAP_POPULATE`).
+Every record is two parts: a fixed header tuple that the agent fills from wherever the discriminators live (message root block today; packet header and message prefix fields, plus a per-partition extension tuple, are planned under roadmap item 1), then the payload bytes exactly as received. Apps never need a parent block to interpret a payload. Header-only shared definitions live in `shm/ring_layout.h` (app-facing ABI; changing it bumps `RING_LAYOUT_VERSION`). One file per session: `<fanout.ring_dir>/subplane.<agent>.<session>.ring`, created as `.tmp`, sized, mapped, filled, marked ACTIVE, then atomically renamed. Layout is `[RingHeader: 4096 B][data region: capacity B]`. Capacity is a power of two, at least 64 KiB; `max_payload` is at most `capacity / 4`. Pages are pre-faulted at creation (`MAP_POPULATE`).
 
 **Header page** (one cache line per independently written field group):
 
 | Offset | Field | Notes |
 |---|---|---|
-| 0 | `magic` (u64), `layout_version` (u32 @8), `record_version` (u32 @12), `epoch` (u64 @16), `capacity` (u64 @24), `max_payload` (u32 @32), `writer_pid` (u32 @36), `session_name[32]` (@40) | Immutable after creation. Spills into line 1. `magic` is `"FTRING01"`. |
+| 0 | `magic` (u64), `layout_version` (u32 @8), `record_version` (u32 @12), `epoch` (u64 @16), `capacity` (u64 @24), `max_payload` (u32 @32), `writer_pid` (u32 @36), `session_name[32]` (@40) | Immutable after creation. Spills into line 1. `magic` is `"SPRING01"`. |
 | 128 | `head` (atomic u64) | Next write position, absolute bytes, never masked. |
 | 192 | `heartbeat_ns` (atomic u64) | Writer liveness, CLOCK_REALTIME ns. |
 | 256 | `state` (atomic u32) | 0 INIT, 1 ACTIVE, 2 CLOSED. |
@@ -285,7 +285,7 @@ A `Session` is a filter table plus a ring plus counters.
 
 ## Control channel
 
-`control/control_proto.h`, served by `ControlServer` on its own thread. `AF_UNIX SOCK_SEQPACKET`, so every request and reply is exactly one datagram. Default path `/run/flashtick/<agent>.sock` (`control.socket_path`); if that directory is missing or not writable, it falls back to `control.fallback_socket_path`. Peer credentials are logged. Up to 64 clients.
+`control/control_proto.h`, served by `ControlServer` on its own thread. `AF_UNIX SOCK_SEQPACKET`, so every request and reply is exactly one datagram. Default path `/run/subplane/<agent>.sock` (`control.socket_path`); if that directory is missing or not writable, it falls back to `control.fallback_socket_path`. Peer credentials are logged. Up to 64 clients.
 
 Every datagram is `CtlHeader {u32 len, u16 op, u16 version, u32 req_id, u32 status}` (16 bytes, little-endian, packed) followed by `len` body bytes. A reply echoes `op` and `req_id`. `status != 0` means the body is a UTF-8 error message. Datagrams over 64 KiB are rejected.
 
@@ -328,7 +328,7 @@ Two header-only files, libc and the standard library only. They re-export `shm/r
 
 Apps decode the SBE payload with their own generated codecs. A Python client is planned.
 
-**Typed views for flat messages.** An SBE message with no groups and no varData is a fixed block behind the 8-byte message header, so `ft_schema --views` emits typed access to it in three forms from the same XML the agent loads (`decoder/sbe_views.h`): a C++ header, a NumPy module and a q script. No codec, no code generation step beyond the one tool run, and never a `#pragma pack`: a message whose fields are all naturally aligned at their payload offsets becomes a plain struct whose `static_assert`s prove the layout, and one with any misaligned field (SBE does not pad; the sample `Trade` has an `int64` at offset 34) becomes a view class with `memcpy` accessors, correct on every platform and the same loads on x86. `view<T>(payload, len)` checks the length, template id and schema id first and returns a pointer (struct form) or an optional (view form). From the sample schema:
+**Typed views for flat messages.** An SBE message with no groups and no varData is a fixed block behind the 8-byte message header, so `sp_schema --views` emits typed access to it in three forms from the same XML the agent loads (`decoder/sbe_views.h`): a C++ header, a NumPy module and a q script. No codec, no code generation step beyond the one tool run, and never a `#pragma pack`: a message whose fields are all naturally aligned at their payload offsets becomes a plain struct whose `static_assert`s prove the layout, and one with any misaligned field (SBE does not pad; the sample `Trade` has an `int64` at offset 34) becomes a view class with `memcpy` accessors, correct on every platform and the same loads on x86. `view<T>(payload, len)` checks the length, template id and schema id first and returns a pointer (struct form) or an optional (view form). From the sample schema:
 
 ```cpp
 // Ticker: template 4, 32 bytes.
@@ -377,7 +377,7 @@ public:
 
 The Python module defines one frozen dataclass per message (standard library `struct`, no dependencies) with `from_bytes`, a `RecordHeader` dataclass for the 64-byte `TickHeader`, and `parse(record)` that turns one ring record into `(RecordHeader, message)` by template id, so a ring or a recording can be read from Python without the C++ SDK. When NumPy is importable each class also carries a structured `DTYPE` with explicit offsets for columnar, zero-copy reads (`np.frombuffer(payloads, dtype=Trade.DTYPE)`). The q script emits a `1:` fixed-width spec and a `parse` function per message (unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes); it is generated and checked structurally but has not been run under q here. Little-endian schemas only; messages with groups or varData are reported as skipped, never partially emitted; constant fields are omitted and listed in a comment; enums and sets appear as their encoding primitive with the type name noted. `tests/data/sample_md.xml` is run through the tool at every build and the generated header is compiled and exercised by `test_sbe_views`; `ctest -R schema_views_numpy` loads the NumPy module (skipped where NumPy is absent). Scalar arrays (`<type primitiveType="int64" length="10">`) are typed in every view: `int64_t BidPx[10]` in a struct, an indexed accessor in a view class, a `('<i8', (10,))` dtype field, a tuple in the dataclass, a list in q.
 
-**Canonical schema.** `schemas/flashtick_canonical.xml` (package `flashtick.canonical`, schema id 100, version 1) is the normalized tick shape that the transcode mapping (planned, encoding-agnostic step 4), the kdb+ feed, the recorder index, the Python client and the feeds package target. Every message is flat and every scalar is naturally aligned at its payload offset, so all eight are struct views; `schemas/CMakeLists.txt` generates `flashtick_canonical_views.{h,py,q}` into `build/generated/` at every build and `test_canonical` compiles the header and reads encoded messages through it. Rules: prices and quantities are `int64` scaled by 10^-9 (declared as the constant `PriceExponent = -9`; 1.0 is 1,000,000,000; range ±9.2e9), no floats, no per-message exponent; every data message starts with the same 32-byte prefix (`InstrumentId u32, VenueId u16, Flags u16, Sequence u64, ExchangeTs u64, RecvTs u64`, payload offsets 8..40), so routing fields sit at fixed offsets in every message; symbols are ids and names arrive as `InstrumentDefinition` messages (which is how a gateway assigns ids); the book snapshot is ten levels per side in fixed arrays, deeper books are raw passthrough; `BookUpdate` is one level per message.
+**Canonical schema.** `schemas/subplane_canonical.xml` (package `subplane.canonical`, schema id 100, version 1) is the normalized tick shape that the transcode mapping (planned, encoding-agnostic step 4), the kdb+ feed, the recorder index, the Python client and the feeds package target. Every message is flat and every scalar is naturally aligned at its payload offset, so all eight are struct views; `schemas/CMakeLists.txt` generates `subplane_canonical_views.{h,py,q}` into `build/generated/` at every build and `test_canonical` compiles the header and reads encoded messages through it. Rules: prices and quantities are `int64` scaled by 10^-9 (declared as the constant `PriceExponent = -9`; 1.0 is 1,000,000,000; range ±9.2e9), no floats, no per-message exponent; every data message starts with the same 32-byte prefix (`InstrumentId u32, VenueId u16, Flags u16, Sequence u64, ExchangeTs u64, RecvTs u64`, payload offsets 8..40), so routing fields sit at fixed offsets in every message; symbols are ids and names arrive as `InstrumentDefinition` messages (which is how a gateway assigns ids); the book snapshot is ten levels per side in fixed arrays, deeper books are raw passthrough; `BookUpdate` is one level per message.
 
 | Template | Message | Fields after the prefix | Payload bytes |
 |---|---|---|---|
@@ -390,7 +390,7 @@ The Python module defines one frozen dataclass per message (standard library `st
 | 10 | `InstrumentDefinition` | `Symbol char[32]`, `Exchange`, `Base`, `Quote` (`char[16]`), `TickSize`, `LotSize`, `Status` | 144 |
 | 100 | `Heartbeat` | prefix only, `InstrumentId` 0 | 40 |
 
-A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` and templates 1..6 mapped to the matching `MsgType`, 10 to `STATUS`, 100 to `admin: HEARTBEAT` (the commented `canonical` partition in `config.yaml`). `ft_sbe_sender --schema schemas/flashtick_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views; `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
+A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` and templates 1..6 mapped to the matching `MsgType`, 10 to `STATUS`, 100 to `admin: HEARTBEAT` (the commented `canonical` partition in `config.yaml`). `sp_sbe_sender --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views; `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
 
 ```cpp
 // Trade: template 1, 72 bytes. Constant fields omitted: PriceExponent (PriceExponent).
@@ -462,7 +462,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 `config.yaml`, walked section by section. Relative schema paths resolve against the config file's directory. Only `sessions` is reloadable.
 
 `agent`
-- `name` (default `flashtick`): used in ring file names, the default control socket path and logs.
+- `name` (default `subplane`): used in ring file names, the default control socket path and logs.
 - `version`: informational.
 - `max_symbols` (default 65536): size of the symbol table, filter bitsets and last-value cache.
 - `thread_groups[]`: `name`, `cpu` (pin core, -1 = unpinned), `partitions` (names). Omitted means one group `g0` with every partition. Each partition must be in exactly one group.
@@ -500,7 +500,7 @@ Startup is fail-fast: an unknown component type, a bad schema, a bad framing blo
 ## Source layout
 
 ```
-include/flashtick/
+include/subplane/
   core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h
   registry/    component_registry.h
   transport/   transport.h udp_multicast.h tcp_stream.h aeron_transport.h
@@ -513,11 +513,11 @@ include/flashtick/
   client/      shm_reader.h control_client.h         (the whole app SDK)
   logging/ metrics/                                  (cold path)
   agent.h api_server.h config_manager.h symbol_table.h status_types.h types.h persistence_manager.h
-src/            mirrors include/; src/main.cpp builds the `flashtickd` binary; src/registry/builtin_components.cpp holds the static tables
+src/            mirrors include/; src/main.cpp builds the `subplaned` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
-tools/          sbe_sender.cpp dbn_sim.cpp aeron_pub.cpp ft_probe.cpp ft_schema.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
+tools/          sbe_sender.cpp dbn_sim.cpp aeron_pub.cpp sp_probe.cpp sp_schema.cpp sp_tail.cpp sp_replay.cpp ring_soak.cpp (+ shared headers)
 examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime) views_app.cpp (canonical struct views) canonical_pub.cpp (sample publisher)
-schemas/        sample_md.xml (referenced by config.yaml) flashtick_canonical.xml (the canonical flat schema) CMakeLists.txt (views generated at build time)
+schemas/        sample_md.xml (referenced by config.yaml) subplane_canonical.xml (the canonical flat schema) CMakeLists.txt (views generated at build time)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
 scripts/        ci-build-2204.sh deps-2204.sh fetch-cme-sample.sh
@@ -528,18 +528,18 @@ cmake/          aeron.cmake (FetchContent of the pinned Aeron tag)
 
 ## Tools
 
-All built by default (`FLASHTICK_BUILD_TOOLS`).
+All built by default (`SUBPLANE_BUILD_TOOLS`).
 
-- `ft_dbn_sim --port N (--file x.dbn | --synthetic) [--rate rec/s] [--clients N] [--prelude dbn|none] [--loop N] [--timing file] [--instruments N] [--count N] [--mix mbo=60,trade=30,mbp1=10] [--gap-every N] [--heartbeat-ms N]`: TCP server that streams DBN like Databento's live gateway, from an uncompressed `.dbn` file or synthetic v3 records (MBO, trade, MBP-1, SYSTEM heartbeats).
-- `ft_sbe_sender --port N [--schema X] [--framing '<yaml>'] [--group G | --host H] [--rate msgs/s] [--count N] [--symbols N] [--per-packet N] [--mix trade=70,quote=25,book=5] [--heartbeat-ms N] [--gap-every N] [--seq-reset-at N] [--unknown-every N] [--dup-every N]`: synthetic publisher using the same schema and framing code as the agent. Can inject gaps, a sequence reset, unknown templates and duplicates.
-- `ft_aeron_pub --channel aeron:ipc --stream-id 1001 [--aeron-dir DIR] [--count N] [--rate msg/s] [--symbols N] [--heartbeat-every N] [--embedded-driver] [--driver-timeout-ms N]`: canonical Trade/Quote/Heartbeat over an Aeron exclusive publication, one message per offer, one Sequence counter across all of them. `--embedded-driver` starts a media driver in-process so a UDP test needs no `aeronmd`.
-- `ft_probe --port N [--schema X] [--framing '<yaml>'] [--group G] [--interface IP] [--packets 100] [--timeout-ms 5000] [--verbose]`: validate a framing block against live packets.
-- `ft_schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]`: typed views for flat SBE messages (see Client SDK); prints emitted and skipped messages.
-- `ft_tail <ring path> [--count N] [--follow] [--from-start] [--hex]`: dump ring records (header fields, control event bodies).
-- `ft_replay --pcap FILE --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]`: replay UDP payloads from a pcap (hand-written reader, no libpcap). `ft_replay --bench --config config.yaml [--packets N] [--per-packet K] [--symbols N] [--sessions K] [--batch N] [--cpu N] [--json]`: drive the pipeline in-process with an in-memory transport and print the `recv_to_publish` histogram.
+- `sp_dbn_sim --port N (--file x.dbn | --synthetic) [--rate rec/s] [--clients N] [--prelude dbn|none] [--loop N] [--timing file] [--instruments N] [--count N] [--mix mbo=60,trade=30,mbp1=10] [--gap-every N] [--heartbeat-ms N]`: TCP server that streams DBN like Databento's live gateway, from an uncompressed `.dbn` file or synthetic v3 records (MBO, trade, MBP-1, SYSTEM heartbeats).
+- `sp_sbe_sender --port N [--schema X] [--framing '<yaml>'] [--group G | --host H] [--rate msgs/s] [--count N] [--symbols N] [--per-packet N] [--mix trade=70,quote=25,book=5] [--heartbeat-ms N] [--gap-every N] [--seq-reset-at N] [--unknown-every N] [--dup-every N]`: synthetic publisher using the same schema and framing code as the agent. Can inject gaps, a sequence reset, unknown templates and duplicates.
+- `sp_aeron_pub --channel aeron:ipc --stream-id 1001 [--aeron-dir DIR] [--count N] [--rate msg/s] [--symbols N] [--heartbeat-every N] [--embedded-driver] [--driver-timeout-ms N]`: canonical Trade/Quote/Heartbeat over an Aeron exclusive publication, one message per offer, one Sequence counter across all of them. `--embedded-driver` starts a media driver in-process so a UDP test needs no `aeronmd`.
+- `sp_probe --port N [--schema X] [--framing '<yaml>'] [--group G] [--interface IP] [--packets 100] [--timeout-ms 5000] [--verbose]`: validate a framing block against live packets.
+- `sp_schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]`: typed views for flat SBE messages (see Client SDK); prints emitted and skipped messages.
+- `sp_tail <ring path> [--count N] [--follow] [--from-start] [--hex]`: dump ring records (header fields, control event bodies).
+- `sp_replay --pcap FILE --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]`: replay UDP payloads from a pcap (hand-written reader, no libpcap). `sp_replay --bench --config config.yaml [--packets N] [--per-packet K] [--symbols N] [--sessions K] [--batch N] [--cpu N] [--json]`: drive the pipeline in-process with an in-memory transport and print the `recv_to_publish` histogram.
 - `ring_soak --role writer|reader|harness [...]`: ring chaos test with CRC payloads, N readers, writer kill and restart; checks readers see `WriterGone` then `AGENT_RESTARTED`.
 - `shm_demo_app --socket PATH [--session NAME] [--symbols 1,2,3] [--trades-only] [--seconds N] [--quiet]` (in `examples/`): the whole app contract in one file.
-- `canonical_pub --port N [--host H | --group G] [--rate msg/s] [--count N] [--symbols N]` (in `examples/`): the smallest publisher the agent can ingest, about a hundred lines with no agent code: fills the generated canonical structs, applies the framing block from `config.yaml`'s `canonical` partition, sends over UDP or multicast. The file a gateway author copies; real gateways (crypto WebSocket, FIX) live in the `flashtick-feeds` repository (planned). `ctest -R canonical_pub` runs it through the agent to `views_app`.
+- `canonical_pub --port N [--host H | --group G] [--rate msg/s] [--count N] [--symbols N]` (in `examples/`): the smallest publisher the agent can ingest, about a hundred lines with no agent code: fills the generated canonical structs, applies the framing block from `config.yaml`'s `canonical` partition, sends over UDP or multicast. The file a gateway author copies; real gateways (crypto WebSocket, FIX) live in the `subplane-feeds` repository (planned). `ctest -R canonical_pub` runs it through the agent to `views_app`.
 - `views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start]` (in `examples/`): reads a ring of canonical messages through the generated struct views, no codec; prints one line per message and a summary (`trades= quotes= books= snapshots= other= heartbeats= bad=`), exit 1 if any data record was rejected by every view.
 
 ## Build and test
@@ -550,7 +550,7 @@ cmake --build build -j
 cd build && ctest --output-on-failure
 ```
 
-Dependencies: a C++20 compiler, CMake 3.20+ (3.30+ with Aeron), pkg-config, yaml-cpp, pthreads, git and network access for the Aeron fetch. pugixml and doctest are vendored. Aeron (C client + C media driver, pinned tag in `cmake/aeron.cmake`, no Java) is fetched and built at configure time; `-DFLASHTICK_WITH_AERON=OFF` builds the agent without the `aeron` transport and without the fetch, and `-DFETCHCONTENT_SOURCE_DIR_AERON=<checkout>` builds from a local or vendored tree. `libuuid` (`uuid-dev`) is optional for the driver. Flags: `-O2`, and `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on first-party code. Options: `FLASHTICK_BUILD_TESTS`, `FLASHTICK_BUILD_TOOLS`, `FLASHTICK_WERROR`, `FLASHTICK_WITH_AERON`, `FLASHTICK_AERON_TAG`.
+Dependencies: a C++20 compiler, CMake 3.20+ (3.30+ with Aeron), pkg-config, yaml-cpp, pthreads, git and network access for the Aeron fetch. pugixml and doctest are vendored. Aeron (C client + C media driver, pinned tag in `cmake/aeron.cmake`, no Java) is fetched and built at configure time; `-DSUBPLANE_WITH_AERON=OFF` builds the agent without the `aeron` transport and without the fetch, and `-DFETCHCONTENT_SOURCE_DIR_AERON=<checkout>` builds from a local or vendored tree. `libuuid` (`uuid-dev`) is optional for the driver. Flags: `-O2`, and `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on first-party code. Options: `SUBPLANE_BUILD_TESTS`, `SUBPLANE_BUILD_TOOLS`, `SUBPLANE_WERROR`, `SUBPLANE_WITH_AERON`, `SUBPLANE_AERON_TAG`.
 
 ctest targets: `test_core`, `test_core_types`, `test_ring`, `test_sbe`, `test_transport`, `test_framing`, `test_pipeline`, `test_session_manager`, `test_control` (doctest unit tests), and `sender_probe` (sender to probe over unicast loopback for two framings), `ring_soak_short` (2 s, 2 readers), `replay_bench` (in-process bench smoke test), `dbn_sim`, `flatbuffers_replay`, `test_canonical`, `canonical_views_app`, `canonical_pub`, `schema_views_numpy`, `cme_probe` (skipped without the sample), and `aeron_ipc` / `aeron_udp` (present when built with Aeron).
 
