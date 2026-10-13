@@ -1,6 +1,6 @@
 // views_app: read a subplane ring with the generated canonical views, no codec.
 //
-//   views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start] [--spin] [--latency]
+//   views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start] [--spin] [--latency] [--dump N]
 //
 // Dispatches every data record through sp_canonical::view<T>() (a pointer into
 // the ring, checked against length, template id and schema id), prints a line
@@ -36,13 +36,14 @@ double px(int64_t v) { return static_cast<double>(v) / 1e9; } // PriceExponent =
 int main(int argc, char** argv) {
     if (argc < 2) { std::fputs("usage: views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start]\n", stderr); return 2; }
     const std::string path = argv[1];
-    uint64_t count = 0, seconds = 0; bool quiet = false, from_start = false, spin = false, latency = false;
+    uint64_t count = 0, seconds = 0; bool quiet = false, from_start = false, spin = false, latency = false; uint64_t dump = 0;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--quiet") quiet = true;
         else if (a == "--from-start") from_start = true;
         else if (a == "--spin") spin = true;
         else if (a == "--latency") latency = true;
+        else if (a == "--dump" && i + 1 < argc) dump = std::strtoull(argv[++i], nullptr, 10);
         else if ((a == "--count" || a == "--seconds") && i + 1 < argc) { (a == "--count" ? count : seconds) = std::strtoull(argv[++i], nullptr, 10); }
         else { std::fprintf(stderr, "views_app: bad argument %s\n", a.c_str()); return 2; }
     }
@@ -77,6 +78,7 @@ int main(int argc, char** argv) {
             // measurement does not include this app's own decode.
             const uint64_t now = now_ns();
             uint64_t recv = 0; std::memcpy(&recv, rv.payload + kRecvTsOff, 8);
+            if (dump) { --dump; std::printf("rec tid=%u sym=%u seq=%llu recv=%llu ingest=%llu app=%llu\n", h.template_id, h.symbol_id, (unsigned long long)h.sequence, (unsigned long long)recv, (unsigned long long)h.ingest_ts, (unsigned long long)now); }
             if (recv && recv <= h.ingest_ts && h.ingest_ts <= now) {
                 gw_to_app.record(now - recv); agent_to_app.record(now - h.ingest_ts); gw_to_agent.record(h.ingest_ts - recv);
             } else ++unordered;   // replayed recordings carry their original RecvTs; clocks of one box never run backwards
