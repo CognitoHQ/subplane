@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(flashtick VERSION 2.0.0 LANGUAGES CXX)
+project(flashtick VERSION 2.0.0 LANGUAGES C CXX)
 
 # INV-007: C++20, GCC 11 on Ubuntu 22.04 is the target toolchain.
 set(CMAKE_CXX_STANDARD 20)
@@ -18,6 +18,7 @@ set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
 option(FLASHTICK_BUILD_TESTS "Build unit and integration tests" ON)
 option(FLASHTICK_BUILD_TOOLS "Build operator tools (sender, probe, tail, replay, soak)" ON)
 option(FLASHTICK_WERROR "Treat warnings as errors" ON)
+option(FLASHTICK_WITH_AERON "Build the aeron transport (fetches the Aeron C client + media driver)" ON)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -37,6 +38,10 @@ set_target_properties(pugixml PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(doctest INTERFACE)
 target_include_directories(doctest INTERFACE third_party/doctest)
+
+if(FLASHTICK_WITH_AERON)
+    include(cmake/aeron.cmake)
+endif()
 
 # Core library: everything except main().
 add_library(flashtick_core STATIC
@@ -70,6 +75,10 @@ target_link_libraries(flashtick_core
     PUBLIC PkgConfig::YAML_CPP Threads::Threads
     PRIVATE flashtick_warnings pugixml
 )
+if(FLASHTICK_WITH_AERON)
+    target_sources(flashtick_core PRIVATE src/transport/aeron_transport.cpp)
+    target_link_libraries(flashtick_core PUBLIC flashtick_aeron)
+endif()
 
 add_executable(flashtickd src/main.cpp)
 target_link_libraries(flashtickd PRIVATE flashtick_core flashtick_warnings)

@@ -21,6 +21,14 @@ add_executable(ft_schema ft_schema.cpp)
 target_link_libraries(ft_schema PRIVATE flashtick_core flashtick_warnings)
 target_include_directories(ft_schema PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Aeron publisher of canonical messages: test peer and proof for the `aeron` transport.
+if(FLASHTICK_WITH_AERON AND TARGET views_flashtick_canonical)
+    add_executable(ft_aeron_pub aeron_pub.cpp ${FT_GENERATED_DIR}/flashtick_canonical_views.h)
+    target_include_directories(ft_aeron_pub PRIVATE ${FT_GENERATED_DIR})
+    target_link_libraries(ft_aeron_pub PRIVATE flashtick_aeron flashtick_warnings Threads::Threads)
+    add_dependencies(ft_aeron_pub views_flashtick_canonical)
+endif()
+
 add_executable(ft_tail ft_tail.cpp)
 target_link_libraries(ft_tail PRIVATE flashtick_core flashtick_warnings)
 
@@ -73,6 +81,15 @@ if(BUILD_TESTING OR FLASHTICK_BUILD_TESTS)
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_pub.sh
                 $<TARGET_FILE:canonical_pub> $<TARGET_FILE:flashtickd> $<TARGET_FILE:views_app>
                 ${CMAKE_SOURCE_DIR}/schemas/flashtick_canonical.xml)
+    # Aeron ingest: ft_aeron_pub -> media driver -> agent (aeron transport) -> ring -> views_app.
+    if(TARGET ft_aeron_pub)
+        foreach(mode ipc udp)
+            add_test(NAME aeron_${mode}
+                COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_aeron_ingest.sh ${mode}
+                        $<TARGET_FILE:ft_aeron_pub> $<TARGET_FILE:flashtickd> $<TARGET_FILE:views_app>
+                        ${CMAKE_SOURCE_DIR}/schemas/flashtick_canonical.xml)
+        endforeach()
+    endif()
     # FlatBuffers over UDP: pcap of real flatc buffers (1..4 per datagram) -> agent -> ring.
     add_test(NAME flatbuffers_replay
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh

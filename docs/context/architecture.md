@@ -41,7 +41,7 @@ Payload bytes are copied once, from the receive arena to each accepting ring.
 
 ## Component registry
 
-`registry/component_registry.h`: explicit static tables, no self-registering statics. The table lives in `src/registry/builtin_components.cpp` and is greppable. Only the transport table exists today: `udp_multicast`, and `udp` as an alias (unicast when `group` is empty). An unknown `type:` is a startup error that lists the available types.
+`registry/component_registry.h`: explicit static tables, no self-registering statics. The table lives in `src/registry/builtin_components.cpp` and is greppable. Only the transport table exists today: `udp_multicast` (and `udp` as an alias, unicast when `group` is empty), `tcp_stream` and `aeron` (present when built with `FLASHTICK_WITH_AERON`, the default). An unknown `type:` is a startup error that lists the available types.
 
 The framer and the decoder are not looked up through the registry. The framer is built from the `framing:` block, and `decoder.type` accepts only `sbe_routing`. Decoder and derivation tables are planned.
 
@@ -77,6 +77,26 @@ transport:
 - Non-blocking connect completed inside `poll()`. `poll()` reads once into one arena allocated in `open()`, then cuts complete records (up to `batch`) as views into the arena; a record split across reads waits for the next poll. One clock read per batch.
 - Peer close or a socket error closes the connection; with `reconnect_ms > 0` the transport reconnects with that backoff and `poll()` returns 0 meanwhile, so the partition reports DEGRADED through the normal heartbeat timeout. A record length of 0 or above `max_record` means the stream is misaligned: counted as a framing error and reconnected. A zstd-compressed DBN stream is fatal with a message (decompress with the `dbn` CLI).
 - `ft_dbn_sim` serves DBN over TCP the way Databento's live gateway does after `Start()` (prelude, metadata, records) from an uncompressed `.dbn` file or synthetically; see Tools.
+
+`aeron` (`AeronTransport`): one Aeron stream (IPC, UDP unicast or multicast) through the Aeron C client; every reassembled message is one packet to the pipeline. Encoding-blind: the message is whatever the publisher offered.
+
+```yaml
+transport:
+  type: aeron
+  channel: "aeron:ipc"          # or aeron:udp?endpoint=0.0.0.0:40456 | aeron:udp?endpoint=239.1.1.1:40456|interface=10.0.0.1
+  stream_id: 1001
+  aeron_dir: ""                 # media driver directory; empty = Aeron's default (/dev/shm/aeron-<user>)
+  batch: 32                     # fragments per poll, 1 to 64
+  max_message: 65536            # arena slot bytes; a larger message is counted (oversize) and dropped
+  driver_timeout_ms: 10000      # wait for a live driver on open
+  driver: { embedded: false, threading_mode: shared, dir_delete_on_start: true }   # optional in-process media driver
+```
+
+- The media driver is normally its own process (`aeronmd`, built alongside the agent). `driver.embedded: true` runs one inside the agent on its own threads (`shared`, `shared_network` or `dedicated`), for development, tests and single-box setups; the pipeline thread never runs the driver duty cycle, and the client conductor has its own thread too.
+- `poll()` calls `aeron_subscription_poll` with a fragment assembler (messages larger than the MTU arrive whole) and a fragment limit equal to `batch`. The handler copies each message into the next slot of one arena of `batch * max_message` bytes allocated in `open()`, because Aeron's log-buffer bytes are only guaranteed while the handler runs and the pipeline reads the batch after `poll()` returns. One clock read per poll is the receive timestamp. No allocation, no mutex on the poll thread (the C client's image list is lock-free).
+- Framing: one message per packet, so `length: packet` (or the schema default) with `sequence: message.<Field>` when the publisher stamps a sequence, or `none`. Liveness is the partition's heartbeat timeout as for any transport; image arrivals and departures and client errors are counted on the transport.
+- Measured on the dev host (GCC 13, unpinned, embedded driver, `aeron:ipc`, 200k canonical messages offered back to back): 0 gaps, pipeline `recv_to_publish` p50 3.1 µs, p99 12 µs. That is poll to ring; the Aeron hop (offer to poll) is in front of it.
+- `ft_aeron_pub` is the test peer and proof: canonical Trade/Quote/Heartbeat over an exclusive publication, with an optional embedded driver. `ctest -R aeron` runs it through the agent to `views_app` over IPC (publisher attached to the agent's embedded driver) and over UDP loopback (two drivers).
 
 ## Framing
 
@@ -449,7 +469,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
 `partitions[]` (one activation each; order defines the partition id, at most 64)
 - `name`: required, unique.
-- `transport`: `type` (`udp_multicast` or `udp`), `group` (empty = unicast), `port`, `interface` (local address, empty = any), `rcvbuf` (bytes), `busy_poll_us` (0 = off), `mtu`, `batch` (1 to 64), `kernel_timestamps` (default false), `multicast_loop` (default true), `reuse_port` (default true).
+- `transport`: `type` (`udp_multicast` or `udp`), `group` (empty = unicast), `port`, `interface` (local address, empty = any), `rcvbuf` (bytes), `busy_poll_us` (0 = off), `mtu`, `batch` (1 to 64), `kernel_timestamps` (default false), `multicast_loop` (default true), `reuse_port` (default true). `type: tcp_stream` and `type: aeron` take the keys shown under Transport.
 - `framing`: the block described above. Absent means bare concatenation with length from the schema and no sequence.
 - `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `messages[]` (`template` plus `msg_type` or `admin`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
@@ -483,7 +503,7 @@ Startup is fail-fast: an unknown component type, a bad schema, a bad framing blo
 include/flashtick/
   core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h
   registry/    component_registry.h
-  transport/   transport.h udp_multicast.h tcp_stream.h
+  transport/   transport.h udp_multicast.h tcp_stream.h aeron_transport.h
   framing/     framing.h sbe_length.h
   decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h
   pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h
@@ -495,12 +515,13 @@ include/flashtick/
   agent.h api_server.h config_manager.h symbol_table.h status_types.h types.h persistence_manager.h
 src/            mirrors include/; src/main.cpp builds the `flashtickd` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
-tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_schema.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
+tools/          sbe_sender.cpp dbn_sim.cpp aeron_pub.cpp ft_probe.cpp ft_schema.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
 examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime) views_app.cpp (canonical struct views) canonical_pub.cpp (sample publisher)
 schemas/        sample_md.xml (referenced by config.yaml) flashtick_canonical.xml (the canonical flat schema) CMakeLists.txt (views generated at build time)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
-scripts/        ci-build-2204.sh
+scripts/        ci-build-2204.sh deps-2204.sh fetch-cme-sample.sh
+cmake/          aeron.cmake (FetchContent of the pinned Aeron tag)
 ```
 
 `persistence_manager` is compiled into the core library but not wired into the pipeline; it is off the hot path and not used today.
@@ -511,6 +532,7 @@ All built by default (`FLASHTICK_BUILD_TOOLS`).
 
 - `ft_dbn_sim --port N (--file x.dbn | --synthetic) [--rate rec/s] [--clients N] [--prelude dbn|none] [--loop N] [--timing file] [--instruments N] [--count N] [--mix mbo=60,trade=30,mbp1=10] [--gap-every N] [--heartbeat-ms N]`: TCP server that streams DBN like Databento's live gateway, from an uncompressed `.dbn` file or synthetic v3 records (MBO, trade, MBP-1, SYSTEM heartbeats).
 - `ft_sbe_sender --port N [--schema X] [--framing '<yaml>'] [--group G | --host H] [--rate msgs/s] [--count N] [--symbols N] [--per-packet N] [--mix trade=70,quote=25,book=5] [--heartbeat-ms N] [--gap-every N] [--seq-reset-at N] [--unknown-every N] [--dup-every N]`: synthetic publisher using the same schema and framing code as the agent. Can inject gaps, a sequence reset, unknown templates and duplicates.
+- `ft_aeron_pub --channel aeron:ipc --stream-id 1001 [--aeron-dir DIR] [--count N] [--rate msg/s] [--symbols N] [--heartbeat-every N] [--embedded-driver] [--driver-timeout-ms N]`: canonical Trade/Quote/Heartbeat over an Aeron exclusive publication, one message per offer, one Sequence counter across all of them. `--embedded-driver` starts a media driver in-process so a UDP test needs no `aeronmd`.
 - `ft_probe --port N [--schema X] [--framing '<yaml>'] [--group G] [--interface IP] [--packets 100] [--timeout-ms 5000] [--verbose]`: validate a framing block against live packets.
 - `ft_schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]`: typed views for flat SBE messages (see Client SDK); prints emitted and skipped messages.
 - `ft_tail <ring path> [--count N] [--follow] [--from-start] [--hex]`: dump ring records (header fields, control event bodies).
@@ -528,8 +550,8 @@ cmake --build build -j
 cd build && ctest --output-on-failure
 ```
 
-Dependencies: a C++20 compiler, CMake 3.20+, pkg-config, yaml-cpp, pthreads. pugixml and doctest are vendored. Flags: `-O2`, and `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on first-party code. Options: `FLASHTICK_BUILD_TESTS`, `FLASHTICK_BUILD_TOOLS`, `FLASHTICK_WERROR`.
+Dependencies: a C++20 compiler, CMake 3.20+ (3.30+ with Aeron), pkg-config, yaml-cpp, pthreads, git and network access for the Aeron fetch. pugixml and doctest are vendored. Aeron (C client + C media driver, pinned tag in `cmake/aeron.cmake`, no Java) is fetched and built at configure time; `-DFLASHTICK_WITH_AERON=OFF` builds the agent without the `aeron` transport and without the fetch, and `-DFETCHCONTENT_SOURCE_DIR_AERON=<checkout>` builds from a local or vendored tree. `libuuid` (`uuid-dev`) is optional for the driver. Flags: `-O2`, and `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on first-party code. Options: `FLASHTICK_BUILD_TESTS`, `FLASHTICK_BUILD_TOOLS`, `FLASHTICK_WERROR`, `FLASHTICK_WITH_AERON`, `FLASHTICK_AERON_TAG`.
 
-ctest targets: `test_core`, `test_core_types`, `test_ring`, `test_sbe`, `test_transport`, `test_framing`, `test_pipeline`, `test_session_manager`, `test_control` (doctest unit tests), and `sender_probe` (sender to probe over unicast loopback for two framings), `ring_soak_short` (2 s, 2 readers), `replay_bench` (in-process bench smoke test).
+ctest targets: `test_core`, `test_core_types`, `test_ring`, `test_sbe`, `test_transport`, `test_framing`, `test_pipeline`, `test_session_manager`, `test_control` (doctest unit tests), and `sender_probe` (sender to probe over unicast loopback for two framings), `ring_soak_short` (2 s, 2 readers), `replay_bench` (in-process bench smoke test), `dbn_sim`, `flatbuffers_replay`, `test_canonical`, `canonical_views_app`, `canonical_pub`, `schema_views_numpy`, `cme_probe` (skipped without the sample), and `aeron_ipc` / `aeron_udp` (present when built with Aeron).
 
-`scripts/ci-build-2204.sh` builds and tests inside an `ubuntu:22.04` container with GCC 11 (the INV-007 toolchain; the dev host has a newer GCC). `.github/workflows/ci.yml` does the same on push and pull request.
+`scripts/ci-build-2204.sh` builds and tests inside an `ubuntu:22.04` container with GCC 11 (the INV-007 toolchain; the dev host has a newer GCC); `scripts/deps-2204.sh` installs the packages, with CMake from Kitware's apt repository because jammy's 3.22 is below Aeron's minimum. `.github/workflows/ci.yml` runs the same two scripts on push and pull request.

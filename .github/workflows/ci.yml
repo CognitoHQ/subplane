@@ -7,9 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: deps
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update -qq && apt-get install -y -qq g++ cmake pkg-config libyaml-cpp-dev
+        run: scripts/deps-2204.sh
       - name: build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
       - name: test

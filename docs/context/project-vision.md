@@ -20,7 +20,7 @@ The extra hop is paid back by the app-side waste it removes: no per-app multicas
 
 An agent with a limited, well-defined scope (subscribe, route, fan out) can be optimized to an extreme that a general framework cannot reach. The component/activation model then buys calculated flexibility where it pays: one agent serves organizations with several distribution technologies (multicast, Aeron, Kafka) behind the same app contract, and apps shed deserialization, filtering and routing entirely. Narrow core, flexible edges, simpler apps.
 
-Only UDP multicast (and plain UDP unicast) ingest is implemented today. Aeron and Kafka are planned behind the same transport interface.
+UDP multicast (and plain UDP unicast), TCP byte streams and Aeron (IPC, UDP unicast and multicast) ingest are implemented behind one transport interface; Kafka is planned behind the same interface.
 
 ## One app contract for any bus
 
@@ -188,7 +188,7 @@ If the bus carries no sequence number, gap detection is off for that partition a
 - **WASM / VM decoders and code generation.** No speed gain; filtering needs only tables. The real value of WASM (sandboxed app-supplied logic) is a later feature. The decoder spec is kept clean so a backend could be added.
 - **Rust rewrite.** No stable ABI, same C-ABI endpoint, ecosystem and familiarity favour C++20. Switching cost is lowest now, and the decision is noted as revisitable.
 - **ITCH as the first target.** ITCH is order-by-order, so nothing app-useful comes out without a book builder. The thesis is bulk tick feeds that already carry trades, quotes and book deltas.
-- **Aeron IPC in v1.** It would add a media driver dependency and make the Aeron client API part of the app contract. The v1 contract is a small header-only reader under our control. Worth revisiting when ingest is Aeron too.
+- **Aeron IPC as the v1 app contract.** It would make the Aeron client API part of the app contract. The v1 contract is a small header-only reader under our control. Aeron ingest is implemented (2026-10-13; the media driver is now a build dependency), so an `aeron_ipc` fan-out component beside the shared-memory ring is back on the roadmap (item 9), as an option, not the contract.
 - **A general app publishing API** (rejected 2026-10-12, narrowed the same day). A free-form app-to-agent-to-apps path would make flashtick a broker. What is planned instead is `shm_ingest`: a local app writes one-way into a ring the agent reads as just another partition (schema, framing, sequence, routing, fan-out), so derived data produced on the box reaches every other app over the same contract. Flow stays one-way per partition; nothing is routed back to its producer; leaving the box is still the firm's bus's job. Reason for the change: every shop generates derived data and needs a publishing layer, vendors do not offer one, and small shops have no bus for it.
 - **`dlopen` plugins.** They contradict zero-cost dispatch and cross a C++ ABI. YAML activation of compiled-in components gives the operational flexibility without foreign code.
 
@@ -204,7 +204,7 @@ Items are planned unless marked done. The order is the intended build order; eac
 6. **kdb+ feed** (`ft_kdb`): a bundled consumer that decodes with the generic decoder, batches, and publishes to a tickerplant through the kdb+ C API, with template-to-table mapping in YAML; with `shm_ingest`, q processes publish derived data back to the box. Target: a KX-listed interface.
 7. **`databento_live`**: the DBN decoder and the `tcp_stream` transport are implemented (2026-10-12, see "Checked against a real bus"); the live gateway adapter (CRAM authentication, subscription messages, symbology) on top of `tcp_stream` is left for a later contribution, possibly from outside the core team, and is not scheduled.
 8. **Python client** (a thin binding over `shm_reader.h`), also the proof that the app contract is implementable without the C++ SDK, and the host for function-style runtimes.
-9. **Aeron ingest** and an `aeron_ipc` fan-out component (untethered subscriptions).
+9. **Aeron**: ingest done (2026-10-13; the `aeron` transport, Aeron C client and media driver fetched at build time, publishers in the feeds package publish Aeron streams of canonical SBE); an `aeron_ipc` fan-out component (untethered subscriptions) remains planned.
 10. **Kafka transport** (an earlier producer is parked under `src/transport/parked/`).
 11. **Standalone specification** of the ring layout, record header and control protocol, independent of the C++ headers.
 12. **Derived feeds** (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings; with `shm_ingest` in place these become the agent's own ingest partitions.

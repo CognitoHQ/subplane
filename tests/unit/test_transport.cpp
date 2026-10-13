@@ -61,10 +61,28 @@ TEST_CASE("registry constructs udp_multicast and rejects unknown types") {
     REQUIRE(t);
     CHECK(t->describe() == "udp://0.0.0.0:4000");
 
-    auto bad = make_component(transport_components(), "aeron", YAML::Load("{}"), err);
+    auto bad = make_component(transport_components(), "carrier_pigeon", YAML::Load("{}"), err);
     CHECK_FALSE(bad);
     CHECK(err.find("udp_multicast") != std::string::npos);
 }
+
+#if FLASHTICK_WITH_AERON
+TEST_CASE("aeron transport config: required keys and bounds, no driver needed") {
+    std::string err;
+    CHECK_FALSE(make_component(transport_components(), "aeron", YAML::Load("{stream_id: 1}"), err));
+    CHECK(err.find("channel") != std::string::npos);
+    CHECK_FALSE(make_component(transport_components(), "aeron", YAML::Load("{channel: 'aeron:ipc'}"), err));
+    CHECK(err.find("stream_id") != std::string::npos);
+    CHECK_FALSE(make_component(transport_components(), "aeron", YAML::Load("{channel: 'aeron:ipc', stream_id: 1, batch: 65}"), err));
+    CHECK(err.find("batch") != std::string::npos);
+    CHECK_FALSE(make_component(transport_components(), "aeron", YAML::Load("{channel: 'aeron:ipc', stream_id: 1, driver: {threading_mode: turbo}}"), err));
+    CHECK(err.find("threading_mode") != std::string::npos);
+    auto t = make_component(transport_components(), "aeron", YAML::Load("{channel: 'aeron:ipc', stream_id: 7, driver: {embedded: true}}"), err);
+    REQUIRE(t);
+    CHECK(t->describe() == "aeron aeron:ipc stream 7 (embedded driver)");
+    CHECK(t->fd() == -1);
+}
+#endif
 
 TEST_CASE("unicast UDP receive with recvmmsg batching and timestamps") {
     uint16_t port = pick_free_port();

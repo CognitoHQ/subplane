@@ -121,6 +121,25 @@ partitions:
   #       - { template: 100, admin: HEARTBEAT }
   #   heartbeat_timeout_ms: 5000
 
+  # The same canonical stream over Aeron (publishers in the feeds package publish this way).
+  # One SBE message per offer, so the whole fragment is the message and Sequence comes from it.
+  # Try it: build/tools/ft_aeron_pub --channel aeron:ipc --stream-id 1001 --count 1000   (attaches to the agent's embedded driver)
+  # - name: canonical_aeron
+  #   transport:
+  #     type: aeron
+  #     channel: "aeron:ipc"            # or aeron:udp?endpoint=0.0.0.0:40456 | aeron:udp?endpoint=239.1.1.1:40456|interface=10.0.0.1
+  #     stream_id: 1001
+  #     aeron_dir: ""                   # empty = Aeron default; must match the publisher's driver for aeron:ipc
+  #     driver: { embedded: true, threading_mode: shared }   # omit to use an external aeronmd
+  #   framing: { length: packet, sequence: message.Sequence }
+  #   decoder:
+  #     type: sbe_routing
+  #     schema: schemas/flashtick_canonical.xml
+  #     fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+  #     symbol_id_mode: table
+  #     messages: [ { template: 1, msg_type: TRADE }, { template: 2, msg_type: QUOTE }, { template: 100, admin: HEARTBEAT } ]
+  #   heartbeat_timeout_ms: 5000
+
 # Operator-defined sessions. Apps may also create their own over the control channel.
 sessions:
   - name: alpha

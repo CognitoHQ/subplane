@@ -6,19 +6,19 @@ The agent binary is `flashtickd` (CMake target `flashtickd`, `src/main.cpp`). Th
 A single-binary routing agent for the firm's internal SBE bus, one per application box. It subscribes to bus partitions over UDP multicast, finds message boundaries by walking the published SBE schema, decodes only routing fields, filters per application session, and fans the original SBE bytes out through per-session shared-memory rings. Apps decode SBE with their own codecs; they no longer deserialize, filter or route. Not a decoder, not a broker.
 
 ## Project Phase: v1 IMPLEMENTED
-Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline, shm rings, control channel, last-value cache, HTTP cold API, tools, tests, CI. Docs reset done (M9). Framing and schema walk validated on real CME MDP 3.0 packets (`scripts/fetch-cme-sample.sh`, `ctest -R cme_probe`). Build order for what comes next is the numbered roadmap in `docs/context/project-vision.md` (per-entry symbol routing, shared rings, generic SBE decoder, recorder, `shm_ingest`, kdb+ feed, Databento, Python, Aeron, Kafka). Licence: Apache-2.0. Repository stays private until it is rebranded under the CognitoHQ organization.
+Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline, shm rings, control channel, last-value cache, HTTP cold API, tools, tests, CI. Aeron ingest done (roadmap item 9a). Docs reset done (M9). Framing and schema walk validated on real CME MDP 3.0 packets (`scripts/fetch-cme-sample.sh`, `ctest -R cme_probe`). Build order for what comes next is the numbered roadmap in `docs/context/project-vision.md` (per-entry symbol routing, shared rings, generic SBE decoder, recorder, `shm_ingest`, kdb+ feed, Databento, Python, Aeron, Kafka). Licence: Apache-2.0. Repository stays private until it is rebranded under the CognitoHQ organization.
 
 ## Tech Stack
 Only what builds today:
 - **Language**: C++20 (GCC 11, Ubuntu 22.04), CMake 3.20+, `-Werror`
-- **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`
-- **Ingest**: UDP multicast / unicast (`recvmmsg`, optional busy-poll and kernel timestamps); TCP byte stream reassembled into records (`tcp_stream`)
+- **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`; Aeron C client + media driver fetched at configure time (`cmake/aeron.cmake`, pinned tag, no Java; needs CMake 3.30+; `FLASHTICK_WITH_AERON=OFF` to drop it)
+- **Ingest**: UDP multicast / unicast (`recvmmsg`, optional busy-poll and kernel timestamps); TCP byte stream reassembled into records (`tcp_stream`); Aeron streams, IPC or UDP, optional embedded media driver (`aeron`)
 - **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/flashtick_canonical.xml`) with typed C++/Python/q views generated at build time by `ft_schema`.
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK
 - **Control**: Unix `SOCK_SEQPACKET` control channel (dynamic sessions, snapshots)
 - **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/reload`)
 - **Metrics**: lock-free log histogram and one-writer counters
-- Planned, not built: Aeron, Kafka, derived feeds, Python client
+- Planned, not built: `aeron_ipc` fan-out, Kafka, derived feeds, Python client
 
 ## Vocabulary
 **component** = compiled-in code in a static registry; **activation** = YAML entry that selects and parameterizes components (a partition); **session** = runtime app subscription (filter + ring). Never say "plugin" in code or docs without saying which of these you mean.

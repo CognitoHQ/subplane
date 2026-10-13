@@ -31,7 +31,7 @@ What it deliberately is not: a decoder (apps keep their own codecs and full deco
 
 ## Quick start
 
-Needs a C++20 compiler (GCC 11 or newer), CMake 3.20+, pkg-config and yaml-cpp (`libyaml-cpp-dev` on Ubuntu).
+Needs a C++20 compiler (GCC 11 or newer), CMake 3.30+, pkg-config, yaml-cpp (`libyaml-cpp-dev` on Ubuntu) and git: the Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java). `-DFLASHTICK_WITH_AERON=OFF` drops the fetch and the `aeron` transport, and then CMake 3.20 is enough. Ubuntu 22.04's CMake is too old for Aeron; `scripts/deps-2204.sh` installs one from Kitware.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -90,6 +90,8 @@ Everything in the docs is implemented unless marked "(planned)".
 `scripts/fetch-cme-sample.sh` downloads 27 public CME MDP 3.0 packets and CME's schema (v9 and v13), and `ctest -R cme_probe` replays them through the production framer and schema walker with a framing block written from CME's documentation. Every message length from the schema walk matches the wire. The test skips when the sample has not been fetched.
 
 A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/ft_dbn_sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
+
+A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc", stream_id: 1001}` subscribes to an Aeron stream (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/ft_aeron_pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `canonical_aeron` partition in `config.yaml` is the configuration.
 
 A third encoding with no library: `decoder: {type: flatbuffers}` routes FlatBuffers by field id straight off the wire and delivers the whole buffer, size prefix included. `ctest -R flatbuffers` runs real `flatc` output (`tests/fixtures/flatbuffers/`) through the decoder and over UDP through the agent. The commented `fb-p0` partition in `config.yaml` is the configuration.
 

@@ -4,10 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 docker run --rm -v "$ROOT":/src:ro -w /src ubuntu:22.04 bash -euo pipefail -c '
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq >/dev/null
-  apt-get install -y -qq g++ cmake pkg-config libyaml-cpp-dev >/dev/null
-  g++ --version | head -1
+  /src/scripts/deps-2204.sh
   cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build /tmp/b -j"$(nproc)"
   cd /tmp/b && ctest --output-on-failure
