@@ -1,7 +1,7 @@
-// sp_replay: pcap replay and in-process pipeline benchmark.
+// subplane replay: pcap replay and in-process pipeline benchmark.
 //
-//   sp_replay --pcap <file> --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]
-//   sp_replay --bench --config <config.yaml> [--packets N] [--per-packet K] ...
+//   subplane replay --pcap <file> --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]
+//   subplane replay --bench --config <config.yaml> [--packets N] [--per-packet K] ...
 //
 // Bench mode builds partitions[0] of the config with an in-memory transport,
 // drives Pipeline::run_once() on the calling thread and reports the pipeline's
@@ -28,6 +28,7 @@
 #include <thread>
 #include <vector>
 
+#include "commands.h"
 #include "subplane/core/clock.h"
 #include "subplane/core/histogram.h"
 #include "subplane/pipeline/lvc.h"
@@ -47,10 +48,10 @@ void on_sigint(int) { g_stop = 1; }
 void usage() {
     std::fputs(
         "usage:\n"
-        "  sp_replay --pcap <file> --port <n> [--host 127.0.0.1] [--rate pps|0] [--timing pcap] [--loop N]\n"
+        "  subplane replay --pcap <file> --port <n> [--host 127.0.0.1] [--rate pps|0] [--timing pcap] [--loop N]\n"
         "      Replays UDP payloads from a pcap. --rate 0 = as fast as possible (default);\n"
         "      --timing pcap reproduces capture gaps (each capped at 1s). --loop 0 = forever.\n"
-        "  sp_replay --bench --config <config.yaml> [options]\n"
+        "  subplane replay --bench --config <config.yaml> [options]\n"
         "      --packets N=200000   measured packets (a 20k-packet warm-up precedes them)\n"
         "      --per-packet K=3     messages per datagram\n"
         "      --symbols N=100      distinct SecurityIDs\n"
@@ -467,7 +468,7 @@ int run_bench(const Args& args, std::string& err) {
         std::puts(j.c_str());
         return 0;
     }
-    std::printf("sp_replay bench: packets=%llu (+%llu warm-up) per_packet=%llu symbols=%llu sessions=%llu batch=%llu cpu=%d\n",
+    std::printf("subplane replay bench: packets=%llu (+%llu warm-up) per_packet=%llu symbols=%llu sessions=%llu batch=%llu cpu=%d\n",
                 ull(o.packets), ull(o.warmup), ull(per_packet), ull(symbols), ull(o.sessions), ull(o.batch), o.cpu);
     std::printf("%-10s %4s %10s %10s %9s | recv_to_publish ns (per batch): %7s %7s %7s %7s %8s\n", "run", "sess",
                 "pkt/s", "msg/s", "ns/msg", "p50", "p90", "p99", "p99.9", "max");
@@ -493,7 +494,7 @@ int run_bench(const Args& args, std::string& err) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int cmd_replay(int argc, char** argv) {
     Args args;
     std::string err;
     if (!args.parse(argc, argv,

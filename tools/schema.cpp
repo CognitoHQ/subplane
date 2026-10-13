@@ -1,11 +1,12 @@
-// sp_schema: schema tooling. Today: typed views for flat SBE messages.
+// subplane schema: schema tooling. Today: typed views for flat SBE messages.
 //
-//   sp_schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]
+//   subplane schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]
 //
 // Writes <package>_views.h / .py / .q into DIR (package from the XML, "." -> "_").
 // Prints which messages were emitted and which were skipped (groups, varData).
 // Exit 0 when at least one message was emitted, 1 on schema/write errors, 2 on usage.
 
+#include "commands.h"
 #include "tool_common.h"
 
 #include "subplane/decoder/sbe_views.h"
@@ -19,7 +20,7 @@ using namespace subplane;
 namespace {
 
 void usage() {
-    std::fputs("usage: sp_schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]\n", stderr);
+    std::fputs("usage: subplane schema --schema X.xml --views cpp|numpy|q|all --out DIR [--namespace NS] [--message M[,M...]] [--stdout]\n", stderr);
 }
 
 bool write_file(const std::string& path, const std::string& body, std::string& err) {
@@ -31,16 +32,16 @@ bool write_file(const std::string& path, const std::string& body, std::string& e
 
 } // namespace
 
-int main(int argc, char** argv) {
+int cmd_schema(int argc, char** argv) {
     sptool::Args args;
     std::string err;
     if (!args.parse(argc, argv, {"schema", "views", "out", "namespace", "message"}, {"stdout", "help"}, err)) {
-        std::fprintf(stderr, "sp_schema: %s\n", err.c_str()); usage(); return 2;
+        std::fprintf(stderr, "subplane schema: %s\n", err.c_str()); usage(); return 2;
     }
     if (args.has("help") || !args.has("schema") || !args.has("views") || (!args.has("out") && !args.has("stdout"))) { usage(); return 2; }
 
     SbeSchema schema;
-    if (!schema.load_file(args.str("schema", ""), err)) { std::fprintf(stderr, "sp_schema: schema: %s\n", err.c_str()); return 1; }
+    if (!schema.load_file(args.str("schema", ""), err)) { std::fprintf(stderr, "subplane schema: schema: %s\n", err.c_str()); return 1; }
 
     ViewsOptions opt;
     opt.ns = args.str("namespace", "sp_views");
@@ -57,7 +58,7 @@ int main(int argc, char** argv) {
             std::stringstream ss(v);
             std::string k;
             while (std::getline(ss, k, ',')) {
-                if (k != "cpp" && k != "numpy" && k != "q") { std::fprintf(stderr, "sp_schema: --views accepts cpp, numpy, q or all\n"); return 2; }
+                if (k != "cpp" && k != "numpy" && k != "q") { std::fprintf(stderr, "subplane schema: --views accepts cpp, numpy, q or all\n"); return 2; }
                 kinds.push_back(k);
             }
         }
@@ -69,13 +70,13 @@ int main(int argc, char** argv) {
         std::string body;
         ViewsReport r;
         const bool ok = k == "cpp" ? emit_cpp(schema, opt, body, r, err) : k == "numpy" ? emit_numpy(schema, opt, body, r, err) : emit_q(schema, opt, body, r, err);
-        if (!ok) { std::fprintf(stderr, "sp_schema: %s: %s\n", k.c_str(), err.c_str()); return 1; }
+        if (!ok) { std::fprintf(stderr, "subplane schema: %s: %s\n", k.c_str(), err.c_str()); return 1; }
         rep = r;
         if (args.has("stdout")) {
             std::fwrite(body.data(), 1, body.size(), stdout);
         } else {
             const std::string path = dir + "/" + base + "_views." + (k == "cpp" ? "h" : k == "numpy" ? "py" : "q");
-            if (!write_file(path, body, err)) { std::fprintf(stderr, "sp_schema: %s\n", err.c_str()); return 1; }
+            if (!write_file(path, body, err)) { std::fprintf(stderr, "subplane schema: %s\n", err.c_str()); return 1; }
             std::fprintf(stderr, "wrote %s\n", path.c_str());
         }
     }

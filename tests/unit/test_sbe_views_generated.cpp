@@ -1,6 +1,6 @@
-// Uses the header sp_schema generated at build time for tests/data/sample_md.xml:
+// Uses the header subplane schema generated at build time for tests/data/sample_md.xml:
 // its static_asserts are the compile-time proof; here the views read messages
-// built by the same encoder sp_sbe_sender uses.
+// built by the same encoder subplane send uses.
 #include <doctest.h>
 
 #include "sample_md_views.h"

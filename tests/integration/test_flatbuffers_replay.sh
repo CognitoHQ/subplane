@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# FlatBuffers over UDP end to end: sp_replay --pcap (real flatc buffers, 1..4 per datagram)
+# FlatBuffers over UDP end to end: subplane replay --pcap (real flatc buffers, 1..4 per datagram)
 # -> subplaned (udp + message_prefix/keep_prefix + flatbuffers decoder) -> ring.
 # Needs only bash, grep and sed (no curl/python: the CI container is minimal).
-# usage: test_flatbuffers_replay.sh <sp_replay> <subplaned> <sp_tail> <fixture dir>
+# usage: test_flatbuffers_replay.sh <subplane replay> <subplaned> <subplane tail> <fixture dir>
 set -u
-REPLAY=$1; AGENT=$2; TAIL=$3; FIX=$4
+SP=$1; AGENT=$2; FIX=$3
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.fbtest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 
@@ -52,7 +52,7 @@ AGENT_PID=$!
 # Wait for the socket to be bound before replaying.
 for _ in $(seq 1 100); do http_get "$API" /status >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
-"$REPLAY" --pcap "$FIX/fb_sample.pcap" --port "$PORT" --host 127.0.0.1 --rate 20000 > "$TMP/replay.log" 2>&1 || fail "sp_replay failed"
+"$SP" replay --pcap "$FIX/fb_sample.pcap" --port "$PORT" --host 127.0.0.1 --rate 20000 > "$TMP/replay.log" 2>&1 || fail "subplane replay failed"
 
 PART=""; MSGS=""
 for _ in $(seq 1 100); do
@@ -70,7 +70,7 @@ echo "partition ok: $MSGS messages in $PKTS packets"
 
 RING=/dev/shm/subplane.fbtest.three.ring
 [ -f "$RING" ] || fail "ring missing"
-"$TAIL" "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "sp_tail failed"
+"$SP" tail "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "subplane tail failed"
 DATA=$(grep -c " kind=0 " "$TMP/tail.log")
 WANT=$(grep -c "^1 [0-9]* [0-9]* \(1000\|1006\|1031\) " "$FIX/fb_sample.expected")
 HB=$(grep -c "BUS_HEARTBEAT" "$TMP/tail.log")

@@ -1,4 +1,4 @@
-// sp_probe: validates a framing block against live packets.
+// subplane probe: validates a framing block against live packets.
 //
 // Captures N packets from a multicast group (or unicast port), then runs the
 // production Framer + schema walker over them and reports whether the framing
@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "commands.h"
 #include "tool_common.h"
 #include "subplane/transport/udp_multicast.h"
 
@@ -34,7 +35,7 @@ void on_sigint(int) { g_stop = 1; }
 
 void usage() {
     std::fputs(
-        "usage: sp_probe --port N [options]\n"
+        "usage: subplane probe --port N [options]\n"
         "  --schema <xml>          SBE schema (default: tests/data/sample_md.xml)\n"
         "  --framing <yaml|file>   framing block to validate (default: try bare concatenation)\n"
         "  --group <ip>            multicast group (empty = unicast bind)\n"
@@ -230,7 +231,7 @@ void print_report(const Report& r, const SbeSchema& sc) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int cmd_probe(int argc, char** argv) {
     Args args;
     std::string err;
     if (!args.parse(argc, argv, {"schema", "framing", "group", "port", "interface", "packets", "timeout-ms"},
@@ -267,7 +268,7 @@ int main(int argc, char** argv) {
     UdpMulticastTransport tr(uc);
     if (!tr.open(err)) { std::fprintf(stderr, "error: open %s: %s\n", tr.describe().c_str(), err.c_str()); return 2; }
     std::signal(SIGINT, on_sigint);
-    std::fprintf(stderr, "sp_probe: listening on %s, capturing up to %llu packets\n", tr.describe().c_str(),
+    std::fprintf(stderr, "subplane probe: listening on %s, capturing up to %llu packets\n", tr.describe().c_str(),
                  static_cast<unsigned long long>(npk));
 
     std::vector<std::vector<uint8_t>> pkts;
@@ -290,7 +291,7 @@ int main(int argc, char** argv) {
         std::printf("verdict: NO DATA (no packets within %llu ms)\n", static_cast<unsigned long long>(timeout_ms));
         return 2;
     }
-    if (pkts.size() < npk) std::fprintf(stderr, "sp_probe: only %zu of %llu packets captured\n", pkts.size(), static_cast<unsigned long long>(npk));
+    if (pkts.size() < npk) std::fprintf(stderr, "subplane probe: only %zu of %llu packets captured\n", pkts.size(), static_cast<unsigned long long>(npk));
 
     Report primary = analyze(have_user ? "user framing" : "bare concatenation", have_user ? user_cfg : bare_cfg, ls, pkts, verbose, err);
     std::printf("%s\n", primary.pass() ? "PASS" : "FAIL");

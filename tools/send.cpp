@@ -1,4 +1,4 @@
-// sp_sbe_sender: synthetic bus publisher for tests and benchmarks.
+// subplane send: synthetic bus publisher for tests and benchmarks.
 //
 // Publishes SBE messages for any schema laid out by a `framing:` block, over
 // UDP multicast or unicast. Templates generated: Trade(1), Quote(2),
@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "commands.h"
 #include "packet_gen.h"
 
 #ifndef SP_DEFAULT_SCHEMA
@@ -36,7 +37,7 @@ void on_sigint(int) { g_stop = 1; }
 
 void usage() {
     std::fputs(
-        "usage: sp_sbe_sender --port N [options]\n"
+        "usage: subplane send --port N [options]\n"
         "  --schema <xml>          SBE schema (default: tests/data/sample_md.xml)\n"
         "  --framing <yaml|file>   framing block (default: bare concatenation)\n"
         "  --group <ip>            multicast group (empty = unicast)\n"
@@ -58,7 +59,7 @@ void usage() {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int cmd_send(int argc, char** argv) {
     Args args;
     std::string err;
     if (!args.parse(argc, argv,

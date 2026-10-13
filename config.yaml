@@ -57,7 +57,7 @@ partitions:
 
   # A second partition carrying a different encoding over a different transport.
   # Encoding is per-partition configuration; the ring contract is the same.
-  # Try it: build/tools/sp_dbn_sim --port 9550 --synthetic   (or --file x.dbn)
+  # Try it: build/tools/subplane dbn-sim --port 9550 --synthetic   (or --file x.dbn)
   # - name: db-p0
   #   transport:
   #     type: tcp_stream
@@ -74,7 +74,7 @@ partitions:
   #   heartbeat_timeout_ms: 5000
 
   # A FlatBuffers bus: routing fields named by field id, no schema file, no library.
-  # Try it: build/tools/sp_replay --pcap tests/fixtures/flatbuffers/fb_sample.pcap --port 30002
+  # Try it: build/tools/subplane replay --pcap tests/fixtures/flatbuffers/fb_sample.pcap --port 30002
   # - name: fb-p0
   #   transport: { type: udp, group: "", port: 30002 }
   #   framing:                         # several size-prefixed buffers per datagram; omit for one per datagram
@@ -96,7 +96,7 @@ partitions:
 
   # The canonical flat schema (schemas/subplane_canonical.xml): what gateways in the feeds package
   # publish and what the normalization mode (planned) emits. Plain sbe_routing configuration.
-  # Try it: build/examples/canonical_pub --port 30003   (or sp_sbe_sender --schema schemas/subplane_canonical.xml ...)
+  # Try it: build/examples/canonical_pub --port 30003   (or subplane send --schema schemas/subplane_canonical.xml ...)
   #         build/examples/views_app /dev/shm/subplane.subplane.<session>.ring
   # - name: canonical
   #   transport: { type: udp, group: "", port: 30003 }
@@ -123,7 +123,7 @@ partitions:
 
   # The same canonical stream over Aeron (publishers in the feeds package publish this way).
   # One SBE message per offer, so the whole fragment is the message and Sequence comes from it.
-  # Try it: build/tools/sp_aeron_pub --channel aeron:ipc --stream-id 1001 --count 1000   (attaches to the agent's embedded driver)
+  # Try it: build/tools/subplane aeron-pub --channel aeron:ipc --stream-id 1001 --count 1000   (attaches to the agent's embedded driver)
   # - name: canonical_aeron
   #   transport:
   #     type: aeron

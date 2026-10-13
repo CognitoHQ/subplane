@@ -45,10 +45,10 @@ build/subplaned --config /tmp/ft.yaml &
 
 # Synthetic publisher, using the same framing as config.yaml.
 FRAMING='{packet_header: [{name: seq, type: u64le}, {name: count, type: u16le}], message_prefix: [{name: len, type: u16le}], sequence: packet_header.seq, length: message_prefix.len}'
-build/tools/sp_sbe_sender --port 30001 --framing "$FRAMING" --rate 1000 --per-packet 3 &
+build/tools/subplane send --port 30001 --framing "$FRAMING" --rate 1000 --per-packet 3 &
 
 curl -s localhost:8080/status
-build/tools/sp_tail /dev/shm/subplane.subplane.alpha.ring --from-start --count 10
+build/tools/subplane tail /dev/shm/subplane.subplane.alpha.ring --from-start --count 10
 build/examples/shm_demo_app --socket /tmp/subplane.sock --session demo --seconds 5
 ```
 
@@ -89,18 +89,18 @@ Everything in the docs is implemented unless marked "(planned)".
 
 `scripts/fetch-cme-sample.sh` downloads 27 public CME MDP 3.0 packets and CME's schema (v9 and v13), and `ctest -R cme_probe` replays them through the production framer and schema walker with a framing block written from CME's documentation. Every message length from the schema walk matches the wire. The test skips when the sample has not been fetched.
 
-A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/sp_dbn_sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
+A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/subplane dbn-sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
 
-A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc", stream_id: 1001}` subscribes to an Aeron stream (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/sp_aeron_pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `canonical_aeron` partition in `config.yaml` is the configuration.
+A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc", stream_id: 1001}` subscribes to an Aeron stream (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/subplane aeron-pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `canonical_aeron` partition in `config.yaml` is the configuration.
 
 A third encoding with no library: `decoder: {type: flatbuffers}` routes FlatBuffers by field id straight off the wire and delivers the whole buffer, size prefix included. `ctest -R flatbuffers` runs real `flatc` output (`tests/fixtures/flatbuffers/`) through the decoder and over UDP through the agent. The commented `fb-p0` partition in `config.yaml` is the configuration.
 
 ## Typed views without a codec
 
-A flat SBE message (no groups, no varData) is a fixed block behind the 8-byte message header. `sp_schema` turns the schema the agent loads into typed access to that block in three languages, so an app never links a codec or runs a code generator of its own:
+A flat SBE message (no groups, no varData) is a fixed block behind the 8-byte message header. `subplane schema` turns the schema the agent loads into typed access to that block in three languages, so an app never links a codec or runs a code generator of its own:
 
 ```bash
-build/tools/sp_schema --schema schemas/sample_md.xml --views all --out out/
+build/tools/subplane schema --schema schemas/sample_md.xml --views all --out out/
 # wrote out/sample_md_views.h  out/sample_md_views.py  out/sample_md_views.q
 # emitted Trade, Quote, Ticker, Heartbeat, SeqReset; skipped BookUpdate: has groups (Levels)
 ```
@@ -184,7 +184,7 @@ Unsigned fields widen to the signed q type of the same width; char arrays are cu
 
 The sample schema's views are regenerated and compiled at every build (`ctest -R sbe_views`), so a layout regression fails the build. Little-endian schemas only.
 
-**The canonical schema.** `schemas/subplane_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a partition carrying it today is ordinary `sbe_routing` configuration (the commented `canonical` partition in `config.yaml`), and `ctest -R canonical_views_app` runs `sp_sbe_sender`, the agent and `views_app` end to end on it. `examples/canonical_pub.cpp` is the other side: the smallest publisher the agent can ingest, generated structs plus a socket, the file to copy when writing a gateway.
+**The canonical schema.** `schemas/subplane_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a partition carrying it today is ordinary `sbe_routing` configuration (the commented `canonical` partition in `config.yaml`), and `ctest -R canonical_views_app` runs `subplane send`, the agent and `views_app` end to end on it. `examples/canonical_pub.cpp` is the other side: the smallest publisher the agent can ingest, generated structs plus a socket, the file to copy when writing a gateway.
 
 ## Licence
 

@@ -1,4 +1,4 @@
-// ring_soak: shared-memory ring chaos test. One binary, three roles.
+// subplane soak: shared-memory ring chaos test. One binary, three roles.
 //
 //   --role writer  --path P [--capacity-mb 4] [--max-payload 512] [--rate msgs/s|0] [--seconds S] [--crash-after S2]
 //   --role reader  --path P [--seconds S] [--expect-restart]
@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "commands.h"
 #include "subplane/client/shm_reader.h"
 #include "subplane/core/clock.h"
 #include "subplane/fanout/ring_writer.h"
@@ -35,7 +36,7 @@ using sptool::Args;
 
 void usage() {
     std::fputs(
-        "usage: ring_soak --role writer|reader|harness [options]\n"
+        "usage: subplane soak --role writer|reader|harness [options]\n"
         "  writer : --path P [--capacity-mb 4] [--max-payload 512] [--rate msgs/s|0] [--seconds S] [--crash-after S2]\n"
         "  reader : --path P [--seconds S] [--expect-restart]\n"
         "  harness: [--path P] [--readers 4] [--seconds 2] [--rate 500000]\n"
@@ -273,20 +274,20 @@ int run_harness(const Args& a, std::string& err) {
     ::unlink((path + ".tmp").c_str());
 
     const uint64_t cap = now_mono_ns() + (seconds + 6) * 1'000'000'000ull;
-    const std::string self = "ring_soak", sec = std::to_string(seconds + 4);
+    const std::string self = "subplane", sub = "soak", sec = std::to_string(seconds + 4);
     std::vector<pid_t> readers;
     for (uint64_t i = 0; i < nreaders; ++i)
-        readers.push_back(spawn({self, "--role", "reader", "--path", path, "--seconds", sec, "--expect-restart"}));
+        readers.push_back(spawn({self, sub, "--role", "reader", "--path", path, "--seconds", sec, "--expect-restart"}));
 
     const std::string rt = std::to_string(rate);
     int rc = 0;
     // Incarnation 1 crashes after 1 s without closing the ring.
-    pid_t w = spawn({self, "--role", "writer", "--path", path, "--seconds", sec, "--rate", rt, "--crash-after", "1"});
+    pid_t w = spawn({self, sub, "--role", "writer", "--path", path, "--seconds", sec, "--rate", rt, "--crash-after", "1"});
     int wr = wait_child(w, cap);
     std::printf("harness: writer1 exit=%d (crash simulated)\n", wr);
     if (wr != 0) rc = 1;
     std::this_thread::sleep_for(std::chrono::milliseconds(500)); // > 200 ms liveness window
-    w = spawn({self, "--role", "writer", "--path", path, "--seconds", std::to_string(seconds - 1), "--rate", rt});
+    w = spawn({self, sub, "--role", "writer", "--path", path, "--seconds", std::to_string(seconds - 1), "--rate", rt});
     wr = wait_child(w, cap);
     std::printf("harness: writer2 exit=%d\n", wr);
     if (wr != 0) rc = 1;
@@ -305,7 +306,7 @@ int run_harness(const Args& a, std::string& err) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int cmd_soak(int argc, char** argv) {
     Args a;
     std::string err;
     if (!a.parse(argc, argv,

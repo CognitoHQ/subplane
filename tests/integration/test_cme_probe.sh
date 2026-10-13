@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Real-bus check: replay public CME MDP 3.0 packets through sp_probe with the
+# Real-bus check: replay public CME MDP 3.0 packets through subplane probe with the
 # MDP 3.0 framing block. Skips (exit 77) when the sample has not been fetched
 # (scripts/fetch-cme-sample.sh needs network).
-# usage: test_cme_probe.sh <sp_replay> <sp_probe> <sample-dir>
+# usage: test_cme_probe.sh <subplane replay> <subplane probe> <sample-dir>
 set -u
-REPLAY=$1; PROBE=$2; DIR=$3
+SP=$1; DIR=$2
 [ -f "$DIR/cme_all.pcap" ] || { echo "SKIP: no CME sample in $DIR (run scripts/fetch-cme-sample.sh)"; exit 77; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
@@ -13,9 +13,9 @@ FRAMING=$(cat "$DIR/framing.yaml")
 probe() { # name schema expected-exit
     local port out
     port=$(( 20000 + (RANDOM % 30000) )); out="$TMP/$1.probe"
-    "$PROBE" --schema "$2" --framing "$FRAMING" --port "$port" --packets 27 --timeout-ms 10000 >"$out" 2>&1 &
+    "$SP" probe --schema "$2" --framing "$FRAMING" --port "$port" --packets 27 --timeout-ms 10000 >"$out" 2>&1 &
     local ppid=$!; sleep 0.5
-    "$REPLAY" --pcap "$DIR/cme_all.pcap" --port "$port" --rate 500 >/dev/null 2>&1 || fail "$1: replay failed"
+    "$SP" replay --pcap "$DIR/cme_all.pcap" --port "$port" --rate 500 >/dev/null 2>&1 || fail "$1: replay failed"
     wait "$ppid"; local rc=$?
     cat "$out"
     [ "$rc" -eq "$3" ] || fail "$1: probe exit $rc, expected $3"

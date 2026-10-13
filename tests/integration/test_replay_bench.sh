@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# sp_replay --bench smoke test: runs the in-process pipeline benchmark against a temp copy of
+# subplane replay --bench smoke test: runs the in-process pipeline benchmark against a temp copy of
 # config.yaml whose schema path points at the sample schema; checks the JSON report.
-# usage: test_replay_bench.sh <sp_replay> <config.yaml> <schema.xml>
+# usage: test_replay_bench.sh <subplane replay> <config.yaml> <schema.xml>
 set -u
-REPLAY=$1; CONFIG=$2; SCHEMA=$3
+SP=$1; CONFIG=$2; SCHEMA=$3
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
 sed "s#^\\([[:space:]]*schema:\\).*#\\1 $SCHEMA#" "$CONFIG" > "$TMP/config.yaml"
 grep -q "schema: $SCHEMA" "$TMP/config.yaml" || fail "schema path rewrite did not apply"
 
-"$REPLAY" --bench --config "$TMP/config.yaml" --packets 20000 --sessions 2 --json > "$TMP/raw.txt" 2> "$TMP/err.txt" \
-    || fail "sp_replay exit $?: $(cat "$TMP/err.txt")"
+"$SP" replay --bench --config "$TMP/config.yaml" --packets 20000 --sessions 2 --json > "$TMP/raw.txt" 2> "$TMP/err.txt" \
+    || fail "subplane replay exit $?: $(cat "$TMP/err.txt")"
 grep '^{' "$TMP/raw.txt" > "$TMP/out.json" || fail "no JSON line in output"
 cat "$TMP/out.json"
 # Assertions in plain bash (CI containers may not have python3).

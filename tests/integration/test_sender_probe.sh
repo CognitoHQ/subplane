@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Sender -> probe round trip over unicast loopback for two framings.
-# usage: test_sender_probe.sh <sp_sbe_sender> <sp_probe> <schema.xml>
+# usage: test_sender_probe.sh <subplane send> <subplane probe> <schema.xml>
 set -u
-SENDER=$1; PROBE=$2; SCHEMA=$3
+SP=$1; SCHEMA=$2
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null' EXIT
 
 BARE='{sequence: message.SeqNum}'
@@ -15,10 +15,10 @@ run_case() {
     port=$(( 20000 + (RANDOM % 30000) ))
     out="$TMP/$name.probe"
     # Probe first: unicast datagrams sent before the socket is bound would be lost.
-    "$PROBE" --schema "$SCHEMA" --framing "$framing" --port "$port" --packets 200 --timeout-ms 10000 --verbose >"$out" 2>"$TMP/$name.probe.err" &
+    "$SP" probe --schema "$SCHEMA" --framing "$framing" --port "$port" --packets 200 --timeout-ms 10000 --verbose >"$out" 2>"$TMP/$name.probe.err" &
     local ppid=$!
     sleep 0.5
-    "$SENDER" --schema "$SCHEMA" --framing "$framing" --port "$port" --count 200 --rate 2000 \
+    "$SP" send --schema "$SCHEMA" --framing "$framing" --port "$port" --count 200 --rate 2000 \
         --per-packet 3 --gap-every 50 --heartbeat-ms 10 >"$TMP/$name.sender" 2>&1 || fail "$name: sender failed: $(cat "$TMP/$name.sender")"
     wait "$ppid"; local rc=$?
     cat "$out"

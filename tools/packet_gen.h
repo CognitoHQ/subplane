@@ -1,6 +1,6 @@
 #pragma once
 
-// Synthetic SBE packet generator shared by sp_sbe_sender and sp_replay --bench.
+// Synthetic SBE packet generator shared by subplane send and subplane replay --bench.
 // Builds datagrams for any schema laid out by a `framing:` block. Cold-path
 // tool code (the generator itself is not on the agent's hot path).
 
@@ -29,7 +29,7 @@ struct GenOptions {
     unsigned mix_trade = 70, mix_quote = 25, mix_book = 5;
 };
 
-bool parse_mix(const std::string& s, GenOptions& o, std::string& err) {
+inline bool parse_mix(const std::string& s, GenOptions& o, std::string& err) {
     o.mix_trade = o.mix_quote = o.mix_book = 0;
     size_t i = 0;
     while (i < s.size()) {
@@ -50,17 +50,17 @@ bool parse_mix(const std::string& s, GenOptions& o, std::string& err) {
     return true;
 }
 
-const FieldDef* find_f(const std::vector<FieldDef>& v, std::string_view name) {
+inline const FieldDef* find_f(const std::vector<FieldDef>& v, std::string_view name) {
     for (const auto& f : v) if (f.name == name) return &f;
     return nullptr;
 }
 // First of several names that exists: the sample schema (SecurityID, SeqNum, ...) and the
 // canonical schema (InstrumentId, Sequence, ...) are both generated from the same code.
-const FieldDef* find_f(const std::vector<FieldDef>& v, std::string_view a, std::string_view b) {
+inline const FieldDef* find_f(const std::vector<FieldDef>& v, std::string_view a, std::string_view b) {
     const FieldDef* f = find_f(v, a);
     return f ? f : find_f(v, b);
 }
-const GroupDef* find_g(const std::vector<GroupDef>& v, std::string_view name) {
+inline const GroupDef* find_g(const std::vector<GroupDef>& v, std::string_view name) {
     for (const auto& g : v) if (g.name == name) return &g;
     return nullptr;
 }

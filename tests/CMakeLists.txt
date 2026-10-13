@@ -26,7 +26,7 @@ subplane_unit_test(test_control unit/test_control.cpp)
 # DBN decoder, TCP stream transport, DBN through the pipeline
 subplane_unit_test(test_dbn unit/test_dbn_decoder.cpp unit/test_tcp_stream.cpp unit/test_dbn_pipeline.cpp)
 # Typed views emitter, and the headers generated for the sample and canonical schemas (schemas/CMakeLists.txt):
-# sp_schema runs at build time so the static_asserts in the generated headers are checked on every build.
+# subplane schema runs at build time so the static_asserts in the generated headers are checked on every build.
 subplane_unit_test(test_sbe_views unit/test_sbe_views.cpp unit/test_sbe_views_generated.cpp ${SP_GENERATED_DIR}/sample_md_views.h)
 target_include_directories(test_sbe_views PRIVATE ${SP_GENERATED_DIR} ${CMAKE_SOURCE_DIR}/tools)
 add_dependencies(test_sbe_views views_sample_md)

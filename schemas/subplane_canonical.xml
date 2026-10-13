@@ -2,7 +2,7 @@
 <!--
   subplane canonical market-data schema. Flat on purpose: no groups, no varData,
   every scalar naturally aligned at its payload offset (8-byte message header
-  plus the root offset), so `sp_schema -views` emits a plain struct for every
+  plus the root offset), so `subplane schema -views` emits a plain struct for every
   message and the same bytes are a C++ struct, a Python dataclass / NumPy dtype
   and a q record. Prices and quantities are int64 with a fixed exponent of -9
   (1.0 = 1000000000). Every data message starts with the same 32-byte prefix

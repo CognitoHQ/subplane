@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# sp_schema --views numpy, loaded by python3 + numpy: a Trade built with the dtype
+# subplane schema --views numpy, loaded by python3 + numpy: a Trade built with the dtype
 # round-trips through bytes, RECORD_HEADER is 64 bytes. Skips (77) without numpy.
-# usage: test_schema_views_numpy.sh <sp_schema> <schema.xml> <canonical.xml>
+# usage: test_schema_views_numpy.sh <subplane schema> <schema.xml> <canonical.xml>
 set -u
-TOOL=$1; SCHEMA=$2; CANON=$3
+SP=$1; SCHEMA=$2; CANON=$3
 command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not available"; exit 77; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
-"$TOOL" --schema "$SCHEMA" --views numpy --out "$TMP" 2> "$TMP/report.txt" || fail "sp_schema: $(cat "$TMP/report.txt")"
-"$TOOL" --schema "$CANON" --views numpy --namespace sp_canonical --out "$TMP" 2>> "$TMP/report.txt" || fail "sp_schema canonical: $(cat "$TMP/report.txt")"
+"$SP" schema --schema "$SCHEMA" --views numpy --out "$TMP" 2> "$TMP/report.txt" || fail "subplane schema: $(cat "$TMP/report.txt")"
+"$SP" schema --schema "$CANON" --views numpy --namespace sp_canonical --out "$TMP" 2>> "$TMP/report.txt" || fail "subplane schema canonical: $(cat "$TMP/report.txt")"
 grep -q "skipped BookUpdate: has groups" "$TMP/report.txt" || fail "report lacks the skipped message: $(cat "$TMP/report.txt")"
 cat > "$TMP/check.py" <<'PY'
 import struct, sys

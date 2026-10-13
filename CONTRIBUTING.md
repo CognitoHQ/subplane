@@ -6,7 +6,7 @@ subplane is infrastructure: correctness and stability over velocity. Read
 ## Ground rules
 
 - **Hot path**: no heap, no mutex, no I/O, no `std::function`, at most one
-  virtual call per packet batch. Measure before optimizing; `sp_replay --bench`
+  virtual call per packet batch. Measure before optimizing; `subplane replay --bench`
   is the harness.
 - **Public contract**: `core/message.h`, `shm/ring_layout.h`,
   `shm/control_events.h` and `control/control_proto.h` are a versioned

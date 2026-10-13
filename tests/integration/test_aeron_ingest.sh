@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# sp_aeron_pub -> Aeron media driver -> subplaned (`aeron` transport) -> ring -> views_app.
-# usage: test_aeron_ingest.sh <ipc|udp> <sp_aeron_pub> <subplaned> <views_app> <schema.xml>
+# subplane aeron-pub -> Aeron media driver -> subplaned (`aeron` transport) -> ring -> views_app.
+# usage: test_aeron_ingest.sh <ipc|udp> <subplane aeron-pub> <subplaned> <views_app> <schema.xml>
 #   ipc: the agent embeds the media driver; the publisher attaches to its directory.
 #   udp: publisher and agent each embed a driver (two directories) and talk over UDP loopback.
 set -u
-MODE=$1; PUB=$2; AGENT=$3; APP=$4; SCHEMA=$5
+MODE=$1; SP=$2; AGENT=$3; APP=$4; SCHEMA=$5
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.aerontest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 http_get() ( trap '' PIPE; exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return 1; printf 'GET %s HTTP/1.0\r\n\r\n' "$2" >&3 || return 1; tr -d '\r' <&3 | sed '1,/^$/d'; exec 3<&- )
@@ -40,7 +40,7 @@ YAML
 "$AGENT" --config "$TMP/config.yaml" > "$TMP/agent.log" 2>&1 & AGENT_PID=$!
 for _ in $(seq 1 150); do http_get "$API" /status >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
-"$PUB" --channel "$CHANNEL" --stream-id 1001 "${PUB_ARGS[@]}" --count 1000 --rate 20000 --heartbeat-every 100 > "$TMP/pub.log" 2>&1 || fail "publisher failed"
+"$SP" aeron-pub --channel "$CHANNEL" --stream-id 1001 "${PUB_ARGS[@]}" --count 1000 --rate 20000 --heartbeat-every 100 > "$TMP/pub.log" 2>&1 || fail "publisher failed"
 grep -q "sent 1000 messages and 10 heartbeats" "$TMP/pub.log" || fail "publisher report: $(cat "$TMP/pub.log")"
 RING=/dev/shm/subplane.aerontest.all.ring
 for _ in $(seq 1 50); do [ -f "$RING" ] && break; sleep 0.1; done

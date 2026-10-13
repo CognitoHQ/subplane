@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# DBN over TCP end to end: sp_dbn_sim (synthetic) -> subplaned (tcp_stream + dbn) -> ring.
+# DBN over TCP end to end: subplane dbn-sim (synthetic) -> subplaned (tcp_stream + dbn) -> ring.
 # Needs only bash, grep and sed (no curl/python: the CI container is minimal).
-# usage: test_dbn_sim.sh <sp_dbn_sim> <subplaned> <sp_tail>
+# usage: test_dbn_sim.sh <subplane dbn-sim> <subplaned> <subplane tail>
 set -u
-SIM=$1; AGENT=$2; TAIL=$3
+SP=$1; AGENT=$2
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.dbntest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 
@@ -43,7 +43,7 @@ logging: { level: info, console_output: true, output_format: text }
 EOF
 
 # Simulator first (the agent reconnects until it is up anyway), one client, then exit.
-"$SIM" --port "$PORT" --synthetic --instruments 10 --count 5000 --mix mbo=60,trade=30,mbp1=10 \
+"$SP" dbn-sim --port "$PORT" --synthetic --instruments 10 --count 5000 --mix mbo=60,trade=30,mbp1=10 \
        --heartbeat-ms 50 --rate 20000 --clients 1 > "$TMP/sim.log" 2>&1 &
 SIM_PID=$!
 "$AGENT" --config "$TMP/config.yaml" > "$TMP/agent.log" 2>&1 &
@@ -76,7 +76,7 @@ echo "partition ok: $MSGS messages"
 
 RING=/dev/shm/subplane.dbntest.three.ring
 [ -f "$RING" ] || fail "ring missing"
-"$TAIL" "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "sp_tail failed"
+"$SP" tail "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "subplane tail failed"
 DATA=$(grep -c " kind=0 " "$TMP/tail.log")
 HB=$(grep -c "BUS_HEARTBEAT" "$TMP/tail.log")
 BAD=$(grep " kind=0 " "$TMP/tail.log" | grep -vc "sym=100[012] ")

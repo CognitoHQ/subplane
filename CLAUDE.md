@@ -1,6 +1,6 @@
 # subplane: Co-Located Market Data Agent
 
-The agent binary is `subplaned` (CMake target `subplaned`, `src/main.cpp`). The name `subplane` is reserved for a future operator CLI.
+The agent binary is `subplaned` (CMake target `subplaned`, `src/main.cpp`). The operator CLI is `subplane` (`tools/subplane.cpp`, one subcommand per tool: `probe`, `tail`, `schema`, `send`, `replay`, `dbn-sim`, `aeron-pub`, `soak`).
 
 ## What This Is
 A single-binary routing agent for the firm's internal SBE bus, one per application box. It subscribes to bus partitions over UDP multicast, finds message boundaries by walking the published SBE schema, decodes only routing fields, filters per application session, and fans the original SBE bytes out through per-session shared-memory rings. Apps decode SBE with their own codecs; they no longer deserialize, filter or route. Not a decoder, not a broker.
@@ -13,7 +13,7 @@ Only what builds today:
 - **Language**: C++20 (GCC 11, Ubuntu 22.04), CMake 3.20+, `-Werror`
 - **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`; Aeron C client + media driver fetched at configure time (`cmake/aeron.cmake`, pinned tag, no Java; needs CMake 3.30+; `SUBPLANE_WITH_AERON=OFF` to drop it)
 - **Ingest**: UDP multicast / unicast (`recvmmsg`, optional busy-poll and kernel timestamps); TCP byte stream reassembled into records (`tcp_stream`); Aeron streams, IPC or UDP, optional embedded media driver (`aeron`)
-- **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/subplane_canonical.xml`) with typed C++/Python/q views generated at build time by `sp_schema`.
+- **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/subplane_canonical.xml`) with typed C++/Python/q views generated at build time by `subplane schema`.
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK
 - **Control**: Unix `SOCK_SEQPACKET` control channel (dynamic sessions, snapshots)
 - **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/reload`)

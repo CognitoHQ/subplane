@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Canonical schema end to end: sp_sbe_sender (canonical profile) -> subplaned -> ring -> views_app
+# Canonical schema end to end: subplane send (canonical profile) -> subplaned -> ring -> views_app
 # (generated struct views). Needs only bash, grep and sed.
-# usage: test_canonical_views_app.sh <sp_sbe_sender> <subplaned> <views_app> <schema.xml>
+# usage: test_canonical_views_app.sh <subplane send> <subplaned> <views_app> <schema.xml>
 set -u
-SENDER=$1; AGENT=$2; APP=$3; SCHEMA=$4
+SP=$1; AGENT=$2; APP=$3; SCHEMA=$4
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.cantest.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 http_get() ( # port path
@@ -51,7 +51,7 @@ YAML
 AGENT_PID=$!
 for _ in $(seq 1 100); do http_get "$API" /status >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
-"$SENDER" --schema "$SCHEMA" --framing "$FRAMING" --port "$PORT" --count 1000 --per-packet 2 --rate 20000 \
+"$SP" send --schema "$SCHEMA" --framing "$FRAMING" --port "$PORT" --count 1000 --per-packet 2 --rate 20000 \
           --mix trade=60,quote=30,book=10 --heartbeat-ms 20 --symbols 5 > "$TMP/sender.log" 2>&1 || fail "sender failed"
 grep -q "packets=1000" "$TMP/sender.log" || fail "sender did not report 1000 packets: $(cat "$TMP/sender.log")"
 RING=/dev/shm/subplane.cantest.all.ring

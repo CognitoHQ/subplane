@@ -1,10 +1,11 @@
-// sp_tail: dump records from a subplane shared-memory ring for operators.
+// subplane tail: dump records from a subplane shared-memory ring for operators.
 //
-//   sp_tail <ring path> [--count N] [--follow] [--from-start] [--hex]
+//   subplane tail <ring path> [--count N] [--follow] [--from-start] [--hex]
 //
 // By default starts at the live head and prints records as they arrive until
 // N records (default: until Ctrl-C with --follow, else drain and exit).
 
+#include "commands.h"
 #include "subplane/client/shm_reader.h"
 #include "subplane/core/clock.h"
 #include "subplane/shm/control_events.h"
@@ -94,9 +95,9 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int cmd_tail(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: sp_tail <ring path> [--count N] [--follow] [--from-start] [--hex]\n");
+        std::fprintf(stderr, "usage: subplane tail <ring path> [--count N] [--follow] [--from-start] [--hex]\n");
         return 2;
     }
     std::string path = argv[1];
