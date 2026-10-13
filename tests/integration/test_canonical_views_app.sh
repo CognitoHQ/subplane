@@ -66,7 +66,14 @@ T=$(num trades); Q=$(num quotes); B=$(num books); HB=$(num heartbeats); BAD=$(nu
 [ "$T" -gt 800 ] && [ "$Q" -gt 300 ] && [ "$B" -gt 50 ] || fail "mix looks wrong: trades=$T quotes=$Q books=$B"
 [ "${HB:-0}" -ge 1 ] || fail "no heartbeats"
 [ "${BAD:-1}" -eq 0 ] || fail "bad=$BAD"
-PART=$(http_get "$API" /partitions 2>/dev/null); UNK=$(sed -n 's/.*"unknown_templates":[[:space:]]*\([0-9]*\).*/\1/p' <<<"$PART" | head -1)
-[ "${UNK:-1}" -eq 0 ] || fail "unknown_templates=$UNK"
+# The cold API answers on its own thread; retry the read like the other integration scripts do.
+UNK=""
+for _ in $(seq 1 50); do
+    PART=$(http_get "$API" /partitions 2>/dev/null) && UNK=$(sed -n 's/.*"unknown_templates":[[:space:]]*\([0-9]*\).*/\1/p' <<<"$PART" | head -1)
+    [ -n "$UNK" ] && break
+    sleep 0.1
+done
+[ -n "$UNK" ] || fail "no /partitions answer"
+[ "$UNK" -eq 0 ] || fail "unknown_templates=$UNK"
 kill $AGENT_PID; wait $AGENT_PID 2>/dev/null
 echo "PASS"
