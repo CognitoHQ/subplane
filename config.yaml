@@ -96,7 +96,7 @@ partitions:
 
   # The canonical flat schema (schemas/flashtick_canonical.xml): what gateways in the feeds package
   # publish and what the normalization mode (planned) emits. Plain sbe_routing configuration.
-  # Try it: build/tools/ft_sbe_sender --schema schemas/flashtick_canonical.xml --port 30003 --framing "$FRAMING"
+  # Try it: build/examples/canonical_pub --port 30003   (or ft_sbe_sender --schema schemas/flashtick_canonical.xml ...)
   #         build/examples/views_app /dev/shm/flashtick.flashtick.<session>.ring
   # - name: canonical
   #   transport: { type: udp, group: "", port: 30003 }

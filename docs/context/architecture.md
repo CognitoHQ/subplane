@@ -496,7 +496,7 @@ include/flashtick/
 src/            mirrors include/; src/main.cpp builds the `flashtickd` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
 tools/          sbe_sender.cpp dbn_sim.cpp ft_probe.cpp ft_schema.cpp ft_tail.cpp ft_replay.cpp ring_soak.cpp (+ shared headers)
-examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime) views_app.cpp (canonical struct views)
+examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime) views_app.cpp (canonical struct views) canonical_pub.cpp (sample publisher)
 schemas/        sample_md.xml (referenced by config.yaml) flashtick_canonical.xml (the canonical flat schema) CMakeLists.txt (views generated at build time)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
@@ -517,6 +517,7 @@ All built by default (`FLASHTICK_BUILD_TOOLS`).
 - `ft_replay --pcap FILE --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]`: replay UDP payloads from a pcap (hand-written reader, no libpcap). `ft_replay --bench --config config.yaml [--packets N] [--per-packet K] [--symbols N] [--sessions K] [--batch N] [--cpu N] [--json]`: drive the pipeline in-process with an in-memory transport and print the `recv_to_publish` histogram.
 - `ring_soak --role writer|reader|harness [...]`: ring chaos test with CRC payloads, N readers, writer kill and restart; checks readers see `WriterGone` then `AGENT_RESTARTED`.
 - `shm_demo_app --socket PATH [--session NAME] [--symbols 1,2,3] [--trades-only] [--seconds N] [--quiet]` (in `examples/`): the whole app contract in one file.
+- `canonical_pub --port N [--host H | --group G] [--rate msg/s] [--count N] [--symbols N]` (in `examples/`): the smallest publisher the agent can ingest, about a hundred lines with no agent code: fills the generated canonical structs, applies the framing block from `config.yaml`'s `canonical` partition, sends over UDP or multicast. The file a gateway author copies; real gateways (crypto WebSocket, FIX) live in the `flashtick-feeds` repository (planned). `ctest -R canonical_pub` runs it through the agent to `views_app`.
 - `views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start]` (in `examples/`): reads a ring of canonical messages through the generated struct views, no codec; prints one line per message and a summary (`trades= quotes= books= snapshots= other= heartbeats= bad=`), exit 1 if any data record was rejected by every view.
 
 ## Build and test

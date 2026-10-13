@@ -14,3 +14,11 @@ if(TARGET views_flashtick_canonical)
     target_link_libraries(views_app PRIVATE flashtick_warnings Threads::Threads)
     add_dependencies(views_app views_flashtick_canonical)
 endif()
+
+# The smallest publisher the agent can ingest: generated canonical structs + a socket. The file a gateway author copies.
+if(TARGET views_flashtick_canonical)
+    add_executable(canonical_pub canonical_pub.cpp ${FT_GENERATED_DIR}/flashtick_canonical_views.h)
+    target_include_directories(canonical_pub PRIVATE ${FT_GENERATED_DIR})
+    target_link_libraries(canonical_pub PRIVATE flashtick_warnings Threads::Threads)
+    add_dependencies(canonical_pub views_flashtick_canonical)
+endif()

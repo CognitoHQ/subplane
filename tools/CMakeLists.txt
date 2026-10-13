@@ -68,6 +68,11 @@ if(BUILD_TESTING OR FLASHTICK_BUILD_TESTS)
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_views_app.sh
                 $<TARGET_FILE:ft_sbe_sender> $<TARGET_FILE:flashtickd> $<TARGET_FILE:views_app>
                 ${CMAKE_SOURCE_DIR}/schemas/flashtick_canonical.xml)
+    # The sample publisher -> agent -> ring -> views_app.
+    add_test(NAME canonical_pub
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_pub.sh
+                $<TARGET_FILE:canonical_pub> $<TARGET_FILE:flashtickd> $<TARGET_FILE:views_app>
+                ${CMAKE_SOURCE_DIR}/schemas/flashtick_canonical.xml)
     # FlatBuffers over UDP: pcap of real flatc buffers (1..4 per datagram) -> agent -> ring.
     add_test(NAME flatbuffers_replay
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh
