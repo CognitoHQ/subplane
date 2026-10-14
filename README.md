@@ -29,6 +29,158 @@ subplane does that work once per box:
 
 What it deliberately is not: a decoder (apps keep their own codecs and full decode), a broker (data flows one way, nothing routed back to a producer, nothing across hosts; recap requests go upstream only to a declared snapshot service, and cross-site cascading is a separate relay process, both planned), or a feed handler (no exchange protocols). Keeping the core to subscribe, route and fan out is what lets it stay small and fast, and lets everything else vary behind the one contract.
 
+## The whole picture
+
+subplane is turning into a complete publish/subscribe layer for market data, with the application's API at its centre. Publishers put SBE on a bus; one agent per box subscribes once and hands each app only what it asked for; recovery and cross-site delivery are separate, declared services. Solid boxes are built today; dashed boxes are planned.
+
+```mermaid
+flowchart LR
+    subgraph SRC["Sources"]
+        EX["Exchanges<br/>(WebSocket, JSON)"]
+        FH["Firm feed handlers"]
+    end
+    subgraph PUB["Publishers"]
+        GW["Gateways<br/>spwsgw, one per venue"]
+        FP["Firm SBE publishers"]
+    end
+    BUS(["Internal bus<br/>SBE over Aeron or UDP multicast"])
+    SNAP["Snapshot service<br/>per publisher"]:::planned
+    RELAY["Relay<br/>to other sites"]:::planned
+    subgraph BOX["Each application box"]
+        AG["subplaned<br/>subscribe once, route, filter"]
+        R1[["ring: strategy"]]
+        R2[["ring: pricer"]]
+        R3[["ring: short-lived script"]]
+    end
+    EX --> GW --> BUS
+    FH --> FP --> BUS
+    BUS --> AG
+    AG --> R1 & R2 & R3
+    BUS --> SNAP
+    AG <-. "recap: request, then state as of S" .-> SNAP
+    BUS --> RELAY
+    classDef planned stroke-dasharray: 5 5
+```
+
+Apps subscribe through the agent's API; they never join the bus, never decode what they do not want, and never learn which transport or encoding the bus uses. Publishing from an app box goes through `shm_ingest` (planned), not through the agent's fan-out.
+
+## Deployment patterns
+
+| You have | Pattern | Status |
+|---|---|---|
+| A bus and several apps on one box | [1. One box](#1-one-box-one-subscription) | built |
+| The same bus on many boxes | [2. Many boxes](#2-many-boxes) | built |
+| Exchanges that speak WebSocket and JSON | [3. Gateways](#3-exchanges-through-gateways) | built (five crypto venues) |
+| Several buses or encodings | [4. Mixed sources](#4-mixed-sources-one-contract) | built |
+| Apps that start late, restart or miss data | [5. Late join and recovery](#5-late-join-and-recovery) | last value built, recap planned |
+| Apps at another site | [6. Across sites](#6-across-sites) | planned |
+| Derived data produced on the box | [7. Publishing on the box](#7-publishing-on-the-box) | planned |
+
+### 1. One box, one subscription
+
+Every app on the box used to join the bus, receive everything and throw most of it away. Now the agent joins once and each app reads a ring holding only its instruments and message types, bit-identical to the bus, with gaps and restarts as in-band events.
+
+```mermaid
+flowchart LR
+    BUS(["Bus<br/>all instruments"]) --> AG["subplaned"]
+    AG -->|"BTC, ETH trades"| A["strategy"]
+    AG -->|"all quotes"| B["pricer"]
+    AG -->|"one symbol, 10 s"| C["script"]
+```
+
+### 2. Many boxes
+
+The bus fans out to boxes; the agent fans out to apps. Cost on a box stays flat as apps are added, because filtering and gap handling happen once per box.
+
+```mermaid
+flowchart LR
+    BUS(["Bus"]) --> AG1["subplaned<br/>box 1"] & AG2["subplaned<br/>box 2"] & AG3["subplaned<br/>box 3"]
+    AG1 --> A1["apps"]
+    AG2 --> A2["apps"]
+    AG3 --> A3["apps"]
+```
+
+### 3. Exchanges through gateways
+
+A gateway holds the one exchange connection, maps the venue's JSON to the canonical SBE schema, keeps books in sync, and publishes on Aeron. The agent treats it like any other bus partition. Gateways live in the sister repository `subplane-feeds` (`spwsgw`, with packs for Binance, Coinbase, Kraken, Bitstamp and OKX).
+
+```mermaid
+flowchart LR
+    BN["Binance"] --> G1["spwsgw<br/>binance pack"]
+    CB["Coinbase"] --> G2["spwsgw<br/>coinbase pack"]
+    KR["Kraken"] --> G3["spwsgw<br/>kraken pack"]
+    G1 & G2 & G3 -->|"canonical SBE on Aeron"| AG["subplaned"]
+    AG --> APPS["apps read typed views"]
+```
+
+### 4. Mixed sources, one contract
+
+Transport, framing and encoding are per-partition configuration. One agent can take UDP multicast SBE, Aeron, a TCP DBN stream and FlatBuffers at once, and every app reads rings the same way.
+
+```mermaid
+flowchart LR
+    U(["UDP multicast SBE"]) --> AG["subplaned"]
+    A(["Aeron canonical SBE"]) --> AG
+    T(["TCP DBN (Databento)"]) --> AG
+    F(["UDP FlatBuffers"]) --> AG
+    AG --> R[["one ring format<br/>64-byte header + original bytes"]]
+    R --> APPS["apps"]
+```
+
+### 5. Late join and recovery
+
+Two paths, chosen by what the state is:
+
+- **Self-contained values** (instrument definition, trading status, last quote, last trade): the newest message is the whole state. The agent's last-value cache serves it over the control channel; the app seeds from it and tails the ring. Built.
+- **State built from many messages** (books, session volume, VWAP): the publisher's sister snapshot service holds it. The agent asks once per symbol for its whole box, holds that symbol's live messages for the waiting apps only, and merges the reply by sequence. Planned.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Agent as subplaned
+    participant Snap as snapshot service
+    participant Bus
+    App->>Agent: subscribe BTC (recap)
+    Agent->>Snap: one request for BTC, for the whole box
+    Bus-->>Agent: live BTC seq 101, 102, 103 (held)
+    Snap-->>Agent: BTC state as of seq 102
+    Agent->>App: RECAP_BEGIN, state, RECAP_COMPLETE at seq 102
+    Agent->>App: seq 103 (held, newer than 102), then live
+```
+
+The publisher only publishes; it never sees a recap request. See "Recovery: recap" in `docs/context/project-vision.md`.
+
+### 6. Across sites
+
+A relay tunnels the bus between sites: Aeron in, TCP across the WAN, Aeron out at the far site, bytes and sequence numbers untouched. Each site's agents subscribe as usual. A relay can also answer recaps for the sites below it, so each level asks upstream once. Planned.
+
+```mermaid
+flowchart LR
+    subgraph A["Site A"]
+        BA(["Bus"]) --> RA["relay"]:::planned
+        BA --> SA["snapshot service"]:::planned
+    end
+    subgraph B["Site B"]
+        RB["relay"]:::planned --> BB(["Bus"])
+        BB --> AGB["subplaned"] --> APB["apps"]
+    end
+    RA ==>|"TCP over the WAN"| RB
+    AGB -. recap .-> RB -. recap .-> RA -. recap .-> SA
+    classDef planned stroke-dasharray: 5 5
+```
+
+### 7. Publishing on the box
+
+A local app writes one-way into a ring the agent reads as just another partition, so derived data (signals, fair values) reaches every other app on the box over the same contract. Planned (`shm_ingest`).
+
+```mermaid
+flowchart LR
+    BUS(["Bus"]) --> AG["subplaned"]
+    PUBAPP["derived-data app"] --> ING[["shm_ingest ring"]]:::planned --> AG
+    AG --> APPS["other apps"]
+    classDef planned stroke-dasharray: 5 5
+```
+
 ## Quick start
 
 Needs a C++20 compiler (GCC 11 or newer), CMake 3.30+, pkg-config, yaml-cpp (`libyaml-cpp-dev` on Ubuntu) and git: the Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java). `-DSUBPLANE_WITH_AERON=OFF` drops the fetch and the `aeron` transport, and then CMake 3.20 is enough. Ubuntu 22.04's CMake is too old for Aeron; `scripts/deps-2204.sh` installs one from Kitware.
