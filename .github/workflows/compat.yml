@@ -1,0 +1,19 @@
+name: compat
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+jobs:
+  compat-log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: contract changes are recorded
+        env:
+          # INTENT: the body goes through an env var, never interpolated into
+          # the script, so PR text cannot inject shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-compat.sh "$BASE_SHA" "$HEAD_SHA"

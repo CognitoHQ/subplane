@@ -1,0 +1,30 @@
+# Paths whose changes can affect an existing publisher, app or operator config.
+# One extended regex per line, matched against repo-relative paths. A PR that
+# changes any of these must update docs/compat-log.md or say "Compat: none"
+# (with a reason) in the PR body or a commit message. scripts/check-compat.sh.
+
+# App contract: ring layout, record header, control events and protocol, SDK
+^include/subplane/core/message\.h$
+^include/subplane/shm/
+^include/subplane/control/control_proto\.h$
+^include/subplane/client/
+^include/subplane/fanout/ring_writer\.h$
+
+# Publisher contract: the canonical schema and generated views
+^schemas/subplane_canonical\.xml$
+^tools/schema
+
+# Config vocabulary: framing, decoders, partitions, sessions, transports
+^src/framing/
+^include/subplane/framing/
+^src/decoder/
+^include/subplane/decoder/
+^src/pipeline/partition\.cpp$
+^src/pipeline/session\.cpp$
+^src/transport/
+^include/subplane/transport/
+^src/registry/
+^config\.yaml$
+
+# Operator surface: HTTP API
+^src/api_server\.cpp$
