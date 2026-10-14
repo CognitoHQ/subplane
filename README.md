@@ -64,6 +64,61 @@ flowchart LR
 
 Apps subscribe through the agent's API; they never join the bus, never decode what they do not want, and never learn which transport or encoding the bus uses. Publishing from an app box goes through `shm_ingest` (planned), not through the agent's fan-out.
 
+## Layers
+
+Inside the agent, every message passes the same layers in order. The publisher layer beside it is the only place that knows what the data means. Solid is built; dashed is planned.
+
+```mermaid
+flowchart TB
+    subgraph PL["Publisher layer: model aware"]
+        direction TB
+        P1["Gateways and firm publishers<br/>publish the stream"]
+        P2["Snapshot service<br/>state as of sequence S"]:::planned
+        P3["Site instrument master<br/>ids, names, venues"]:::planned
+    end
+    subgraph AG["subplaned: model free"]
+        direction TB
+        L1["Transport<br/>UDP multicast, TCP, Aeron"]
+        L2["Framing<br/>packet headers and lengths from YAML"]
+        L3["Routing decode<br/>instrument, type, venue, sequence, time"]
+        L4["Symbol discovery<br/>interning, SYMBOL_MAPPED, SYMBOLS, /symbols"]
+        L5["Sequence and liveness<br/>gaps, degraded, recovered"]
+        L6["Last-value cache<br/>self-contained values"]
+        L6b["Recap and merge<br/>hold, merge at S"]:::planned
+        L7["Filter and fan-out<br/>one ring per session"]
+        L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7
+        L5 --> L6b --> L7
+    end
+    A1["App API<br/>ring reader, control channel, typed views"]
+    P1 --> L1
+    P3 -. definitions in band .-> P1
+    L6b <-. recap .-> P2
+    L7 --> A1
+    classDef planned stroke-dasharray: 5 5
+```
+
+### Symbol discovery
+
+There are three names for one instrument, and an app needs to know which one it holds:
+
+| Name | Assigned by | Where an app sees it |
+|---|---|---|
+| Publisher id (`InstrumentId`, `SecurityID`) | the publisher, ideally from a site instrument master | in the payload |
+| `symbol_id` | the agent, dense, stable only within one agent epoch | in every record header |
+| Human name (`BTCUSDT`) | the publisher | in instrument definition messages |
+
+How an app learns them today:
+- **In band:** `SYMBOL_MAPPED` arrives on the ring the first time the agent sees an instrument, before its first data record.
+- **On request:** the control channel `SYMBOLS` op and `GET /symbols` page through id to name pairs; `HELLO` reports how many there are.
+- **Definitions:** instrument definitions have their own message type (`DEFINITION`), so the last-value cache keeps each instrument's latest definition and a late joiner can read it.
+- **Ids from two venues:** `symbol_scope: venue` keeps the same integer id from two venues apart, spelled `10:1` in filters and names.
+
+Planned: the agent binds the publisher id to the human name it reads from definition messages, so `SYMBOL_MAPPED` says `BTCUSDT` instead of `1` and a session can filter by name. The agent never invents symbology; the publisher layer (a site instrument master) owns it, and the agent indexes what it is given.
+
+### Last-value cache
+
+The cache holds one record per instrument and message type, for values where the newest message is the whole state: instrument definition, trading status, last quote, last trade. A late joiner reads it over the control channel (`SNAPSHOT`, or `GET /lvc/{symbol}?type=` for an operator), seeds its state, and tails the ring. It never holds a book or an accumulated value such as session volume: those are built from many messages with the publisher's rules, and come from the publisher's snapshot service through recap (planned).
+
 ## Deployment patterns
 
 | You have | Pattern | Status |
