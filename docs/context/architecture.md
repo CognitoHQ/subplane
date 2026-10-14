@@ -267,6 +267,13 @@ Payloads of AGENT_CONTROL records are packed little-endian PODs in `shm/control_
 | 0xA4 | AGENT_RESTARTED | AGENT_CONTROL | `AgentRestartedEvent` {epoch, prev_epoch}; `prev_epoch` is currently always 0 |
 | 0xA5 | SESSION_CLOSING | AGENT_CONTROL | `SessionClosingEvent` {session_id, reason: 0 shutdown, 1 destroyed or linger expired, 2 removed by reload} |
 | 0xA6 | SYMBOL_MAPPED | AGENT_CONTROL | `SymbolMappedEvent` {symbol_id, venue_id, name_len, name[24]} |
+| 0xA7 | TRANSPORT_DOWN (planned) | AGENT_CONTROL | `TransportStateEvent` {partition_id, reason, changed_ns}; reasons are transport-neutral (INV-015): 1 source lost (an Aeron image went away, a TCP peer closed), 2 local transport failure (driver timeout, socket error), 3 publisher restart. The transport-specific cause goes to the log and `/partitions`, not the ring. |
+| 0xA8 | TRANSPORT_UP (planned) | AGENT_CONTROL | `TransportStateEvent` |
+| 0xA9 | SYMBOL_STALE (planned) | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id, partition_id, reason: 1 gap, 2 transport down, 3 publisher restart, last_seq, changed_ns} |
+| 0xAA | RECAP_PENDING (planned) | AGENT_CONTROL | `RecapEvent` {request_id, symbol_id, partition_id, status, attempt, as_of_seq, record_count} |
+| 0xAB | RECAP_BEGIN (planned) | AGENT_CONTROL | `RecapEvent` |
+| 0xAC | RECAP_COMPLETE (planned) | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S |
+| 0xAD | RECAP_FAILED (planned) | AGENT_CONTROL | `RecapEvent`; `status`: 1 timeout, 2 rejected, 3 snapshot too old, 4 hold overflow, 5 gap while held, 6 publisher identity mismatch. The agent retries; the symbol stays stale. |
 | 0xFE | PAD | PAD | none |
 
 Bus admin delivery is partition-scoped (the session must accept the record's partition). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `PARTITION_DEGRADED` and `PARTITION_RECOVERED` go to the sessions attached to that partition. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern.
@@ -311,6 +318,71 @@ Statuses: `OK`, `BAD_REQUEST`, `NOT_FOUND`, `EXISTS`, `INTERNAL`, `UNSUPPORTED`,
 `pipeline/lvc.h`. One slot per (symbol id, tracked data type), where tracked types are data types 1 to 7. Each slot is a seqlock: a version counter, the `TickHeader`, and up to `lvc.max_payload` bytes (default 512). Larger payloads store the header only with the truncated flag. The single writer is the pipeline thread; cold readers (control channel snapshot, HTTP) retry on an odd or changed version. Storage is `max_symbols * 7` slots allocated at startup.
 
 Export of the cache into shared memory for direct app reads is planned.
+
+**Scope.** The cache is for self-contained values only: the newest message for a key is the whole state for that key (instrument definition, trading status, last quote, last trade). Books and accumulated values (volume, VWAP) are built from many messages with the publisher's rules; they are never cached or computed here and come from recap. A per-partition switch to turn the cache off where a snapshot service exists is planned.
+
+## Recap (planned)
+
+Design: `docs/context/project-vision.md`, "Recovery: recap". Contract summary:
+
+**Declaring a snapshot service.** A partition gains an optional block; the recap component is compiled in and selected by `type`, like a transport:
+```yaml
+recap:
+  type: aeron                       # v1; tcp for buses that are not Aeron later
+  request:  { channel: "aeron:udp?endpoint=snap-host:40500", stream_id: 1101 }
+  response: { channel: "aeron:udp?control-mode=response|control=snap-host:40501", stream_id: 1102 }
+  timeout_ms: 2000
+  max_inflight: 64                  # outstanding requests per partition
+  hold_bytes: 4194304               # preallocated hold arena per partition
+  retry: { base_ms: 50, max_ms: 5000, jitter: true }
+```
+
+**Reply markers, in decoder config.** The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
+```yaml
+messages:
+  - { template: 21, admin: RECAP_BEGIN,  fields: { request_id: RequestId, as_of: AsOfSeq, source_epoch: SourceEpoch } }
+  - { template: 22, admin: RECAP_END,    fields: { request_id: RequestId } }
+  - { template: 23, admin: RECAP_REJECT, fields: { request_id: RequestId, reason: Reason } }
+```
+Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched.
+
+**Upstream request.** subplane's own format, 64 bytes, little-endian, independent of the bus schema; a recap component may translate it to a service's native protocol:
+
+| Offset | Field | Type | Meaning |
+|---|---|---|---|
+| 0 | `magic` | u32 | `SPRQ` |
+| 4 | `version` | u16 | 1 |
+| 6 | `flags` | u16 | 0 |
+| 8 | `request_id` | u64 | unique per agent epoch; echoed in the reply markers |
+| 16 | `agent_id` | u64 | the agent's epoch |
+| 24 | `instrument` | u64 | the symbol as on the wire (not the agent's `symbol_id`) |
+| 32 | `venue` | u16 | the venue as on the wire, 0 if unmapped |
+| 34 | reserved | 6 bytes | zero |
+| 40 | `last_seq_seen` | u64 | last sequence the agent saw on the partition, 0 if none |
+| 48 | `source_epoch_seen` | u64 | publisher identity the agent sees, 0 if unknown |
+| 56 | reserved | u64 | zero |
+
+**Publisher identity.** On Aeron, a new image session id means a publisher restart. Elsewhere the stream carries a publisher start time (`SourceEpoch`), mapped in decoder config. A reply whose identity differs from the live stream is discarded and requested again.
+
+**Sessions.** YAML `recap: true` or the control channel `CtlSessionReq` byte that is padding today (planned `recap`; old clients send 0). A recap session may not be `all_symbols` in v1.
+
+**Triggers.** A recap session starts or adds symbols; a sequence gap (partition-wide in v1, because the sequence is per stream); the transport goes down and comes back; the publisher restarts.
+
+**Merge**, per (partition, symbol), on the pipeline thread with preallocated memory only (INV-002):
+1. Sessions waiting on the symbol get a pending bit; fan-out skips them for that symbol, and the message is appended to the symbol's hold list. Other sessions are unaffected.
+2. The cold-path recap manager sends one request per symbol per box (coalesced), with a per-partition rate limit, retries with jitter, and priority for symbols an app is waiting on. It hands the complete reply to the pipeline through a queue.
+3. On the reply: check the publisher identity and that the held messages reach back to S+1; write `RECAP_BEGIN`, the reply records, `RECAP_COMPLETE{S}`, then the held messages with sequence above S; clear the pending bits.
+4. Hold overflow, a gap while holding, a too-old snapshot, a rejection or a timeout write `RECAP_FAILED` and request again.
+
+**What a recapping session sees for symbol X:** `SYMBOL_STALE` (when a failure triggered it), `RECAP_PENDING`, `RECAP_BEGIN`, the snapshot records, `RECAP_COMPLETE{S}`, then live data in sequence order with no gap and no duplicate.
+
+**Canonical schema.** Version 2 (planned) adds `RecapBegin` (21), `RecapEnd` (22), `RecapReject` (23) and `SourceEpoch` on `Heartbeat`, so the feeds package's `spsnapd` can serve canonical streams. A firm's own bus maps its own markers instead.
+
+## Relay (planned)
+
+A separate process (working name `sprelayd`), not the agent: the agent never publishes data (INV-017). It tunnels the bus (gateway) protocol between sites, never an exchange protocol.
+- **Tunnel layer:** Aeron fragments in, the same bytes out; output is TCP, Aeron UDP or multicast, so one config direction is Aeron to TCP and the other TCP to Aeron. Each fragment travels as one length-prefixed TCP frame. Sequence numbers and publisher identity are untouched, so recap merges stay valid at every hop. Heartbeats on idle links; a bounded buffer per connection, and a downstream that falls behind is disconnected and recovers by recap.
+- **Recap-proxy layer** (optional per relay): to the sites below it the relay is the snapshot service; it coalesces their requests and asks upstream once per symbol. Later, downstream interest (symbols, partitions) filters what crosses the link.
 
 ## Client SDK
 
@@ -475,6 +547,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `framing`: the block described above. Absent means bare concatenation with length from the schema and no sequence.
 - `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
+- `recap` (planned): the snapshot service for this partition; see "Recap (planned)".
 
 `sessions[]` (reloadable)
 - `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `partitions` (names), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true).

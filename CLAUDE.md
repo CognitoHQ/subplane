@@ -38,7 +38,7 @@ Only what builds today:
 - **[Lessons](.subplane/lessons.md)**: Corrections and patterns to avoid
 
 ## Philosophy
-- **On-box agent, not middleware.** Runs next to the apps it serves. One bus subscription per box, not per app. One-way flow: bus to agent to apps, no app publishing.
+- **On-box agent, not middleware.** Runs next to the apps it serves. One bus subscription per box, not per app. Data flows one way: bus to agent to apps, no app publishing. Control may flow upstream, only to services declared in config (recap requests to a snapshot service, planned).
 - **Component / activation / session.** Components are compiled in; YAML activates them; sessions are runtime app subscriptions. No `.so` loading, no `dlopen`.
 - **Apps decode SBE, subplane routes.** The agent decodes only routing fields and delivers the original bytes bit-identical. The only hard requirement on a publisher is its SBE schema.
 - **Narrow core, flexible edges.** Subscribe, route, fan out, and nothing else, so the core can be optimized hard; transports and fan-outs vary behind one app contract.

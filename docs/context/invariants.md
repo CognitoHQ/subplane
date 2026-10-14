@@ -148,3 +148,11 @@ The ring layout, the 64-byte record header, the control event payloads and the c
 ---
 
 *Last updated: 2026-10-12*
+
+---
+
+## INV-017: Data flows one way; control flows upstream only to declared services
+
+The agent never publishes data: not onto the bus, not back to a producer, not to another host. It may send control upstream, and only to services named in its configuration: recap requests to a partition's snapshot service (planned). Upstream control runs on a cold-path thread and never blocks the pipeline (INV-002). Moving data between hosts or sites is the bus's job or the relay's (planned), which is a separate process.
+
+**Rationale**: recovery needs a request path, and making it per box (not per app) is what stops publishers being flooded. Keeping data one-way and naming every upstream peer in config keeps the agent a router, not a broker.

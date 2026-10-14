@@ -6,7 +6,7 @@ Status key: everything below is implemented unless marked "(planned)".
 
 subplane is the subscription plane under the apps: a single-binary routing agent, one instance on each application box. It subscribes to the firm's internal SBE bus, decodes only the fields needed for routing, filters per application, and fans the original SBE bytes out to local apps through shared memory.
 
-It is not a decoder: it never fully decodes a message, and apps decode SBE with their own generated codecs. It is not a broker: data flows one way (bus to agent to apps) and apps never publish through it.
+It is not a decoder: it never fully decodes a message, and apps decode SBE with their own generated codecs. It is not a broker: data flows one way (bus to agent to apps) and apps never publish through it. Control may flow upstream, but only to services declared in config: the planned recap path sends snapshot requests to a publisher's sister snapshot service on behalf of the box (see "Recovery: recap").
 
 It is an agent in the Datadog / Fluent Bit sense: one static binary, built-in components, behaviour selected by YAML. There is no `dlopen` and no `.so` loading.
 
@@ -107,7 +107,7 @@ build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 - **Ring per session.** Memory grows linearly with instances; fifty identical workers means fifty rings. The fix is a per-partition payload arena with header-only session rings (roadmap item 2), which also keeps fan-out cost per session at one cache line when a bus sends large units such as batched FlatBuffers or book snapshots; it is on the roadmap because these two cases depend on it.
 - **One pipeline core per thread group.** Per-session cost is small, but many sessions on a hot partition still serialize on one core. Thread groups are static at startup, so capacity is provisioned ahead of a burst.
 - **Hard caps.** 256 sessions per partition; fine for apps, tight for a fleet of tiny workers.
-- **Snapshot is last value, not history.** Anything beyond the ring's capacity needs the firm's archive.
+- **Snapshot is last value, not history.** Anything beyond the ring's capacity needs the firm's archive. State that is not a last value (books, accumulated volume) needs recap (planned).
 - **Parallel functions break ordering.** The ring is ordered per session; a runtime that runs functions concurrently owns per-symbol ordering. Sharding by symbol into separate sessions keeps the guarantee.
 - **Invocation granularity.** A process per record is hopeless at tick rates. Functions run in-process or in a warm pool; the runtime, not the agent, chooses the isolation level.
 - **Session adoption** by a replacement instance with a new identity (an orchestrated pod) is not designed yet; today the replacement attaches by name within the linger window or creates a new session.
@@ -131,7 +131,8 @@ subplane does not talk to exchanges. Its input is the firm's own bus, which alre
 
 - A 64-byte routing header (`TickHeader`) in front of the original SBE bytes: symbol id, message type, venue, partition, bus sequence, exchange timestamp, agent ingest timestamp, template and schema ids.
 - In-band control events on the same ring, ordered with the data: sequence gaps, partition degraded or recovered, filter reloaded, agent restarted, session closing, new symbol mapped, plus bus admin messages (heartbeat, sequence reset).
-- A last-value snapshot over the control channel, so a late joiner can seed its state and then tail the ring without a hole (the late-join idiom).
+- A last-value snapshot over the control channel, so a late joiner can seed its state and then tail the ring without a hole (the late-join idiom). The last-value cache only holds self-contained values (see "Recovery: recap").
+- Recap (planned): full state for a symbol (a book, accumulated statistics) from the publisher's snapshot service, merged into the ring by sequence, with in-band pending, complete and failed events.
 - Dynamic sessions: an app creates, reconfigures and destroys its own subscription over a Unix control socket. Operators can also define sessions in YAML and reload them.
 - A header-only client SDK (`shm_reader.h`, `control_client.h`) that depends only on libc and the C++ standard library.
 
@@ -158,6 +159,28 @@ First measured numbers (from `.subplane/decisions.md`, 2026-10-12). These are lo
 
 Caveat: the kernel socket, not the agent, is the floor. A busy-poll run on a real NIC has not been done yet.
 
+## Recovery: recap (planned)
+
+The usual way a late-joining, restarted or gapped app recovers is to ask the publisher for state. With many apps that overloads the publisher, and it is the failure this section designs out.
+
+**Two kinds of state.**
+- **Self-contained:** the newest message for a key is the whole state for that key; nothing before it matters. Instrument definition, trading status, last quote, last trade. The agent's last-value cache holds these, and only these, and serves them over the control channel. That works with no infrastructure beyond the agent.
+- **Built up from many messages:** a book from book updates, session volume and VWAP from trades. Rebuilding it needs the publisher's rules (session boundaries, busts and corrections, which trades count, what a gap does to a total). The agent never holds or computes this state.
+
+**The snapshot service.** A publisher that wants late joiners to recover built-up state runs a sister snapshot service. The service subscribes to the same stream the apps get, keeps the state using the publisher's own rules, and answers recap requests with "state as of sequence S", in the stream's own schema, between a begin marker and an end marker. The publisher only publishes and never sees a recap request. The service is written for its schema, by the people who know it; it is optional, and a publisher without one keeps the last-value path.
+
+**What the agent does.** One agent per box asks on behalf of every app on the box. It only decides whether a recap and a merge are needed, then does the mechanics; it never interprets state.
+- **Whether:** a snapshot service is declared for the partition, the session asked for recap, and something triggered it (the session started or added symbols, a sequence gap, the transport went down and came back, the publisher restarted).
+- **Coalesce:** one request per symbol per box, however many sessions are waiting.
+- **Hold:** from the request on, live messages for that symbol are held for the waiting sessions only; sessions already live are never delayed.
+- **Merge:** deliver the snapshot, drop held messages with sequence at or below S, deliver the rest in order, mark the symbol complete at S. If the held messages do not reach back to S+1, the snapshot is too old and the agent asks again.
+
+**Schema-neutral.** The agent learns the begin and end markers, S and the request id from decoder configuration, the same way it learns every routing field; the request it sends upstream is subplane's own small fixed format. The canonical schema is the first user, served by a snapshot service in the feeds package, not a requirement.
+
+**Aeron.** Aeron gives the transport pieces (request and response channels, exact stream positions, and message replay through the Java Archive). It does not give per-key state as of a sequence for many edge subscribers, coalescing on the box, or an app-facing recovery contract. Recap is that layer, and it also works on buses that are not Aeron.
+
+**Across networks.** Cascading between sites is a separate relay process (planned), not the agent. The relay tunnels the bus (gateway) protocol, never an exchange protocol: Aeron fragments in, the same bytes out over TCP, and back into Aeron at the far site, with sequence numbers untouched so merges stay valid at every hop. A relay can also answer recaps for the sites below it, coalescing their requests so each level of the tree asks upstream once.
+
 ## Minimal publisher requirements
 
 The only hard requirement on a bus publisher is its SBE schema.
@@ -168,6 +191,8 @@ The only hard requirement on a bus publisher is its SBE schema.
 
 If the bus carries no sequence number, gap detection is off for that partition and liveness relies on the heartbeat timeout alone.
 
+Recap (planned) adds one optional requirement, only for publishers that want it: a snapshot service that answers in the stream's schema, marks each reply with begin and end messages, and states the sequence S its state is as of, in the same sequence space as the live stream.
+
 **Checked against a real bus (2026-10-12).** Public CME MDP 3.0 packets (27 packets, 31 messages, wire schema versions 6 and 9, from three public repositories and a Databento sample) were replayed through `subplane probe` with a framing block written from CME's documentation alone. With CME's v9 schema every template is known and every message length from the schema walk matches the declared length; with the v13 schema the two retired templates are reported unknown and nothing else changes. Two walker bugs were found and fixed on the way (program-relative jumps for multi-entry groups, and `sinceVersion` skipping). One limitation was found: CME's incremental messages carry the instrument id inside a repeating group, one message per several instruments, so that bus routes by message type until per-entry symbol routing exists (roadmap). `scripts/fetch-cme-sample.sh` plus `tests/integration/test_cme_probe.sh` reproduce the check.
 
 **Second encoding, second transport (2026-10-12).** A real Databento DBN file (CLX5 market-by-order, GLBX.MDP3, 38,212 records of 56 bytes) was served over TCP by `subplane dbn-sim` into a partition configured `transport: tcp_stream`, `decoder: dbn`, `framing: {length: packet}`: every record decoded, none unknown, all 38,212 reached a session filtered to that instrument, recv-to-publish p50 127 ns, p99 383 ns, p99.9 639 ns per record on loopback, unpinned. The same ring contract served both the SBE and the DBN partitions, which is the "encoding is per-partition configuration" rule proved with two formats. Found on the way: DBN's `sequence` is the venue's packet sequence shared by sibling records (so it must not be used for duplicate detection), passthrough instrument ids need `max_symbols` above the largest id and make the dense last-value cache large, and static sessions were attached after the first packets of a fast stream (fixed: commands are applied before polling). `ctest -R dbn_sim` reproduces the synthetic version.
@@ -177,10 +202,11 @@ If the bus carries no sequence number, gap detection is off for that partition a
 ## Non-goals
 
 - The agent is not an exchange feed handler: no ITCH, FIX, WebSocket or other exchange protocol decoding in the core. Feed handlers ship beside it as separate gateway processes in the `subplane-feeds` package (planned), publishing canonical SBE into `shm_ingest`.
-- Not a broker. No request-reply, no routing back to a producer, no cross-box delivery. (A local app publishing one-way into an ingest ring is planned; see roadmap.)
+- Not a broker. No request-reply for apps or producers, no routing back to a producer, no cross-box delivery. (A local app publishing one-way into an ingest ring is planned; see roadmap. Recap requests to a declared snapshot service are control flowing upstream, not data, and cross-site cascading is a separate relay process.)
 - Not a full SBE decoder. Routing fields only; apps own full decode.
 - No dynamic loading of foreign code (no `.so` plugins, no WASM, no embedded scripting).
-- No cross-host fan-out. Fan-out is local to the box.
+- No cross-host fan-out from the agent. Fan-out is local to the box; the relay (planned) is a separate process.
+- No state building in the agent. Books, accumulated statistics and anything else that needs the publisher's rules belong to the publisher's snapshot service.
 - No payload transformation or normalization in the raw mode, which is the default on every partition. Normalization to the canonical flat schema is an opt-in per-partition mode (planned, encoding-agnostic step 4), never applied to raw sessions.
 
 ## What was rejected and why
@@ -194,7 +220,7 @@ If the bus carries no sequence number, gap detection is off for that partition a
 
 ## Roadmap
 
-Items are planned unless marked done. The order is the intended build order; each item is justified by a use case above or a finding in the decision log.
+Items are planned unless marked done. The order is the intended build order; each item is justified by a use case above or a finding in the decision log. Items 16 and 17 (recap and the relay) are being built next, ahead of item 1.
 
 1. **Routing from parent blocks, per-entry symbol routing, and the extension tuple.** One record-version bump covering three related changes. (a) Any routing field (`symbol`, `sequence`, `exchange_ts`, `venue`) may be sourced from `packet_header.<f>`, `message_prefix.<f>` or `message.<Field>`, so discriminators that live in a parent block (CME's sending time and channel) reach the header tuple without the app seeing the parent bytes. (b) A per-partition **extension tuple**: a YAML-declared list of named fixed-width fields sourced the same way, written between the 64-byte header and the payload (`ext_len` in the header's reserved bytes), with the layout published via `HELLO` and `/partitions`; readers that do not care skip it by length, the payload stays bit-identical. (c) **Per-entry symbol routing** for instrument ids inside a repeating group (CME MDP 3.0 incremental refresh): decode the group's symbol field per entry, route the message to every session matching any entry, and write the matched ids into the extension tuple so an app knows which of its instruments the message touched without walking the group.
 2. **Payload arena with header-only session rings** (planned): each framing unit written once to a generation-stamped shared-memory arena per partition, session rings carrying the 64-byte header with a reference to it, so fan-out per session costs one cache line whatever the unit size and elastic workloads scale in sessions without scaling in memory. Inline payloads stay the default for tick-sized units. Never ref-counted: an overwritten slot is an overrun, and no reader can stall the writer.
@@ -211,6 +237,8 @@ Items are planned unless marked done. The order is the intended build order; eac
 13. Last-value cache exported into shared memory for direct app reads.
 14. Real bus capture on a production NIC with busy-poll, to replace the loopback numbers; kernel-bypass evaluation after that.
 15. **Feeds package** (`subplane-feeds`, a sister repository, crypto first): started 2026-10-13. One `spwsgw` binary (subplane WebSocket gateway) driven by per-exchange YAML packs (connection, subscribe templates, frame routing, JSON path to canonical field mapping with a closed vocabulary and a shared registry of conversions) plus compiled-in strategies for what YAML cannot say (order-book sync protocols); it publishes canonical SBE over Aeron, which the agent ingests as an ordinary `aeron` partition, so a box holds one exchange connection and every app reads a filtered ring. Binance spot, Coinbase, Kraken, Bitstamp and OKX are live (trades, quotes, books where the protocol is covered), each with a recorded fixture replayed byte for byte and end to end through `subplaned`. The same shape makes the agent the only Kafka consumer on a box once 10 exists. The sister repo depends only on the agent's public contract (the canonical schema, and one or more canonical messages back to back per Aeron offer, schema-framed) and never the reverse.
+16. **Recap** (see "Recovery: recap"). Groundwork done (2026-10-14): instrument definitions have their own message type and cache slot, and integer instrument ids can be scoped by venue. Then: the contract (in-band transport and recap events, reply markers in decoder config, the upstream request format), the agent side (a recap component, a cold-path recap manager, hold and merge on the pipeline thread), and the canonical snapshot service `spsnapd` in the feeds package, with the gateways emitting a book Clear on resync so any replica stays exact.
+17. **Relay** (planned): a separate process that tunnels the bus between sites, Aeron in and TCP out or TCP in and Aeron out, bytes and sequence untouched, heartbeats on idle links, a bounded buffer per connection; optionally the recap service for the sites below it.
 
 **Encoding-agnostic apps**, a sequence tracked alongside the numbered items; every step ships as a mode that stays:
 

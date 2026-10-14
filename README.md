@@ -27,7 +27,7 @@ subplane does that work once per box:
 - **A filtered ring per app.** Each app reads a shared-memory ring that holds only the messages it asked for, bit-identical to what the bus carried, plus in-band events for gaps, restarts and snapshots.
 - **One contract for every bus.** Which transport, encoding and framing the bus uses is agent configuration. Apps on a UDP SBE bus, a TCP DBN stream or a FlatBuffers feed read rings the same way, and typed views let them read fields without a codec when they want one.
 
-What it deliberately is not: a decoder (apps keep their own codecs and full decode), a broker (one-way flow, nothing routed back to a producer, nothing across hosts), or a feed handler (no exchange protocols). Keeping the core to subscribe, route and fan out is what lets it stay small and fast, and lets everything else vary behind the one contract.
+What it deliberately is not: a decoder (apps keep their own codecs and full decode), a broker (data flows one way, nothing routed back to a producer, nothing across hosts; recap requests go upstream only to a declared snapshot service, and cross-site cascading is a separate relay process, both planned), or a feed handler (no exchange protocols). Keeping the core to subscribe, route and fan out is what lets it stay small and fast, and lets everything else vary behind the one contract.
 
 ## Quick start
 
