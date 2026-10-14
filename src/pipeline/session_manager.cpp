@@ -75,11 +75,12 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
     // so a numeric filter entry must be used as-is, not interned. Mixing
     // passthrough and table partitions in one session would make the same
     // number mean two different things, so it is rejected.
-    size_t n_pass = 0, n_part = 0;
+    size_t n_pass = 0, n_part = 0, n_vscope = 0;
     for (const Partition* p : partitions_) {
         if (!((partition_mask >> p->id()) & 1ull)) continue;
         ++n_part;
         if (p->symbol_passthrough()) ++n_pass;
+        if (p->symbol_venue_scope()) ++n_vscope;
     }
     if (n_pass != 0 && n_pass != n_part) {
         err = "session " + spec.name + ": mixes passthrough and table symbol partitions";
@@ -96,10 +97,21 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
         // space and char-array symbols under the string space. A digit-only
         // name is taken as an integer id first (lookup, then intern); only an
         // existing string entry of the same spelling overrides that.
+        // "<venue>:<id>" names an id on a symbol_scope: venue partition; a bare
+        // id there would intern under venue 0 and never match, so it is
+        // rejected when every partition of the session is venue-scoped.
         uint32_t id = 0;
-        char* end = nullptr;
-        const unsigned long long v = sym.empty() ? 0 : strtoull(sym.c_str(), &end, 10);
-        const bool numeric = !sym.empty() && end && *end == '\0';
+        uint64_t v = 0;
+        uint16_t venue = 0;
+        const bool numeric = parse_numeric_symbol(sym, v, venue);
+        if (numeric && venue != 0 && (passthrough || n_vscope == 0)) {
+            err = "session " + spec.name + ": symbol '" + sym + "' is venue-scoped but none of its partitions has symbol_scope: venue";
+            return false;
+        }
+        if (numeric && venue == 0 && !passthrough && n_vscope == n_part) {
+            err = "session " + spec.name + ": symbol '" + sym + "' needs a venue (<venue>:<id>) on symbol_scope: venue partitions";
+            return false;
+        }
         if (passthrough) {
             if (!numeric || v == 0 || v >= cfg_.max_symbols) {
                 err = "session " + spec.name + ": symbol '" + sym + "' must be an instrument id in 1.." +
@@ -108,9 +120,9 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
             }
             id = static_cast<uint32_t>(v);
         } else if (numeric) {
-            id = symbols_.lookup_u64(v);
+            id = symbols_.lookup_u64(v, venue);
             if (id == 0) id = symbols_.lookup(sym);
-            if (id == 0) id = symbols_.intern_u64(v);
+            if (id == 0) id = symbols_.intern_u64(v, venue);
         } else {
             id = symbols_.intern(sym);
         }

@@ -41,6 +41,11 @@ bool is_int_prim(SbePrim p) {
 
 bool parse_msg_type_name(std::string_view name, uint8_t& code) { return lookup(kMsgTypes, name, code); }
 bool parse_admin_name(std::string_view name, uint8_t& code) { return lookup(kAdmin, name, code); }
+bool parse_symbol_scope(std::string_view name, bool& venue_scope) {
+    if (name == "global") { venue_scope = false; return true; }
+    if (name == "venue") { venue_scope = true; return true; }
+    return false;
+}
 bool parse_symbol_id_mode(std::string_view name, SymbolIdMode& out) {
     if (name == "table") { out = SymbolIdMode::TABLE; return true; }
     if (name == "passthrough") { out = SymbolIdMode::PASSTHROUGH; return true; }
@@ -71,6 +76,10 @@ bool parse_decoder_config(const YAML::Node& node, DecoderConfig& out, std::strin
         }
         const std::string mode = node["symbol_id_mode"] ? node["symbol_id_mode"].as<std::string>() : "table";
         if (!parse_symbol_id_mode(mode, out.symbol_mode)) { err = "decoder.symbol_id_mode must be table or passthrough, got '" + mode + "'"; return false; }
+        const std::string scope = node["symbol_scope"] ? node["symbol_scope"].as<std::string>() : "global";
+        if (!parse_symbol_scope(scope, out.venue_scope)) { err = "decoder.symbol_scope must be global or venue, got '" + scope + "'"; return false; }
+        if (out.venue_scope && out.symbol_mode != SymbolIdMode::TABLE) { err = "decoder.symbol_scope: venue requires symbol_id_mode: table"; return false; }
+        if (out.venue_scope && out.fields.venue.empty()) { err = "decoder.symbol_scope: venue requires fields.venue"; return false; }
 
         const auto msgs = node["messages"];
         if (!msgs || !msgs.IsSequence() || msgs.size() == 0) { err = "decoder.messages must be a non-empty list"; return false; }
@@ -109,6 +118,7 @@ bool SbeRoutingDecoder::init(const DecoderConfig& cfg, const SbeSchema& schema, 
     little_ = schema.little_endian();
     schema_id_ = schema.schema_id();
     passthrough_ = cfg.symbol_mode == SymbolIdMode::PASSTHROUGH;
+    venue_scope_ = cfg.venue_scope;
 
     uint16_t max_id = 0;
     for (const auto& tm : cfg.messages) if (tm.template_id > max_id) max_id = tm.template_id;
@@ -144,6 +154,7 @@ bool SbeRoutingDecoder::init(const DecoderConfig& cfg, const SbeSchema& schema, 
             const bool is_symbol = m.ref == &e.symbol;
             if (is_symbol && f->prim == SbePrim::CHAR_ARRAY) {
                 if (passthrough_) { err = "symbol_id_mode passthrough requires an integer symbol field; " + m.name + " of message " + md->name + " is a char array"; return false; }
+                if (venue_scope_) { err = "symbol_scope: venue requires an integer symbol field; " + m.name + " of message " + md->name + " is a char array"; return false; }
                 m.ref->is_str = true;
             } else if (!is_int_prim(f->prim)) {
                 err = std::string(m.role) + " field " + m.name + " of message " + md->name + " must be an integer type";
@@ -207,7 +218,8 @@ DecodeResult SbeRoutingDecoder::decode(const uint8_t* msg, uint32_t avail, TickH
             out.symbol_id = syms.resolve_str(s, n);
         } else {
             const uint64_t raw = sbe_read_uint(root + e.symbol.offset, e.symbol.size, little_);
-            out.symbol_id = passthrough_ ? static_cast<uint32_t>(raw) : syms.resolve_u64(raw);
+            out.symbol_id = passthrough_ ? static_cast<uint32_t>(raw)
+                                         : syms.resolve_u64(raw, venue_scope_ ? out.venue_id : uint16_t{0});
         }
     }
     r.status = DecodeStatus::OK;

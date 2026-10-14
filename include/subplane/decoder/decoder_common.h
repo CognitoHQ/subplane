@@ -28,7 +28,8 @@ struct DecodeResult {
 class SymbolResolver {
 public:
     virtual ~SymbolResolver() = default;
-    virtual uint32_t resolve_u64(uint64_t key) noexcept = 0;
+    // `venue` is 0 unless the decoder scopes integer ids by venue (symbol_scope: venue).
+    virtual uint32_t resolve_u64(uint64_t key, uint16_t venue) noexcept = 0;
     virtual uint32_t resolve_str(const char* s, uint32_t len) noexcept = 0;
 };
 
@@ -36,5 +37,9 @@ public:
 bool parse_msg_type_name(std::string_view name, uint8_t& code);   // TRADE, QUOTE, ...
 bool parse_admin_name(std::string_view name, uint8_t& code);      // HEARTBEAT, SEQ_RESET, ...
 bool parse_symbol_id_mode(std::string_view name, SymbolIdMode& out);
+// symbol_scope: global (default) | venue. Venue scope interns an integer symbol
+// together with the message's venue, so the same id from two venues is two
+// symbols. Table mode and integer symbols only; the venue field must be mapped.
+bool parse_symbol_scope(std::string_view name, bool& venue_scope);
 
 } // namespace subplane

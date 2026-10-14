@@ -58,6 +58,7 @@ enum class FbDispatch : uint8_t { TYPE_FIELD, IDENTIFIER };
 struct FlatbuffersDecoderConfig {
     bool                       size_prefixed = true;
     SymbolIdMode               symbol_mode = SymbolIdMode::PASSTHROUGH;
+    bool                       venue_scope = false;   // symbol_scope: venue
     FbDispatch                 dispatch = FbDispatch::TYPE_FIELD;
     FbFieldPath                type_field;     // TYPE_FIELD dispatch
     std::vector<FbMessageSpec> messages;
@@ -77,6 +78,7 @@ public:
 
     const std::vector<std::string>& warnings() const { return warnings_; }
     bool symbol_passthrough() const noexcept { return passthrough_; }
+    bool symbol_venue_scope() const noexcept { return venue_scope_; }
     bool size_prefixed() const noexcept { return prefix_ == 4; }
 
 private:
@@ -92,6 +94,7 @@ private:
 
     uint32_t    prefix_ = 4;
     bool        passthrough_ = true;
+    bool        venue_scope_ = false;
     FbDispatch  dispatch_ = FbDispatch::TYPE_FIELD;
     FbFieldPath type_field_;
     // type_field dispatch: direct index for 8-bit types, else linear scan over entries_.

@@ -102,3 +102,46 @@ TEST_CASE("venue table") {
     CHECK(v.resolve(a, s));
     CHECK(s == "XNAS");
 }
+
+TEST_CASE("symbol table: venue-scoped integer ids") {
+    SymbolTable t(16);
+    const uint32_t g = t.intern_u64(1);
+    const uint32_t a = t.intern_u64(1, 10);
+    const uint32_t b = t.intern_u64(1, 20);
+    CHECK(g != 0);
+    CHECK(a != 0);
+    CHECK(b != 0);
+    CHECK(g != a);
+    CHECK(a != b);
+    CHECK(t.intern_u64(1, 10) == a);
+    CHECK(t.lookup_u64(1, 20) == b);
+    CHECK(t.lookup_u64(1) == g);
+    CHECK(t.lookup_u64(1, 30) == 0);
+    CHECK(t.venue_u64(a) == 10);
+    CHECK(t.venue_u64(g) == 0);
+    CHECK(t.key_u64(b) == 1);
+    std::string out;
+    REQUIRE(t.resolve(a, out));
+    CHECK(out == "10:1");
+    REQUIRE(t.resolve(g, out));
+    CHECK(out == "1");
+}
+
+TEST_CASE("parse_numeric_symbol") {
+    uint64_t k = 0;
+    uint16_t v = 0;
+    REQUIRE(parse_numeric_symbol("1001", k, v));
+    CHECK(k == 1001);
+    CHECK(v == 0);
+    REQUIRE(parse_numeric_symbol("10:7", k, v));
+    CHECK(k == 7);
+    CHECK(v == 10);
+    CHECK_FALSE(parse_numeric_symbol("", k, v));
+    CHECK_FALSE(parse_numeric_symbol("ABC", k, v));
+    CHECK_FALSE(parse_numeric_symbol("0:7", k, v));      // venue 0 is the global scope
+    CHECK_FALSE(parse_numeric_symbol("65536:7", k, v));  // venue is u16
+    CHECK_FALSE(parse_numeric_symbol("10:", k, v));
+    CHECK_FALSE(parse_numeric_symbol(":7", k, v));
+    CHECK_FALSE(parse_numeric_symbol("10:7:1", k, v));
+    CHECK_FALSE(parse_numeric_symbol("BTC:1", k, v));
+}

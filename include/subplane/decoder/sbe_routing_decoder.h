@@ -31,6 +31,7 @@ struct DecoderConfig {
     std::string                  schema_path;
     RoutingFieldMap              fields;
     SymbolIdMode                 symbol_mode = SymbolIdMode::TABLE;
+    bool                         venue_scope = false;   // symbol_scope: venue
     std::vector<TemplateMapping> messages;
 };
 
@@ -47,6 +48,7 @@ public:
 
     const SbeLengthWalker& walker() const noexcept { return walker_; }
     bool symbol_passthrough() const noexcept { return passthrough_; }
+    bool symbol_venue_scope() const noexcept { return venue_scope_; }
     const std::vector<std::string>& warnings() const { return warnings_; }
 
 private:
@@ -69,6 +71,7 @@ private:
     HeaderLayout        hdr_;
     bool                little_ = true;
     bool                passthrough_ = false;
+    bool                venue_scope_ = false;
     uint16_t            schema_id_ = 0;
     std::vector<std::string> warnings_;
 };

@@ -56,9 +56,10 @@ struct Buf {
 
 struct FakeResolver : SymbolResolver {
     uint64_t last_key = 0;
+    uint16_t last_venue = 0;
     std::string last_str;
     int calls = 0;
-    uint32_t resolve_u64(uint64_t k) noexcept override { ++calls; last_key = k; return static_cast<uint32_t>(k + 1000); }
+    uint32_t resolve_u64(uint64_t k, uint16_t v) noexcept override { ++calls; last_key = k; last_venue = v; return static_cast<uint32_t>(k + 1000); }
     uint32_t resolve_str(const char* s, uint32_t n) noexcept override {
         ++calls; last_str.assign(s, n); return 5000 + n;
     }
@@ -293,4 +294,26 @@ TEST_CASE("decoder: big endian") {
     CHECK(h.venue_id == 9);
     CHECK(h.symbol_id == 1042);
     CHECK(h.schema_version == 2);
+}
+
+TEST_CASE("decoder: symbol_scope venue passes the venue to the resolver") {
+    std::string cfg = kConfig;
+    cfg.replace(cfg.find("symbol_id_mode: table"), 21, "symbol_id_mode: table\nsymbol_scope: venue");
+    Fixture f(read_sample(), cfg.c_str());
+    TickHeader h{};
+    REQUIRE(f.run(trade(), h).status == DecodeStatus::OK);
+    CHECK(f.res.last_key == 42);
+    CHECK(f.res.last_venue == 9);
+
+    Fixture g; // global scope: venue 0
+    REQUIRE(g.run(trade(), h).status == DecodeStatus::OK);
+    CHECK(g.res.last_venue == 0);
+
+    DecoderConfig c;
+    std::string err;
+    CHECK_FALSE(parse_decoder_config(YAML::Load("{schema: a, fields: {symbol: S, venue: V}, symbol_scope: nope, messages: [{template: 1, msg_type: TRADE}]}"), c, err));
+    CHECK_FALSE(parse_decoder_config(YAML::Load("{schema: a, fields: {symbol: S}, symbol_scope: venue, messages: [{template: 1, msg_type: TRADE}]}"), c, err));
+    CHECK(err.find("fields.venue") != std::string::npos);
+    CHECK_FALSE(parse_decoder_config(YAML::Load("{schema: a, fields: {symbol: S, venue: V}, symbol_id_mode: passthrough, symbol_scope: venue, messages: [{template: 1, msg_type: TRADE}]}"), c, err));
+    CHECK(err.find("table") != std::string::npos);
 }

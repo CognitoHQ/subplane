@@ -25,8 +25,8 @@ messages:
 )";
 
 struct CountingResolver final : public SymbolResolver {
-    uint64_t last_u64 = 0; std::string last_str; int u64_calls = 0, str_calls = 0;
-    uint32_t resolve_u64(uint64_t key) noexcept override { last_u64 = key; ++u64_calls; return static_cast<uint32_t>(key % 100 + 1); }
+    uint64_t last_u64 = 0; uint16_t last_venue = 0; std::string last_str; int u64_calls = 0, str_calls = 0;
+    uint32_t resolve_u64(uint64_t key, uint16_t v) noexcept override { last_u64 = key; last_venue = v; ++u64_calls; return static_cast<uint32_t>(key % 100 + 1); }
     uint32_t resolve_str(const char* s, uint32_t len) noexcept override { last_str.assign(s, len); ++str_calls; return len; }
 };
 
@@ -184,4 +184,18 @@ TEST_CASE("flatbuffers: config errors") {
     CHECK(cfg.messages[0].symbol.depth == 3);
     CHECK(cfg.messages[0].symbol.ids[2] == 0);
     CHECK(cfg.size_prefixed);
+}
+
+TEST_CASE("flatbuffers: symbol_scope venue needs an integer symbol and a venue path") {
+    FlatbuffersDecoderConfig c;
+    std::string err;
+    CHECK_FALSE(parse_flatbuffers_decoder_config(YAML::Load(R"({symbol_id_mode: table, symbol_scope: venue, dispatch: {type_field: {path: [2], type: u8}}, messages: [
+        {type: 1, msg_type: TRADE, symbol: {path: [3, 0, 2], type: string}, venue: {path: [3, 0, 1], type: u16}}]})"), c, err));
+    CHECK(err.find("integer symbol") != std::string::npos);
+    CHECK_FALSE(parse_flatbuffers_decoder_config(YAML::Load(R"({symbol_id_mode: table, symbol_scope: venue, dispatch: {type_field: {path: [2], type: u8}}, messages: [
+        {type: 2, msg_type: QUOTE, symbol: {path: [3, 0, 0], type: u32}}]})"), c, err));
+    CHECK(err.find("lacks venue") != std::string::npos);
+    REQUIRE_MESSAGE(parse_flatbuffers_decoder_config(YAML::Load(R"({symbol_id_mode: table, symbol_scope: venue, dispatch: {type_field: {path: [2], type: u8}}, messages: [
+        {type: 2, msg_type: QUOTE, symbol: {path: [3, 0, 0], type: u32}, venue: {path: [3, 0, 1], type: u16}}]})"), c, err), err);
+    CHECK(c.venue_scope);
 }

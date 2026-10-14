@@ -44,6 +44,7 @@ struct DbnMapping {
 
 struct DbnDecoderConfig {
     SymbolIdMode            symbol_mode = SymbolIdMode::PASSTHROUGH;
+    bool                    venue_scope = false;   // symbol_scope: venue (venue = publisher_id)
     std::vector<DbnMapping> messages;   // empty = defaults (see dbn_default_mappings)
 };
 
@@ -63,6 +64,7 @@ public:
 
     const std::vector<std::string>& warnings() const { return warnings_; }
     bool symbol_passthrough() const noexcept { return passthrough_; }
+    bool symbol_venue_scope() const noexcept { return venue_scope_; }
 
 private:
     struct Entry {
@@ -73,6 +75,7 @@ private:
     };
     Entry by_rtype_[256] = {};
     bool  passthrough_ = true;
+    bool  venue_scope_ = false;
     std::vector<std::string> warnings_;
 };
 

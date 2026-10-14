@@ -142,6 +142,7 @@ decoder:
   type: flatbuffers
   size_prefixed: true                  # default: buffer starts with u32 size (flatc FinishSizePrefixed)
   symbol_id_mode: passthrough          # passthrough (integer symbol) | table (integer or string symbol)
+  symbol_scope: global                 # global | venue (table mode, integer symbol, needs a venue path)
   dispatch: { type_field: { path: [2], type: u8 } }   # or `dispatch: identifier` (4-byte file identifier)
   messages:
     - { type: 1, msg_type: TRADE,                     # `identifier: "TRDE"` with identifier dispatch
@@ -164,6 +165,7 @@ decoder:
 What it decodes, from the message root block only:
 
 - `symbol` (integer field, or a `char[N]` field) interned to a dense `symbol_id`. Mode `table` (default) maps through the lock-free `SymbolTable`; mode `passthrough` uses the raw integer as the id and requires an integer field.
+- `symbol_scope` (`global` default | `venue`): with `venue`, an integer symbol is interned together with the message's venue, so instrument 1 from venue 10 and instrument 1 from venue 20 are two symbols. Needs `symbol_id_mode: table`, an integer symbol and a mapped venue (the same option exists for `dbn`, where the venue is `publisher_id`, and for `flatbuffers`, where every message with an integer symbol needs a venue path). Session filters, `SYMBOL_MAPPED` names and `GET /lvc/{symbol}` then spell these symbols `<venue>:<id>` (`10:1`). Opt-in because it changes how filters are written; with globally unique ids (a site instrument master) `global` is enough.
 - `sequence`, `exchange_ts`, `venue` (integer fields; venue is truncated to 16 bits).
 - Template id, schema id and schema version from the SBE header, and `msg_type` from the config mapping.
 
@@ -281,7 +283,7 @@ A `Session` is a filter table plus a ring plus counters.
 
 - **YAML sessions** (`sessions:`) have `owner=config`. They survive client disconnects. `POST /reload` re-reads the file and reconciles by name: new names are created, changed filters are swapped, names that disappeared are destroyed (reason 2). A session's partitions cannot change after creation; destroy and recreate. Only the `sessions` section is reloaded; everything else needs a restart. There is no SIGHUP handler; reload is via HTTP.
 - **Client sessions** (`owner=client`) are created over the control channel. They live while any connection that created or attached to them is open, plus `control.linger_ms` (default 5000) after the last holder disconnects; a new `ATTACH` before expiry keeps them. Reload never touches them. A name collision is rejected (`EXISTS`), and a YAML entry that collides with a client session is ignored with an error.
-- Session names are 1 to 31 characters of `[A-Za-z0-9_-]`. Symbols in a filter are names or decimal integer ids and are interned on the cold path. An empty `partitions` list means all partitions. An empty `msg_types` list means all data types.
+- Session names are 1 to 31 characters of `[A-Za-z0-9_-]`. Symbols in a filter are names, decimal integer ids, or `<venue>:<id>` on `symbol_scope: venue` partitions (a bare id is rejected when every partition of the session is venue-scoped, and `<venue>:<id>` when none is), and are interned on the cold path. An empty `partitions` list means all partitions. An empty `msg_types` list means all data types.
 
 ## Control channel
 
@@ -471,7 +473,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `name`: required, unique.
 - `transport`: `type` (`udp_multicast` or `udp`), `group` (empty = unicast), `port`, `interface` (local address, empty = any), `rcvbuf` (bytes), `busy_poll_us` (0 = off), `mtu`, `batch` (1 to 64), `kernel_timestamps` (default false), `multicast_loop` (default true), `reuse_port` (default true). `type: tcp_stream` and `type: aeron` take the keys shown under Transport.
 - `framing`: the block described above. Absent means bare concatenation with length from the schema and no sequence.
-- `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `messages[]` (`template` plus `msg_type` or `admin`).
+- `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
 
 `sessions[]` (reloadable)

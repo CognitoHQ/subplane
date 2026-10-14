@@ -83,6 +83,15 @@ public:
         }
     }
 
+    // True when integer symbols on this partition are interned per venue (symbol_scope: venue).
+    bool symbol_venue_scope() const noexcept {
+        switch (decoder_type_) {
+            case DecoderType::DBN:         return dbn_decoder_.symbol_venue_scope();
+            case DecoderType::FLATBUFFERS: return fb_decoder_.symbol_venue_scope();
+            default:                       return sbe_decoder_.symbol_venue_scope();
+        }
+    }
+
     // Hot. Dispatches to the configured decoder with a branch, not a virtual
     // call (INV: one indirect call per packet batch, which the transport uses).
     DecodeResult decode(const uint8_t* msg, uint32_t avail, TickHeader& out, SymbolResolver& syms) const noexcept {

@@ -32,15 +32,30 @@ decoder:
     - { template: 2, msg_type: QUOTE }
 )";
 
+// Same partition, integer symbols interned per venue (MarketSegmentID).
+const char* kScopedPartitionYaml = R"(
+name: p0
+transport: { type: udp_multicast, group: "", port: 1 }
+framing: { sequence: message.SeqNum }
+decoder:
+  type: sbe_routing
+  schema: sample_md.xml
+  fields: { symbol: SecurityID, sequence: SeqNum, exchange_ts: TransactTime, venue: MarketSegmentID }
+  symbol_scope: venue
+  messages:
+    - { template: 1, msg_type: TRADE }
+    - { template: 2, msg_type: QUOTE }
+)";
+
 void put_u16le(std::vector<uint8_t>& b, uint16_t v) { b.push_back(static_cast<uint8_t>(v)); b.push_back(static_cast<uint8_t>(v >> 8)); }
 
-std::vector<uint8_t> trade(const SbeSchema& s, uint64_t sec, uint64_t seq) {
+std::vector<uint8_t> trade(const SbeSchema& s, uint64_t sec, uint64_t seq, uint64_t venue = 0) {
     const MessageDef* m = s.find_message(1);
     std::vector<uint8_t> b;
     put_u16le(b, m->block_length); put_u16le(b, 1); put_u16le(b, s.schema_id()); put_u16le(b, s.version());
     std::vector<uint8_t> root(m->block_length, 0);
     auto set = [&](const char* n, uint64_t v) { const FieldDef* f = s.find_field(*m, n); for (uint16_t i = 0; i < f->size && i < 8; ++i) root[f->offset + i] = static_cast<uint8_t>(v >> (8 * i)); };
-    set("SecurityID", sec); set("SeqNum", seq); set("TransactTime", 1);
+    set("SecurityID", sec); set("SeqNum", seq); set("TransactTime", 1); set("MarketSegmentID", venue);
     b.insert(b.end(), root.begin(), root.end());
     return b;
 }
@@ -56,11 +71,11 @@ struct H {
     std::unique_ptr<SessionManager> sm;
     std::string agent_name;
 
-    H() : pipe("g0", 77, symbols, lvc) {
+    explicit H(const char* partition_yaml = kPartitionYaml) : pipe("g0", 77, symbols, lvc) {
         std::string err;
         REQUIRE(lvc.init(256, {static_cast<uint8_t>(MsgType::TRADE)}, 256, err));
         PartitionConfig cfg;
-        REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(kPartitionYaml), 0, data_dir(), cfg, err), err);
+        REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(partition_yaml), 0, data_dir(), cfg, err), err);
         auto ft = std::make_unique<FakeTransport>();
         fake = ft.get();
         REQUIRE(part.build(cfg, err, std::move(ft)));
@@ -192,4 +207,56 @@ TEST_CASE("SessionManager: client linger expires sessions; unknown partition and
     CHECK(g == &h.pipe);
     h.sm->destroy_all();
     CHECK(h.sm->count() == 0);
+}
+
+TEST_CASE("SessionManager: symbol_scope venue keeps the same id from two venues apart") {
+    H h(kScopedPartitionYaml);
+    std::string err;
+    SessionSpec bare = h.spec("bare", {"TRADE"});
+    bare.all_symbols = false;
+    bare.symbols = {"42"};
+    CHECK_FALSE(h.sm->create(bare, err));
+    CHECK(err.find("needs a venue") != std::string::npos);
+
+    SessionSpec s = h.spec("v9", {"TRADE"});
+    s.all_symbols = false;
+    s.symbols = {"9:42"};
+    REQUIRE_MESSAGE(h.sm->create(s, err), err);
+    SessionAttachInfo info;
+    REQUIRE(h.sm->attach_info("v9", info));
+    ShmReader rd;
+    REQUIRE(rd.open(info.ring_path));
+    RecordView v;
+    REQUIRE(rd.poll(v) == ReaderStatus::Ok); // AGENT_RESTARTED
+
+    h.fake->push(trade(*h.part.schema(), 42, 1, 7), now_ns()); // venue 7: not ours
+    h.fake->push(trade(*h.part.schema(), 42, 2, 9), now_ns()); // venue 9: ours
+    h.pipe.run_once();
+    int trades = 0;
+    std::string mapped;
+    while (rd.poll(v) == ReaderStatus::Ok) {
+        if (v.hdr->kind == static_cast<uint8_t>(Kind::DATA)) {
+            ++trades;
+            CHECK(v.hdr->venue_id == 9);
+            CHECK(v.hdr->sequence == 2);
+        }
+    }
+    CHECK(trades == 1);
+    const uint32_t id9 = h.symbols.lookup_u64(42, 9), id7 = h.symbols.lookup_u64(42, 7);
+    CHECK(id9 != 0);
+    CHECK(id7 != 0);
+    CHECK(id9 != id7);
+    REQUIRE(h.symbols.resolve(id9, mapped));
+    CHECK(mapped == "9:42");
+    h.sm->destroy_all();
+}
+
+TEST_CASE("SessionManager: venue:id is rejected on a global-scope partition") {
+    H h;
+    std::string err;
+    SessionSpec s = h.spec("x", {"TRADE"});
+    s.all_symbols = false;
+    s.symbols = {"9:42"};
+    CHECK_FALSE(h.sm->create(s, err));
+    CHECK(err.find("venue-scoped") != std::string::npos);
 }

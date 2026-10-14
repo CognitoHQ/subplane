@@ -29,8 +29,8 @@ std::vector<uint8_t> rec(uint32_t total, uint8_t rtype, uint32_t iid, uint64_t t
 }
 
 struct CountingResolver final : public SymbolResolver {
-    uint64_t last = 0; int calls = 0;
-    uint32_t resolve_u64(uint64_t key) noexcept override { last = key; ++calls; return static_cast<uint32_t>(key % 100 + 1); }
+    uint64_t last = 0; uint16_t last_venue = 0; int calls = 0;
+    uint32_t resolve_u64(uint64_t key, uint16_t v) noexcept override { last = key; last_venue = v; ++calls; return static_cast<uint32_t>(key % 100 + 1); }
     uint32_t resolve_str(const char*, uint32_t) noexcept override { ++calls; return 0; }
 };
 
@@ -148,4 +148,19 @@ TEST_CASE("dbn: config errors") {
     CHECK_FALSE(parse_dbn_decoder_config(YAML::Load("{type: dbn, symbol_id_mode: dense}"), cfg, err));
     CHECK(parse_dbn_decoder_config(YAML::Load("{type: dbn}"), cfg, err));
     CHECK(cfg.messages.size() == dbn_default_mappings().size());
+}
+
+TEST_CASE("dbn: symbol_scope venue interns with the publisher id") {
+    std::string err;
+    DbnDecoder d = make(R"({type: dbn, symbol_id_mode: table, symbol_scope: venue})", err);
+    REQUIRE_MESSAGE(err.empty(), err);
+    CHECK(d.symbol_venue_scope());
+    CountingResolver syms;
+    TickHeader h{};
+    auto mbo = rec(56, 0xA0, 432669, 1, 42);
+    REQUIRE(d.decode(mbo.data(), 56, h, syms).status == DecodeStatus::OK);
+    CHECK(syms.last == 432669);
+    CHECK(syms.last_venue == 42);
+    make(R"({type: dbn, symbol_scope: venue})", err); // passthrough is the dbn default
+    CHECK(err.find("table") != std::string::npos);
 }

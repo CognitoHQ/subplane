@@ -86,6 +86,9 @@ bool parse_dbn_decoder_config(const YAML::Node& node, DbnDecoderConfig& out, std
         if (node["fields"]) { err = "decoder.fields is not used by type dbn (routing fields are fixed)"; return false; }
         const std::string mode = node["symbol_id_mode"] ? node["symbol_id_mode"].as<std::string>() : "passthrough";
         if (!parse_symbol_id_mode(mode, out.symbol_mode)) { err = "decoder.symbol_id_mode must be table or passthrough, got '" + mode + "'"; return false; }
+        const std::string scope = node["symbol_scope"] ? node["symbol_scope"].as<std::string>() : "global";
+        if (!parse_symbol_scope(scope, out.venue_scope)) { err = "decoder.symbol_scope must be global or venue, got '" + scope + "'"; return false; }
+        if (out.venue_scope && out.symbol_mode != SymbolIdMode::TABLE) { err = "decoder.symbol_scope: venue requires symbol_id_mode: table"; return false; }
 
         const auto msgs = node["messages"];
         if (!msgs) { out.messages = dbn_default_mappings(); return true; }
@@ -127,6 +130,7 @@ bool DbnDecoder::init(const DbnDecoderConfig& cfg, std::string& err) {
     warnings_.clear();
     for (auto& e : by_rtype_) e = Entry{};
     passthrough_ = cfg.symbol_mode == SymbolIdMode::PASSTHROUGH;
+    venue_scope_ = cfg.venue_scope;
     if (cfg.messages.empty()) { err = "dbn decoder: no message mappings"; return false; }
     for (const auto& m : cfg.messages) {
         Entry& e = by_rtype_[m.rtype];
@@ -163,7 +167,7 @@ DecodeResult DbnDecoder::decode(const uint8_t* msg, uint32_t avail, TickHeader& 
     out.msg_type = e.msg_type;
     out.venue_id = rd16(msg + 2);
     const uint32_t iid = rd32(msg + 4);
-    out.symbol_id = passthrough_ ? iid : syms.resolve_u64(iid);
+    out.symbol_id = passthrough_ ? iid : syms.resolve_u64(iid, venue_scope_ ? out.venue_id : uint16_t{0});
     out.exchange_ts = rd64(msg + 8);
     out.sequence = (e.sequence_off != 0 && e.sequence_off + 4u <= total) ? rd32(msg + e.sequence_off) : 0;
     r.status = DecodeStatus::OK;

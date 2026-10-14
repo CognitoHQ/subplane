@@ -356,9 +356,9 @@ bool Agent::lvc_read(const std::string& symbol, const std::string& msg_type, Tic
     }
     uint32_t id = symbols_->lookup(symbol);
     if (id == 0) {
-        char* end = nullptr;
-        const unsigned long long v = strtoull(symbol.c_str(), &end, 10);
-        if (end && *end == '\0' && !symbol.empty()) id = symbols_->lookup_u64(v);
+        uint64_t v = 0;
+        uint16_t venue = 0;
+        if (parse_numeric_symbol(symbol, v, venue)) id = symbols_->lookup_u64(v, venue);
     }
     if (id == 0) {
         err = "unknown symbol " + symbol;

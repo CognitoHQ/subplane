@@ -12,9 +12,9 @@ class TableResolver final : public SymbolResolver {
 public:
     explicit TableResolver(SymbolTable& t) : table_(t) {}
 
-    uint32_t resolve_u64(uint64_t key) noexcept override {
+    uint32_t resolve_u64(uint64_t key, uint16_t venue) noexcept override {
         const uint32_t before = table_.size();
-        const uint32_t id = table_.intern_u64(key);
+        const uint32_t id = table_.intern_u64(key, venue);
         if (id != 0 && table_.size() != before) new_id_ = id;
         return id;
     }

@@ -79,6 +79,9 @@ bool parse_flatbuffers_decoder_config(const YAML::Node& node, FlatbuffersDecoder
         const std::string mode = node["symbol_id_mode"] ? node["symbol_id_mode"].as<std::string>() : "passthrough";
         if (!parse_symbol_id_mode(mode, out.symbol_mode)) { err = "decoder.symbol_id_mode must be table or passthrough, got '" + mode + "'"; return false; }
         const bool table = out.symbol_mode == SymbolIdMode::TABLE;
+        const std::string scope = node["symbol_scope"] ? node["symbol_scope"].as<std::string>() : "global";
+        if (!parse_symbol_scope(scope, out.venue_scope)) { err = "decoder.symbol_scope must be global or venue, got '" + scope + "'"; return false; }
+        if (out.venue_scope && !table) { err = "decoder.symbol_scope: venue requires symbol_id_mode: table"; return false; }
 
         const auto d = node["dispatch"];
         if (!d) { err = "decoder.dispatch is required: identifier, or {type_field: {path, type}}"; return false; }
@@ -133,6 +136,10 @@ bool parse_flatbuffers_decoder_config(const YAML::Node& node, FlatbuffersDecoder
             if (m["venue"]       && !parse_path(m["venue"],       pre + "venue",       false, spec.venue,       err)) return false;
             if (m["exchange_ts"] && !parse_path(m["exchange_ts"], pre + "exchange_ts", false, spec.exchange_ts, err)) return false;
             if (m["sequence"]    && !parse_path(m["sequence"],    pre + "sequence",    false, spec.sequence,    err)) return false;
+            if (out.venue_scope && spec.symbol.depth != 0) {
+                if (spec.symbol.type == FbScalar::STRING) { err = pre + "symbol: symbol_scope: venue requires an integer symbol"; return false; }
+                if (spec.venue.depth == 0) { err = pre + "lacks venue, which symbol_scope: venue requires"; return false; }
+            }
             out.messages.push_back(spec);
         }
         return true;
@@ -148,6 +155,7 @@ bool FlatbuffersDecoder::init(const FlatbuffersDecoderConfig& cfg, std::string& 
     for (auto& x : by_u8_) x = -1;
     prefix_ = cfg.size_prefixed ? 4 : 0;
     passthrough_ = cfg.symbol_mode == SymbolIdMode::PASSTHROUGH;
+    venue_scope_ = cfg.venue_scope;
     dispatch_ = cfg.dispatch;
     type_field_ = cfg.type_field;
     if (cfg.messages.empty()) { err = "flatbuffers decoder: no message mappings"; return false; }
@@ -224,16 +232,18 @@ DecodeResult FlatbuffersDecoder::decode(const uint8_t* msg, uint32_t avail, Tick
     out.kind = static_cast<uint8_t>(e->admin ? Kind::BUS_ADMIN : Kind::DATA);
     out.msg_type = e->msg_type;
     uint64_t v;
+    // INTENT: venue before symbol; symbol_scope: venue interns with it.
+    out.venue_id    = (e->venue.depth != 0 && read_int(s, root, e->venue, v)) ? static_cast<uint16_t>(v) : 0;
     out.symbol_id = 0;
     if (e->symbol.depth != 0) {
         if (e->symbol.type == FbScalar::STRING) {
             const char* p; uint32_t len;
             if (read_str(s, root, e->symbol, p, len)) out.symbol_id = syms.resolve_str(p, len);
         } else if (read_int(s, root, e->symbol, v)) {
-            out.symbol_id = passthrough_ ? static_cast<uint32_t>(v) : syms.resolve_u64(v);
+            out.symbol_id = passthrough_ ? static_cast<uint32_t>(v)
+                                         : syms.resolve_u64(v, venue_scope_ ? out.venue_id : uint16_t{0});
         }
     }
-    out.venue_id    = (e->venue.depth != 0 && read_int(s, root, e->venue, v)) ? static_cast<uint16_t>(v) : 0;
     out.exchange_ts = (e->exchange_ts.depth != 0 && read_int(s, root, e->exchange_ts, v)) ? v : 0;
     out.sequence    = (e->sequence.depth != 0 && read_int(s, root, e->sequence, v)) ? v : 0;
     r.status = DecodeStatus::OK;
