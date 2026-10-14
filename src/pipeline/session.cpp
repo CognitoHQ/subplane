@@ -11,6 +11,7 @@ constexpr NameCode kMsgTypes[] = {
     {"BOOK_SNAPSHOT", static_cast<uint8_t>(MsgType::BOOK_SNAPSHOT)},
     {"OHLCV",         static_cast<uint8_t>(MsgType::OHLCV)},
     {"STATUS",        static_cast<uint8_t>(MsgType::STATUS)},
+    {"DEFINITION",    static_cast<uint8_t>(MsgType::DEFINITION)},
 };
 } // namespace
 

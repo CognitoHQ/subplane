@@ -64,7 +64,7 @@ bool Agent::initialize(const std::string& config_path) {
     lvc_ = std::make_unique<Lvc>();
     {
         std::vector<uint8_t> types;
-        for (uint8_t c = static_cast<uint8_t>(MsgType::TRADE); c <= static_cast<uint8_t>(MsgType::STATUS); ++c) types.push_back(c);
+        for (uint8_t c = static_cast<uint8_t>(MsgType::TRADE); c <= static_cast<uint8_t>(MsgType::DEFINITION); ++c) types.push_back(c);
         const uint32_t lvc_payload = config_manager_->get_value<uint32_t>("lvc.max_payload", 512u);
         std::string err;
         if (!lvc_->init(max_symbols_, types, lvc_payload, err)) {

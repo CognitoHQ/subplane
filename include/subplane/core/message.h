@@ -47,6 +47,9 @@ enum class MsgType : uint8_t {
     BOOK_SNAPSHOT = 4,
     OHLCV         = 5,
     STATUS        = 6,
+    // INTENT: instrument definitions get their own type so the last-value cache
+    // keeps them in their own slot; sharing STATUS made each overwrite the other.
+    DEFINITION    = 7,
     // 0x80.. are control codes, see ControlCode.
 };
 inline constexpr uint8_t MSG_TYPE_DATA_MAX = 0x7F;

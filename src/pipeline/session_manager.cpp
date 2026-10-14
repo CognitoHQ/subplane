@@ -411,7 +411,7 @@ bool SessionManager::snapshot(const std::string& name, uint64_t& ring_head_at_sn
         const Entry* e = find_locked(name);
         if (!e) return false;
         f = e->session->filter.load(std::memory_order_acquire);
-        head = e->session->ring.head();
+        head = e->session->ring.published_head();
     }
     ring_head_at_snapshot = head;
     if (!f) return true;

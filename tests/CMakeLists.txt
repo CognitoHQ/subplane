@@ -10,7 +10,7 @@ endfunction()
 subplane_unit_test(test_core unit/test_message.cpp unit/test_api_server.cpp)
 
 # M1 core types
-subplane_unit_test(test_core_types unit/test_filter_table.cpp unit/test_seqlock.cpp unit/test_histogram.cpp unit/test_symbol_table.cpp)
+subplane_unit_test(test_core_types unit/test_filter_table.cpp unit/test_seqlock.cpp unit/test_histogram.cpp unit/test_symbol_table.cpp unit/test_lvc.cpp)
 # M2 shared-memory ring + client
 subplane_unit_test(test_ring unit/test_ring.cpp)
 # M3 SBE schema, length walker, routing decoder

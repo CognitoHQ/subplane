@@ -186,7 +186,14 @@ public:
     }
 
     const std::string& path() const noexcept { return path_; }
+    // Writer thread only: the non-atomic shadow.
     uint64_t head() const noexcept { return head_; }
+    // INTENT: any thread (the control thread reads it for SNAPSHOT replies).
+    // head_ is a plain field the pipeline thread writes, so reading it from
+    // another thread is a data race; the published head is the atomic.
+    uint64_t published_head() const noexcept {
+        return hdr_ ? hdr_->head.load(std::memory_order_acquire) : 0;
+    }
     bool is_open() const noexcept { return base_ != nullptr; }
     uint64_t capacity() const noexcept { return capacity_; }
     uint32_t max_payload() const noexcept { return max_payload_; }

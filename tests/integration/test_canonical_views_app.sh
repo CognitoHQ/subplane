@@ -35,7 +35,7 @@ partitions:
         - { template: 4, msg_type: BOOK_SNAPSHOT }
         - { template: 5, msg_type: OHLCV }
         - { template: 6, msg_type: STATUS }
-        - { template: 10, msg_type: STATUS }
+        - { template: 10, msg_type: DEFINITION }
         - { template: 100, admin: HEARTBEAT }
     heartbeat_timeout_ms: 2000
 sessions:

@@ -172,7 +172,7 @@ What it does not do:
 - It never decodes groups, varData or any other field; apps get the original bytes.
 - A routing field inside a group or varData is a startup config error. A field missing from a template is a warning and the value is 0. A field beyond a smaller `blockLength` (older publisher version) reads as absent.
 - Known limitation (found on CME MDP 3.0): incremental refresh messages carry `SecurityID` only inside the `NoMDEntries` group, and one message can update several instruments. Such a bus can be routed by message type today (no `symbol` mapping), not by symbol. Per-entry symbol routing is on the roadmap.
-- Only `type: sbe_routing` exists. Messages are mapped by template id to a data type (`TRADE`, `QUOTE`, `BOOK_UPDATE`, `BOOK_SNAPSHOT`, `OHLCV`, `STATUS`) or an admin type (`HEARTBEAT`, `SEQ_RESET`, `SNAPSHOT_START`, `SNAPSHOT_END`, `TRADING_STATUS`); exactly one of `msg_type` or `admin` per entry.
+- Only `type: sbe_routing` exists. Messages are mapped by template id to a data type (`TRADE`, `QUOTE`, `BOOK_UPDATE`, `BOOK_SNAPSHOT`, `OHLCV`, `STATUS`, `DEFINITION`) or an admin type (`HEARTBEAT`, `SEQ_RESET`, `SNAPSHOT_START`, `SNAPSHOT_END`, `TRADING_STATUS`); exactly one of `msg_type` or `admin` per entry.
 - Known cost: symbol resolution goes through a `SymbolResolver` virtual call per decoded message. This is an exception to the one-indirect-call-per-batch rule, marked TODO in the header.
 
 ## Pipeline threading
@@ -245,7 +245,7 @@ Every record is two parts: a fixed header tuple that the agent fills from wherev
 | 53 | `flags` | u8 | bit0 LVC-truncated, bit1 snapshot-origin. |
 | 54 | `reserved[10]` | | Zero. |
 
-Data `msg_type` values: 1 TRADE, 2 QUOTE, 3 BOOK_UPDATE, 4 BOOK_SNAPSHOT, 5 OHLCV, 6 STATUS. There is no symbol string in the header; apps key by `symbol_id` and learn names from `SYMBOL_MAPPED` events or the control channel.
+Data `msg_type` values: 1 TRADE, 2 QUOTE, 3 BOOK_UPDATE, 4 BOOK_SNAPSHOT, 5 OHLCV, 6 STATUS, 7 DEFINITION (instrument definitions; their own type so the last-value cache does not mix them with status). There is no symbol string in the header; apps key by `symbol_id` and learn names from `SYMBOL_MAPPED` events or the control channel.
 
 ### Control codes
 
@@ -306,7 +306,7 @@ Statuses: `OK`, `BAD_REQUEST`, `NOT_FOUND`, `EXISTS`, `INTERNAL`, `UNSUPPORTED`,
 
 ## Last-value cache
 
-`pipeline/lvc.h`. One slot per (symbol id, tracked data type), where tracked types are data types 1 to 6. Each slot is a seqlock: a version counter, the `TickHeader`, and up to `lvc.max_payload` bytes (default 512). Larger payloads store the header only with the truncated flag. The single writer is the pipeline thread; cold readers (control channel snapshot, HTTP) retry on an odd or changed version. Storage is `max_symbols * 6` slots allocated at startup.
+`pipeline/lvc.h`. One slot per (symbol id, tracked data type), where tracked types are data types 1 to 7. Each slot is a seqlock: a version counter, the `TickHeader`, and up to `lvc.max_payload` bytes (default 512). Larger payloads store the header only with the truncated flag. The single writer is the pipeline thread; cold readers (control channel snapshot, HTTP) retry on an odd or changed version. Storage is `max_symbols * 7` slots allocated at startup.
 
 Export of the cache into shared memory for direct app reads is planned.
 
@@ -390,7 +390,7 @@ The Python module defines one frozen dataclass per message (standard library `st
 | 10 | `InstrumentDefinition` | `Symbol char[32]`, `Exchange`, `Base`, `Quote` (`char[16]`), `TickSize`, `LotSize`, `Status` | 144 |
 | 100 | `Heartbeat` | prefix only, `InstrumentId` 0 | 40 |
 
-A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` and templates 1..6 mapped to the matching `MsgType`, 10 to `STATUS`, 100 to `admin: HEARTBEAT` (the commented `canonical` partition in `config.yaml`). `subplane send --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views (`--spin` busy-polls; `--latency` prints histograms of canonical `RecvTs` to app read, ring `ingest_ts` to app read, and `RecvTs` to `ingest_ts`, all CLOCK_REALTIME on one box, so a gateway, the agent and an app measure end to end with no probes); `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
+A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` and templates 1..6 mapped to the matching `MsgType`, 10 to `DEFINITION`, 100 to `admin: HEARTBEAT` (the commented `canonical` partition in `config.yaml`). `subplane send --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views (`--spin` busy-polls; `--latency` prints histograms of canonical `RecvTs` to app read, ring `ingest_ts` to app read, and `RecvTs` to `ingest_ts`, all CLOCK_REALTIME on one box, so a gateway, the agent and an app measure end to end with no probes); `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
 
 ```cpp
 // Trade: template 1, 72 bytes. Constant fields omitted: PriceExponent (PriceExponent).

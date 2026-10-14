@@ -102,6 +102,8 @@ TEST_CASE("decoder config parsing") {
     CHECK(c.messages[3].is_admin);
     CHECK(c.messages[3].admin_code == static_cast<uint8_t>(ControlCode::BUS_HEARTBEAT));
 
+    REQUIRE(parse_decoder_config(YAML::Load("{schema: a.xml, messages: [{template: 10, msg_type: DEFINITION}]}"), c, err));
+    CHECK(c.messages[0].msg_type == static_cast<uint8_t>(MsgType::DEFINITION));
     CHECK_FALSE(parse_decoder_config(YAML::Load("{schema: a.xml, messages: [{template: 1, msg_type: NOPE}]}"), c, err));
     CHECK_FALSE(parse_decoder_config(YAML::Load("{messages: [{template: 1, msg_type: TRADE}]}"), c, err));
     CHECK_FALSE(parse_decoder_config(YAML::Load("{schema: a, symbol_id_mode: x, messages: [{template: 1, msg_type: TRADE}]}"), c, err));

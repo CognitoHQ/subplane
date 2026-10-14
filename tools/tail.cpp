@@ -33,6 +33,7 @@ const char* code_name(const TickHeader& h) {
             case MsgType::BOOK_SNAPSHOT: return "BOOK_SNAPSHOT";
             case MsgType::OHLCV: return "OHLCV";
             case MsgType::STATUS: return "STATUS";
+            case MsgType::DEFINITION: return "DEFINITION";
             default: return "DATA?";
         }
     }
