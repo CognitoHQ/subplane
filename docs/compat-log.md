@@ -2,7 +2,7 @@
 
 Publishers and apps are tied to the platform version they were built against, so every change that could affect an existing **publisher**, **app** or **operator config** is recorded here. Version numbers (the product version and the contract constants `RING_LAYOUT_VERSION`, `RECORD_VERSION`, `CONTROL_PROTO_VERSION` and the canonical schema version) are frozen until the first release; at that release this log becomes the baseline for the release notes, the compatibility rules and the versions.
 
-**Enforced in CI.** A pull request that changes a contract path (`.github/compat-paths.txt`) must add an entry here, or say `Compat: none (<reason>)` in the PR body or a commit message (`scripts/check-compat.sh`, workflow `compat`). The same script runs locally: `scripts/check-compat.sh origin/main HEAD`. Changes in `subplane-feeds` that alter what gateways emit are recorded here too, because apps see them.
+**Enforced in CI.** A pull request that changes a contract path (`.github/compat-paths.txt`) must add an entry here, or say `Compat: none (<reason>)` in the PR body or a commit message (`scripts/check-compat.sh`, workflow `compat`). The same script runs locally: `scripts/check-compat.sh origin/main HEAD`. The repository is private on a free plan, so GitHub cannot make the check required; pull requests are merged with `scripts/merge-pr.sh <n>`, which refuses unless `compat-log` and the build have passed. Changes in `subplane-feeds` that alter what gateways emit are recorded here too, because apps see them.
 
 **Impact:**
 - `additive`: an old publisher or app keeps working unchanged.
