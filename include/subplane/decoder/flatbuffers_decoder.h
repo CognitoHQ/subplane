@@ -23,6 +23,8 @@
 //           exchange_ts: { path: [1], type: u64 },
 //           sequence:    { path: [0], type: u64 } }
 //       - { type: 3, admin: HEARTBEAT }
+//       - { type: 21, admin: RECAP_BEGIN,                  # recap reply markers (see architecture.md, Recap)
+//           fields: { request_id: { path: [4], type: u64 }, as_of: { path: [5], type: u64 } } }
 
 #include <cstdint>
 #include <string>
@@ -50,7 +52,9 @@ struct FbMessageSpec {
     char        identifier[4] = {};     // identifier dispatch
     bool        is_admin = false;
     uint8_t     msg_type = 0;           // MsgType or ControlCode
+    RecapMarker marker = RecapMarker::NONE;   // admin: RECAP_BEGIN | RECAP_END | RECAP_REJECT
     FbFieldPath symbol, venue, exchange_ts, sequence;
+    FbFieldPath recap[kRecapFields];          // `fields:` (markers only), integer paths
 };
 
 enum class FbDispatch : uint8_t { TYPE_FIELD, IDENTIFIER };
@@ -76,6 +80,10 @@ public:
     // Hot. `avail` must be the whole buffer (prefix included when size_prefixed).
     DecodeResult decode(const uint8_t* msg, uint32_t avail, TickHeader& out, SymbolResolver& syms) const noexcept;
 
+    // Cold side of the recap merge (not the live hot path). Reads a marker's
+    // mapped fields. False when the buffer is not a mapped recap marker.
+    bool read_recap_fields(const uint8_t* msg, uint32_t avail, RecapMarkerFields& out) const noexcept;
+
     const std::vector<std::string>& warnings() const { return warnings_; }
     bool symbol_passthrough() const noexcept { return passthrough_; }
     bool symbol_venue_scope() const noexcept { return venue_scope_; }
@@ -88,7 +96,9 @@ private:
         uint8_t     msg_type = 0;
         uint16_t    template_id = 0;
         char        identifier[4] = {};
+        RecapMarker marker = RecapMarker::NONE;
         FbFieldPath symbol, venue, exchange_ts, sequence;
+        FbFieldPath recap[kRecapFields];
     };
     const Entry* find(const uint8_t* msg, uint32_t avail, uint32_t root, uint16_t& template_id) const noexcept;
 

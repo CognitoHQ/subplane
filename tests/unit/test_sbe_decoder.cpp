@@ -317,3 +317,81 @@ TEST_CASE("decoder: symbol_scope venue passes the venue to the resolver") {
     CHECK_FALSE(parse_decoder_config(YAML::Load("{schema: a, fields: {symbol: S, venue: V}, symbol_id_mode: passthrough, symbol_scope: venue, messages: [{template: 1, msg_type: TRADE}]}"), c, err));
     CHECK(err.find("table") != std::string::npos);
 }
+
+TEST_CASE("decoder: recap markers decode as markers and expose their fields") {
+    const char* y = R"(
+type: sbe_routing
+schema: schemas/sample_md.xml
+fields: { symbol: SecurityID, sequence: SeqNum }
+messages:
+  - { template: 1,   msg_type: TRADE }
+  - { template: 101, admin: RECAP_BEGIN,  fields: { request_id: SeqNum, as_of: NewSeq } }
+  - { template: 100, admin: RECAP_END,    fields: { request_id: SeqNum } }
+  - { template: 4,   admin: RECAP_REJECT, fields: { request_id: SeqNum, reason: TransactTime } }
+)";
+    Fixture f(read_sample(), y);
+    REQUIRE(f.cfg.messages[1].marker == RecapMarker::BEGIN);
+    CHECK(f.cfg.messages[1].is_admin);
+
+    Buf b;
+    b.header(16, 101);
+    b.u(77, 8);   // SeqNum -> request_id
+    b.u(5000, 8); // NewSeq -> as_of
+    TickHeader h{};
+    auto r = f.run(b, h);
+    REQUIRE(r.status == DecodeStatus::OK);
+    CHECK(r.marker == RecapMarker::BEGIN);
+    CHECK(h.kind == static_cast<uint8_t>(Kind::BUS_ADMIN));
+    RecapMarkerFields mf;
+    REQUIRE(f.dec.read_recap_fields(b.b.data(), static_cast<uint32_t>(b.b.size()), mf));
+    CHECK(mf.has[RECAP_REQUEST_ID]);
+    CHECK(mf.value[RECAP_REQUEST_ID] == 77);
+    CHECK(mf.has[RECAP_AS_OF]);
+    CHECK(mf.value[RECAP_AS_OF] == 5000);
+    CHECK_FALSE(mf.has[RECAP_SOURCE_EPOCH]);
+
+    // A shorter block from an older publisher: as_of is beyond it, so absent.
+    Buf old;
+    old.header(8, 101);
+    old.u(78, 8);
+    REQUIRE(f.dec.read_recap_fields(old.b.data(), static_cast<uint32_t>(old.b.size()), mf));
+    CHECK(mf.value[RECAP_REQUEST_ID] == 78);
+    CHECK_FALSE(mf.has[RECAP_AS_OF]);
+
+    Buf e;
+    e.header(8, 100);
+    e.u(77, 8);
+    CHECK(f.run(e, h).marker == RecapMarker::END);
+
+    // Not a marker: decodes as before, and has no recap fields.
+    Buf t = trade();
+    r = f.run(t, h);
+    REQUIRE(r.status == DecodeStatus::OK);
+    CHECK(r.marker == RecapMarker::NONE);
+    CHECK_FALSE(f.dec.read_recap_fields(t.b.data(), static_cast<uint32_t>(t.b.size()), mf));
+}
+
+TEST_CASE("decoder: recap marker config errors") {
+    DecoderConfig c;
+    std::string err;
+    auto bad = [&](const char* yaml, const char* expect) {
+        CHECK_FALSE(parse_decoder_config(YAML::Load(yaml), c, err));
+        CHECK_MESSAGE(err.find(expect) != std::string::npos, err);
+    };
+    bad("{schema: a, messages: [{template: 1, msg_type: TRADE, fields: {request_id: SeqNum}}]}", "only valid on RECAP_BEGIN");
+    bad("{schema: a, messages: [{template: 1, admin: HEARTBEAT, fields: {request_id: SeqNum}}]}", "only valid on RECAP_BEGIN");
+    bad("{schema: a, messages: [{template: 1, admin: RECAP_END}]}", "needs 'fields'");
+    bad("{schema: a, messages: [{template: 1, admin: RECAP_END, fields: {as_of: X}}]}", "'request_id' is required");
+    bad("{schema: a, messages: [{template: 1, admin: RECAP_BEGIN, fields: {request_id: X}}]}", "'as_of' is required");
+    bad("{schema: a, messages: [{template: 1, admin: RECAP_END, fields: {request_id: X, nope: Y}}]}", "unknown recap field 'nope'");
+
+    // Field checks need the schema: a char array, and a field the message lacks.
+    SbeSchema schema;
+    REQUIRE(schema.load_string(read_sample(), err));
+    SbeRoutingDecoder dec;
+    REQUIRE(parse_decoder_config(YAML::Load("{schema: a, messages: [{template: 4, admin: RECAP_END, fields: {request_id: Symbol}}]}"), c, err));
+    CHECK_FALSE(dec.init(c, schema, err));
+    CHECK_MESSAGE(err.find("must be an integer field") != std::string::npos, err);
+    REQUIRE(parse_decoder_config(YAML::Load("{schema: a, messages: [{template: 100, admin: RECAP_END, fields: {request_id: NewSeq}}]}"), c, err));
+    CHECK_FALSE(dec.init(c, schema, err));
+}

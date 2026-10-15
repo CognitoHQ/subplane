@@ -197,6 +197,14 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
     if (const uint32_t nid = resolver_.take_new_id(); nid != 0) {
         emit_symbol_mapped(nid, recv_ts);
     }
+    // INTENT: recap markers belong to snapshot-service replies, which reach the
+    // agent through the recap component, not the live stream. One on the live
+    // stream is counted and dropped: apps get the agent's own recap events,
+    // never the publisher's markers.
+    if (r.marker != RecapMarker::NONE) {
+        inc(p.counters.recap_markers);
+        return;
+    }
 
     if (p.framer().seq_source() == SeqSource::MESSAGE_FIELD) {
         if (!check_sequence(p, h.sequence, recv_ts)) return; // duplicate message
@@ -205,7 +213,7 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
     }
 
     if (h.kind == static_cast<uint8_t>(Kind::DATA)) {
-        lvc_.update(h, msg, len);
+        if (p.lvc_enabled) lvc_.update(h, msg, len);
         publish_data(p, h, msg, len);
     } else {
         inc(p.counters.admin);

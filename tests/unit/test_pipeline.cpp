@@ -76,11 +76,11 @@ struct Harness {
     Pipeline pipe;
     std::string ring_path;
 
-    Harness() : pipe("g0", 4242, symbols, lvc) {
+    explicit Harness(const char* yaml = kPartitionYaml) : pipe("g0", 4242, symbols, lvc) {
         std::string err;
         REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE), static_cast<uint8_t>(MsgType::QUOTE)}, 256, err));
         PartitionConfig cfg;
-        REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(kPartitionYaml), 0, data_dir(), cfg, err), err);
+        REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
         auto ft = std::make_unique<FakeTransport>();
         fake = ft.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft)), err);
@@ -454,4 +454,53 @@ TEST_CASE("pipeline: a session without agent_control does not see transport even
     h.pipe.run_once();
     CHECK(drain(rd).empty());
     CHECK(h.part.counters.snapshot().transport_down == 1);
+}
+
+TEST_CASE("pipeline: a recap marker on the live stream is counted and dropped; lvc: off skips the cache") {
+    const std::string yaml = std::string(kPartitionYaml) + R"(lvc: off
+)";
+    std::string marker_yaml = yaml;
+    const std::string from = "    - { template: 101, admin: SEQ_RESET }";
+    marker_yaml.replace(marker_yaml.find(from), from.size(),
+                        "    - { template: 101, admin: RECAP_BEGIN, fields: { request_id: SeqNum, as_of: NewSeq } }");
+    Harness h(marker_yaml.c_str());
+    CHECK_FALSE(h.part.lvc_enabled);
+    FilterSpec spec;
+    spec.all_symbols = true;
+    spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
+    spec.partition_ids = {0};
+    auto s = h.make_session(spec, 1);
+    ShmReader rd;
+    REQUIRE(rd.open(h.ring_path));
+    h.add(s.get());
+    drain(rd);
+
+    Enc e{h.schema()};
+    h.fake->push(packet({e.msg(1, {{"SecurityID", 9}, {"SeqNum", 1}}),
+                         e.msg(101, {{"SeqNum", 77}, {"NewSeq", 5000}}),
+                         e.msg(1, {{"SecurityID", 9}, {"SeqNum", 2}})}), now_ns());
+    h.pipe.run_once();
+    auto recs = drain(rd);
+    REQUIRE(recs.size() == 3); // SYMBOL_MAPPED, trade 1, trade 2: no marker, no gap
+    CHECK(recs[1].hdr.sequence == 1);
+    CHECK(recs[2].hdr.sequence == 2);
+    const auto c = h.part.counters.snapshot();
+    CHECK(c.recap_markers == 1);
+    CHECK(c.gaps == 0);
+    CHECK(c.admin == 0);
+
+    TickHeader lh{};
+    std::vector<uint8_t> lp;
+    CHECK_FALSE(h.lvc.read(1, static_cast<uint8_t>(MsgType::TRADE), lh, lp));
+}
+
+TEST_CASE("partition config: lvc must be on or off") {
+    PartitionConfig cfg;
+    std::string err;
+    REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(kPartitionYaml), 0, data_dir(), cfg, err), err);
+    CHECK(cfg.lvc);
+    CHECK_FALSE(PartitionConfig::parse(YAML::Load(std::string(kPartitionYaml) + "lvc: sometimes\n"), 0, data_dir(), cfg, err));
+    CHECK(err.find("lvc must be on or off") != std::string::npos);
+    REQUIRE(PartitionConfig::parse(YAML::Load(std::string(kPartitionYaml) + "lvc: on\n"), 0, data_dir(), cfg, err));
+    CHECK(cfg.lvc);
 }

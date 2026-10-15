@@ -174,7 +174,7 @@ What it does not do:
 - It never decodes groups, varData or any other field; apps get the original bytes.
 - A routing field inside a group or varData is a startup config error. A field missing from a template is a warning and the value is 0. A field beyond a smaller `blockLength` (older publisher version) reads as absent.
 - Known limitation (found on CME MDP 3.0): incremental refresh messages carry `SecurityID` only inside the `NoMDEntries` group, and one message can update several instruments. Such a bus can be routed by message type today (no `symbol` mapping), not by symbol. Per-entry symbol routing is on the roadmap.
-- Only `type: sbe_routing` exists. Messages are mapped by template id to a data type (`TRADE`, `QUOTE`, `BOOK_UPDATE`, `BOOK_SNAPSHOT`, `OHLCV`, `STATUS`, `DEFINITION`) or an admin type (`HEARTBEAT`, `SEQ_RESET`, `SNAPSHOT_START`, `SNAPSHOT_END`, `TRADING_STATUS`); exactly one of `msg_type` or `admin` per entry.
+- Only `type: sbe_routing` exists. Messages are mapped by template id to a data type (`TRADE`, `QUOTE`, `BOOK_UPDATE`, `BOOK_SNAPSHOT`, `OHLCV`, `STATUS`, `DEFINITION`) or an admin type (`HEARTBEAT`, `SEQ_RESET`, `SNAPSHOT_START`, `SNAPSHOT_END`, `TRADING_STATUS`); exactly one of `msg_type` or `admin` per entry. The admin names `RECAP_BEGIN`, `RECAP_END` and `RECAP_REJECT` map recap reply markers and take a `fields:` block (see "Recap"); `sbe_routing` and `flatbuffers` accept them, `dbn` rejects them because DBN's record types are Databento's fixed set.
 - Known cost: symbol resolution goes through a `SymbolResolver` virtual call per decoded message. This is an exception to the one-indirect-call-per-batch rule, marked TODO in the header.
 
 ## Pipeline threading
@@ -315,7 +315,7 @@ Statuses: `OK`, `BAD_REQUEST`, `NOT_FOUND`, `EXISTS`, `INTERNAL`, `UNSUPPORTED`,
 
 ## Last-value cache
 
-`pipeline/lvc.h`. One slot per (symbol id, tracked data type), where tracked types are data types 1 to 7. Each slot is a seqlock: a version counter, the `TickHeader`, and up to `lvc.max_payload` bytes (default 512). Larger payloads store the header only with the truncated flag. The single writer is the pipeline thread; cold readers (control channel snapshot, HTTP) retry on an odd or changed version. Storage is `max_symbols * 7` slots allocated at startup.
+`pipeline/lvc.h`. One slot per (symbol id, tracked data type), where tracked types are data types 1 to 7. Each slot is a seqlock: a version counter, the `TickHeader`, and up to `lvc.max_payload` bytes (default 512). Larger payloads store the header only with the truncated flag. The single writer is the pipeline thread; cold readers (control channel snapshot, HTTP) retry on an odd or changed version. Storage is `max_symbols * 7` slots allocated at startup. A partition with `lvc: off` writes nothing to the cache, so snapshots and `/lvc` hold no values for its symbols.
 
 Export of the cache into shared memory for direct app reads is planned.
 
@@ -337,14 +337,16 @@ recap:
   retry: { base_ms: 50, max_ms: 5000, jitter: true }
 ```
 
-**Reply markers, in decoder config.** The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
+**Reply markers, in decoder config** (implemented: parsed, validated at startup, and decoded; the merge that uses them is planned). The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
 ```yaml
 messages:
   - { template: 21, admin: RECAP_BEGIN,  fields: { request_id: RequestId, as_of: AsOfSeq, source_epoch: SourceEpoch } }
   - { template: 22, admin: RECAP_END,    fields: { request_id: RequestId } }
   - { template: 23, admin: RECAP_REJECT, fields: { request_id: RequestId, reason: Reason } }
 ```
-Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched.
+`request_id` is required on every marker and `as_of` (the sequence S the snapshot is consistent with) on `RECAP_BEGIN`; `source_epoch` and `reason` are optional. For `sbe_routing` each is a root-block integer field of that template; for `flatbuffers` each is `{path, type}` with an integer type, like a routing field. A marker that arrives on the live stream is counted in `recap_markers` and dropped: apps never see a publisher's markers, only the agent's own recap events. `dbn` has no marker records: Databento's record types are fixed, so a DBN partition cannot take a recap reply.
+
+Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched (planned).
 
 **Upstream request.** subplane's own format, 64 bytes, little-endian, independent of the bus schema; a recap component may translate it to a service's native protocol:
 
@@ -545,8 +547,9 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `name`: required, unique.
 - `transport`: `type` (`udp_multicast` or `udp`), `group` (empty = unicast), `port`, `interface` (local address, empty = any), `rcvbuf` (bytes), `busy_poll_us` (0 = off), `mtu`, `batch` (1 to 64), `kernel_timestamps` (default false), `multicast_loop` (default true), `reuse_port` (default true). `type: tcp_stream` and `type: aeron` take the keys shown under Transport.
 - `framing`: the block described above. Absent means bare concatenation with length from the schema and no sequence.
-- `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`).
+- `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`; recap markers also take `fields`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
+- `lvc` (`on` default | `off`): whether this partition's data feeds the last-value cache. Turn it off for partitions whose values are built from many messages (book updates, accumulated volume), where the last single update would mislead; their state comes from recap (planned) instead.
 - `recap` (planned): the snapshot service for this partition; see "Recap (planned)".
 
 `sessions[]` (reloadable)

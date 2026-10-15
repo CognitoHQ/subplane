@@ -115,6 +115,10 @@ bool parse_dbn_decoder_config(const YAML::Node& node, DbnDecoderConfig& out, std
             } else {
                 const std::string n = m["admin"].as<std::string>();
                 dm.is_admin = true;
+                // INTENT: DBN record types are Databento's fixed set and carry no
+                // reply markers, so a DBN partition cannot take a recap reply.
+                RecapMarker rm;
+                if (parse_recap_marker_name(n, rm)) { err = "decoder.messages: " + n + " is not available for type dbn (DBN has no recap marker records)"; return false; }
                 if (!parse_admin_name(n, dm.admin_code)) { err = "decoder.messages: unknown admin '" + n + "'"; return false; }
             }
             out.messages.push_back(dm);

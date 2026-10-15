@@ -25,6 +25,8 @@ struct TemplateMapping {
     bool     is_admin    = false;
     uint8_t  msg_type    = 0;  // MsgType (data)
     uint8_t  admin_code  = 0;  // ControlCode (admin)
+    RecapMarker marker   = RecapMarker::NONE;   // admin: RECAP_BEGIN | RECAP_END | RECAP_REJECT
+    std::string recap_fields[kRecapFields];     // root-block field names from `fields:` (markers only)
 };
 
 struct DecoderConfig {
@@ -46,6 +48,10 @@ public:
     // Hot. No heap, no exceptions. Does not touch payload_len/ingest_ts/partition_id/seq_tag/flags.
     DecodeResult decode(const uint8_t* msg, uint32_t avail, TickHeader& out, SymbolResolver& syms) const noexcept;
 
+    // Cold side of the recap merge (not the live hot path). Reads a marker's
+    // mapped fields. False when the message is not a mapped recap marker.
+    bool read_recap_fields(const uint8_t* msg, uint32_t avail, RecapMarkerFields& out) const noexcept;
+
     const SbeLengthWalker& walker() const noexcept { return walker_; }
     bool symbol_passthrough() const noexcept { return passthrough_; }
     bool symbol_venue_scope() const noexcept { return venue_scope_; }
@@ -62,8 +68,10 @@ private:
         bool     present = false;
         bool     admin   = false;
         uint8_t  msg_type = 0;
+        RecapMarker marker = RecapMarker::NONE;
         const WalkProgram* prog = nullptr;
         FieldRef symbol, sequence, exchange_ts, venue;
+        FieldRef recap[kRecapFields];
     };
 
     std::vector<Entry>  by_template_;

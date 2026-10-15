@@ -53,6 +53,14 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
         out.decoder_node = YAML::Clone(node["decoder"]);
         out.heartbeat_timeout_ms = node["heartbeat_timeout_ms"].as<uint32_t>(2000u);
         out.dup_window = node["dup_window"].as<uint64_t>(1024u);
+        if (const auto l = node["lvc"]) {
+            bool on = true;
+            if (!l.IsScalar() || !YAML::convert<bool>::decode(l, on)) {
+                err = "partition " + out.name + ": lvc must be on or off";
+                return false;
+            }
+            out.lvc = on;
+        }
     } catch (const YAML::Exception& e) {
         err = "partition " + out.name + ": " + e.what();
         return false;
@@ -63,6 +71,7 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
 bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_ptr<Transport> transport_override) {
     cfg_ = cfg;
     dup_window = cfg.dup_window;
+    lvc_enabled = cfg.lvc;
     if (cfg_.id >= 64) {
         err = "partition " + cfg_.name + ": at most 64 partitions per agent (id " + std::to_string(cfg_.id) + ")";
         return false;

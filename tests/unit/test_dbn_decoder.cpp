@@ -146,6 +146,8 @@ TEST_CASE("dbn: config errors") {
     CHECK(err.find("duplicate") != std::string::npos);
     CHECK_FALSE(parse_dbn_decoder_config(YAML::Load("{type: dbn, schema: x.xml}"), cfg, err));
     CHECK_FALSE(parse_dbn_decoder_config(YAML::Load("{type: dbn, symbol_id_mode: dense}"), cfg, err));
+    CHECK_FALSE(parse_dbn_decoder_config(YAML::Load("{type: dbn, messages: [{rtype: SYSTEM, admin: RECAP_BEGIN}]}"), cfg, err));
+    CHECK(err.find("not available for type dbn") != std::string::npos);
     CHECK(parse_dbn_decoder_config(YAML::Load("{type: dbn}"), cfg, err));
     CHECK(cfg.messages.size() == dbn_default_mappings().size());
 }

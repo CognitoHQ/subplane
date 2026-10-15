@@ -199,3 +199,52 @@ TEST_CASE("flatbuffers: symbol_scope venue needs an integer symbol and a venue p
         {type: 2, msg_type: QUOTE, symbol: {path: [3, 0, 0], type: u32}, venue: {path: [3, 0, 1], type: u16}}]})"), c, err), err);
     CHECK(c.venue_scope);
 }
+
+TEST_CASE("flatbuffers: recap markers decode as markers and expose their fields") {
+    // The fixture's heartbeat (type 3) stands in for a RECAP_BEGIN: its sequence
+    // and timestamp fields play request_id and as_of.
+    const char* y = R"(
+type: flatbuffers
+dispatch: { type_field: { path: [2], type: u8 } }
+messages:
+  - { type: 1, msg_type: TRADE, symbol: { path: [3, 0, 0], type: u32 }, sequence: { path: [0], type: u64 } }
+  - { type: 3, admin: RECAP_BEGIN, fields: { request_id: { path: [0], type: u64 }, as_of: { path: [1], type: u64 } } }
+)";
+    std::string err;
+    FlatbuffersDecoder d = make(y, err);
+    REQUIRE_MESSAGE(err.empty(), err);
+    CHECK(d.warnings().empty());
+    auto msgs = fb_fixture_messages();
+    auto exp = fb_fixture_expected();
+    CountingResolver syms;
+    int markers = 0;
+    for (size_t i = 0; i < msgs.size(); ++i) {
+        TickHeader h{};
+        const auto r = d.decode(msgs[i].data(), static_cast<uint32_t>(msgs[i].size()), h, syms);
+        RecapMarkerFields mf;
+        const bool is_marker = d.read_recap_fields(msgs[i].data(), static_cast<uint32_t>(msgs[i].size()), mf);
+        if (exp[i].kind == 3) {
+            ++markers;
+            REQUIRE(r.status == DecodeStatus::OK);
+            CHECK(r.marker == RecapMarker::BEGIN);
+            CHECK(h.kind == static_cast<uint8_t>(Kind::BUS_ADMIN));
+            REQUIRE(is_marker);
+            CHECK(mf.value[RECAP_REQUEST_ID] == exp[i].seq);
+            CHECK(mf.value[RECAP_AS_OF] == exp[i].ts);
+            CHECK_FALSE(mf.has[RECAP_REASON]);
+        } else {
+            CHECK(r.marker == RecapMarker::NONE);
+            CHECK_FALSE(is_marker);
+        }
+    }
+    CHECK(markers > 0);
+
+    FlatbuffersDecoderConfig cfg;
+    CHECK_FALSE(parse_flatbuffers_decoder_config(YAML::Load("{dispatch: {type_field: {path: [2], type: u8}}, messages: [{type: 3, admin: RECAP_END}]}"), cfg, err));
+    CHECK_MESSAGE(err.find("needs 'fields'") != std::string::npos, err);
+    CHECK_FALSE(parse_flatbuffers_decoder_config(YAML::Load("{dispatch: {type_field: {path: [2], type: u8}}, messages: [{type: 3, admin: RECAP_BEGIN, fields: {request_id: {path: [0], type: u64}}}]}"), cfg, err));
+    CHECK_MESSAGE(err.find("'as_of' is required") != std::string::npos, err);
+    CHECK_FALSE(parse_flatbuffers_decoder_config(YAML::Load("{dispatch: {type_field: {path: [2], type: u8}}, messages: [{type: 3, admin: RECAP_END, fields: {request_id: {path: [0], type: string}}}]}"), cfg, err));
+    CHECK_FALSE(parse_flatbuffers_decoder_config(YAML::Load("{dispatch: {type_field: {path: [2], type: u8}}, messages: [{type: 1, msg_type: TRADE, fields: {request_id: {path: [0], type: u64}}}]}"), cfg, err));
+    CHECK_MESSAGE(err.find("only valid on RECAP_BEGIN") != std::string::npos, err);
+}

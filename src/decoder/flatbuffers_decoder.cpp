@@ -129,9 +129,26 @@ bool parse_flatbuffers_decoder_config(const YAML::Node& node, FlatbuffersDecoder
             } else {
                 const std::string n = m["admin"].as<std::string>();
                 spec.is_admin = true;
-                if (!parse_admin_name(n, spec.msg_type)) { err = "decoder.messages: unknown admin '" + n + "'"; return false; }
+                if (!parse_recap_marker_name(n, spec.marker) && !parse_admin_name(n, spec.msg_type)) {
+                    err = "decoder.messages: unknown admin '" + n + "'"; return false;
+                }
             }
             const std::string pre = "decoder.messages " + key + " ";
+            if (const auto rf = m["fields"]) {
+                if (spec.marker == RecapMarker::NONE) { err = pre + "'fields' is only valid on RECAP_BEGIN, RECAP_END and RECAP_REJECT"; return false; }
+                if (!rf.IsMap()) { err = pre + "fields must be a map"; return false; }
+                bool has[kRecapFields] = {};
+                for (const auto& kv : rf) {
+                    const std::string k = kv.first.as<std::string>();
+                    RecapField f;
+                    if (!parse_recap_field_name(k, f)) { err = pre + "fields: unknown recap field '" + k + "' (request_id, as_of, source_epoch, reason)"; return false; }
+                    if (!parse_path(kv.second, pre + "fields." + k, false, spec.recap[f], err)) return false;
+                    has[f] = true;
+                }
+                if (const char* miss = recap_missing_field(spec.marker, has)) { err = pre + "fields: '" + miss + "' is required"; return false; }
+            } else if (spec.marker != RecapMarker::NONE) {
+                err = pre + "a recap marker needs 'fields' (at least request_id)"; return false;
+            }
             if (m["symbol"]      && !parse_path(m["symbol"],      pre + "symbol",      table, spec.symbol,      err)) return false;
             if (m["venue"]       && !parse_path(m["venue"],       pre + "venue",       false, spec.venue,       err)) return false;
             if (m["exchange_ts"] && !parse_path(m["exchange_ts"], pre + "exchange_ts", false, spec.exchange_ts, err)) return false;
@@ -167,6 +184,8 @@ bool FlatbuffersDecoder::init(const FlatbuffersDecoderConfig& cfg, std::string& 
         e.present = true;
         e.admin = m.is_admin;
         e.msg_type = m.msg_type;
+        e.marker = m.marker;
+        for (uint8_t f = 0; f < kRecapFields; ++f) e.recap[f] = m.recap[f];
         std::memcpy(e.identifier, m.identifier, 4);
         e.symbol = m.symbol; e.venue = m.venue; e.exchange_ts = m.exchange_ts; e.sequence = m.sequence;
         // INTENT: template_id is the dispatch value for type_field dispatch and
@@ -175,7 +194,7 @@ bool FlatbuffersDecoder::init(const FlatbuffersDecoderConfig& cfg, std::string& 
         e.template_id = dispatch_ == FbDispatch::TYPE_FIELD ? static_cast<uint16_t>(m.type) : static_cast<uint16_t>(i + 1);
         if (dispatch_ == FbDispatch::TYPE_FIELD && type_field_.type == FbScalar::U8 && m.type < 256)
             by_u8_[m.type] = static_cast<int16_t>(i);
-        if (m.symbol.depth == 0) warnings_.push_back("message " + std::to_string(e.template_id) + " has no symbol path; routed by type only");
+        if (m.symbol.depth == 0 && m.marker == RecapMarker::NONE) warnings_.push_back("message " + std::to_string(e.template_id) + " has no symbol path; routed by type only");
         entries_.push_back(e);
     }
     return true;
@@ -231,6 +250,7 @@ DecodeResult FlatbuffersDecoder::decode(const uint8_t* msg, uint32_t avail, Tick
     out.wire_format = static_cast<uint8_t>(WireFormat::FLATBUFFERS);
     out.kind = static_cast<uint8_t>(e->admin ? Kind::BUS_ADMIN : Kind::DATA);
     out.msg_type = e->msg_type;
+    r.marker = e->marker;
     uint64_t v;
     // INTENT: venue before symbol; symbol_scope: venue interns with it.
     out.venue_id    = (e->venue.depth != 0 && read_int(s, root, e->venue, v)) ? static_cast<uint16_t>(v) : 0;
@@ -248,6 +268,23 @@ DecodeResult FlatbuffersDecoder::decode(const uint8_t* msg, uint32_t avail, Tick
     out.sequence    = (e->sequence.depth != 0 && read_int(s, root, e->sequence, v)) ? v : 0;
     r.status = DecodeStatus::OK;
     return r;
+}
+
+bool FlatbuffersDecoder::read_recap_fields(const uint8_t* msg, uint32_t avail, RecapMarkerFields& out) const noexcept {
+    out = RecapMarkerFields{};
+    if (avail < prefix_ + 8) return false;
+    const fbw::Buf s{msg, avail};
+    uint32_t root;
+    if (!fbw::root(s, prefix_, root)) return false;
+    uint16_t template_id = 0;
+    const Entry* e = find(msg, avail, root, template_id);
+    if (!e || e->marker == RecapMarker::NONE) return false;
+    for (uint8_t i = 0; i < kRecapFields; ++i) {
+        if (e->recap[i].depth == 0) continue;
+        uint64_t v;
+        if (read_int(s, root, e->recap[i], v)) { out.value[i] = v; out.has[i] = true; }
+    }
+    return true;
 }
 
 } // namespace subplane

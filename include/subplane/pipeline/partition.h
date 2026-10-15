@@ -34,6 +34,10 @@ struct PartitionConfig {
     std::string base_dir;             // for resolving relative schema paths
     uint32_t    heartbeat_timeout_ms = 2000;
     uint64_t    dup_window = 1024;
+    // lvc: on|off. Off for partitions whose values are built up from many
+    // messages (books, accumulated volume): those come from recap instead, and a
+    // last value of one update would mislead.
+    bool        lvc = true;
 
     // Parses one entry of the `partitions:` sequence. `id` is the index.
     static bool parse(const YAML::Node& node, uint16_t id, const std::string& base_dir,
@@ -111,6 +115,7 @@ public:
     // Backward jumps smaller than this are duplicates; larger ones mean the
     // publisher restarted its sequence and we resync (counted as seq_resets).
     uint64_t          dup_window = 1024;
+    bool              lvc_enabled = true;    // from config `lvc`
     uint64_t          last_seq = 0;
     uint64_t          last_rx_ns = 0;
     PartitionState    state = PartitionState::INIT;
