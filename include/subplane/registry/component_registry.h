@@ -14,6 +14,7 @@
 namespace subplane {
 
 class Transport;
+class RecapTransport;
 
 template <class Iface>
 struct ComponentEntry {
@@ -22,6 +23,8 @@ struct ComponentEntry {
 };
 
 std::span<const ComponentEntry<Transport>> transport_components();
+// Recap components, selected by a partition's `recap.type`.
+std::span<const ComponentEntry<RecapTransport>> recap_components();
 
 // Decoders are not constructed through a factory (they are held by value in
 // Partition to avoid per-message virtual dispatch); this is the list of valid

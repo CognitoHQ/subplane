@@ -19,6 +19,11 @@ inline void inc(std::atomic<uint64_t>& c, uint64_t n = 1) noexcept {
     X(gaps) X(dups) X(admin) X(degraded_events) X(decode_errors) X(malformed) X(truncated) X(transport_errors) X(seq_resets) \
     X(transport_down) X(transport_up) X(recap_markers)
 
+// Written only by the recap manager thread (one writer per counter, as above).
+#define SUBPLANE_RECAP_COUNTERS(X) \
+    X(recap_requests) X(recap_coalesced) X(recap_replies) X(recap_rejects) X(recap_timeouts) \
+    X(recap_overflows) X(recap_send_failed) X(recap_stray) X(recap_cancelled) X(recap_no_slab)
+
 #define SUBPLANE_SESSION_COUNTERS(X) X(published) X(filtered) X(ring_overruns) X(publish_failed)
 
 struct alignas(64) PartitionCounters {
@@ -50,6 +55,24 @@ struct alignas(64) PartitionCounters {
         SUBPLANE_PARTITION_COUNTERS(X)
 #undef X
         o += "\"last_unknown_template\":" + std::to_string(s.last_unknown_template) + "}";
+        return o;
+    }
+};
+
+struct alignas(64) RecapCounters {
+#define X(n) std::atomic<uint64_t> n{0};
+    SUBPLANE_RECAP_COUNTERS(X)
+#undef X
+    std::atomic<uint64_t> inflight{0};  // gauge
+    std::atomic<uint64_t> queued{0};    // gauge: waiting for an in-flight slot or a retry
+
+    std::string to_json() const {
+        std::string o = "{";
+#define X(n) o += "\"" #n "\":" + std::to_string(n.load(std::memory_order_relaxed)) + ",";
+        SUBPLANE_RECAP_COUNTERS(X)
+#undef X
+        o += "\"recap_inflight\":" + std::to_string(inflight.load(std::memory_order_relaxed)) +
+             ",\"recap_queued\":" + std::to_string(queued.load(std::memory_order_relaxed)) + "}";
         return o;
     }
 };

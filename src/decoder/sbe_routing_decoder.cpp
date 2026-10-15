@@ -288,6 +288,7 @@ bool SbeRoutingDecoder::read_recap_fields(const uint8_t* msg, uint32_t avail, Re
     const Entry& e = by_template_[tid];
     const uint64_t blk = sbe_read_uint(msg + hdr_.block_length_off, hdr_.block_length_size, little_);
     if (static_cast<uint64_t>(hdr_.size) + blk > avail) return false;
+    out.marker = e.marker;
     const uint8_t* root = msg + hdr_.size;
     for (uint8_t i = 0; i < kRecapFields; ++i) {
         const FieldRef& f = e.recap[i];

@@ -53,6 +53,15 @@ public:
     bool read_recap_fields(const uint8_t* msg, uint32_t avail, RecapMarkerFields& out) const noexcept;
 
     const SbeLengthWalker& walker() const noexcept { return walker_; }
+    // Cold. Whether a template maps this marker; whether any symbol is a char array.
+    bool maps_marker(RecapMarker m) const noexcept {
+        for (const auto& e : by_template_) if (e.present && e.marker == m) return true;
+        return false;
+    }
+    bool has_string_symbol() const noexcept {
+        for (const auto& e : by_template_) if (e.present && e.symbol.end != 0 && e.symbol.is_str) return true;
+        return false;
+    }
     bool symbol_passthrough() const noexcept { return passthrough_; }
     bool symbol_venue_scope() const noexcept { return venue_scope_; }
     const std::vector<std::string>& warnings() const { return warnings_; }

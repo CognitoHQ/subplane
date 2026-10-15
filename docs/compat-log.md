@@ -20,6 +20,7 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 
 | Date | Repo / PR | Change | Audience | Impact | Migration |
 |---|---|---|---|---|---|
+| 2026-10-15 | subplane (3.3) | Partition `recap:` block (`type: aeron`, request/response channels, `timeout_ms`, `max_inflight`, `retry`, `reply_slabs`, `reply_slab_bytes`); the 64-byte recap request `RecapRequestWire` (`include/subplane/recap/recap_request.h`, version 1) that snapshot services receive; the reply contract (contiguous BEGIN, records, END on an Aeron response channel); recap counters in `/metrics` (`recap`) and `/partitions` (`recap`) | config, publisher (snapshot services), operator | additive: no existing config or app changes. The request layout is now a contract: a `<service>-snap` written against version 1 must keep working. | none |
 | 2026-10-15 | subplane (3.2) | Config: decoder `admin:` names `RECAP_BEGIN`, `RECAP_END`, `RECAP_REJECT` with a `fields:` block (`sbe_routing`, `flatbuffers`; `dbn` rejects them); partition `lvc: on\|off` (default on). New partition counter `recap_markers` (in `/metrics`). | config, operator | additive: existing configs load unchanged. A stream that already carried messages mapped as recap markers would now see them dropped from the ring, but nothing could map those names before. | none |
 | 2026-10-15 | subplane (3.1) | Control codes 0xA7 `TRANSPORT_DOWN` and 0xA8 `TRANSPORT_UP` with `TransportStateEvent` (24 bytes); new partition counters `transport_down`, `transport_up` (in `/metrics`); `/partitions` gains `transport`, `transport_down`, `transport_up` | app, operator | additive. Sessions with `agent_control` now receive these events, including a `TRANSPORT_UP` when a source first appears and a `TRANSPORT_DOWN` at start when an Aeron or TCP source is not there yet | Apps that switch on control codes must skip unknown ones (the SDK examples do). JSON readers of `/partitions` see three more fields. |
 | 2026-10-14 | subplane #8 | Recap and relay contract documented: planned control codes 0xA7-0xAD, `recap:` block, reply markers, 64-byte upstream request, INV-017 | app, publisher, config | none yet (planned, docs only) | Codes 0xA7-0xAD and 0xAE are reserved; nothing else may use them. |
@@ -36,8 +37,7 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 ## Known upcoming entries (from the active plans)
 - **Recap:**
   - events 0xA9-0xAD;
-  - the `recap` session flag in the `CtlSessionReq` pad byte (additive: old clients send 0);
-  - the `recap:` partition block.
+  - the `recap` session flag in the `CtlSessionReq` pad byte (additive: old clients send 0).
 - **Canonical schema v2:**
   - `Heartbeat` gains `SourceEpoch` (additive under SBE rules: block length grows, old readers skip it);
   - templates 21-23.

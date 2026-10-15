@@ -279,6 +279,7 @@ bool FlatbuffersDecoder::read_recap_fields(const uint8_t* msg, uint32_t avail, R
     uint16_t template_id = 0;
     const Entry* e = find(msg, avail, root, template_id);
     if (!e || e->marker == RecapMarker::NONE) return false;
+    out.marker = e->marker;
     for (uint8_t i = 0; i < kRecapFields; ++i) {
         if (e->recap[i].depth == 0) continue;
         uint64_t v;

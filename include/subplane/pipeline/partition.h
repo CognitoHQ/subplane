@@ -11,6 +11,8 @@
 #include "subplane/decoder/sbe_routing_decoder.h"
 #include "subplane/decoder/sbe_schema.h"
 #include "subplane/framing/framing.h"
+#include "subplane/recap/recap_config.h"
+#include "subplane/recap/recap_transport.h"
 #include "subplane/transport/transport.h"
 
 #include <cstdint>
@@ -31,6 +33,7 @@ struct PartitionConfig {
     YAML::Node  transport_cfg;
     YAML::Node  framing_node;
     YAML::Node  decoder_node;
+    YAML::Node  recap_node;           // optional `recap:` block (snapshot service)
     std::string base_dir;             // for resolving relative schema paths
     uint32_t    heartbeat_timeout_ms = 2000;
     uint64_t    dup_window = 1024;
@@ -56,7 +59,8 @@ public:
     // Cold. Loads the schema, builds decoder + framer, constructs the transport
     // via the registry (or uses `transport_override` when given, for tests).
     bool build(const PartitionConfig& cfg, std::string& err,
-               std::unique_ptr<Transport> transport_override = nullptr);
+               std::unique_ptr<Transport> transport_override = nullptr,
+               std::unique_ptr<RecapTransport> recap_override = nullptr);
     bool open(std::string& err);   // opens the transport
     void close() noexcept;
 
@@ -105,12 +109,28 @@ public:
             default:                       return sbe_decoder_.decode(msg, avail, out, syms);
         }
     }
+    // Cold (recap manager thread). Reads a recap marker's fields; false when
+    // the message is not a mapped marker. dbn has no markers.
+    bool read_recap_fields(const uint8_t* msg, uint32_t avail, RecapMarkerFields& out) const noexcept {
+        switch (decoder_type_) {
+            case DecoderType::DBN:         return false;
+            case DecoderType::FLATBUFFERS: return fb_decoder_.read_recap_fields(msg, avail, out);
+            default:                       return sbe_decoder_.read_recap_fields(msg, avail, out);
+        }
+    }
+    // Recap (cold). has_recap() when the partition declares a snapshot service;
+    // the recap manager takes the component at agent start.
+    bool has_recap() const noexcept { return has_recap_; }
+    const RecapConfig& recap_config() const noexcept { return recap_cfg_; }
+    std::unique_ptr<RecapTransport> take_recap_transport() noexcept { return std::move(recap_transport_); }
+
     Transport& transport() noexcept { return *transport_; }
     bool has_transport() const noexcept { return transport_ != nullptr; }
     const PartitionConfig& config() const noexcept { return cfg_; }
 
     // Hot state (pipeline thread only, except counters which are read cold).
     PartitionCounters counters;
+    RecapCounters     recap_counters;        // written by the recap manager thread
     uint64_t          expected_seq = 0;      // 0 = unknown, resync on next
     // Backward jumps smaller than this are duplicates; larger ones mean the
     // publisher restarted its sequence and we resync (counted as seq_resets).
@@ -140,6 +160,10 @@ private:
     FlatbuffersDecoder         fb_decoder_;
     Framer                     framer_;
     std::unique_ptr<Transport> transport_;
+    bool                       has_recap_ = false;
+    RecapConfig                recap_cfg_;
+    std::unique_ptr<RecapTransport> recap_transport_;
+    bool build_recap(std::unique_ptr<RecapTransport> recap_override, std::string& err);
 };
 
 } // namespace subplane

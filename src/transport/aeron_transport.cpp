@@ -1,5 +1,7 @@
 #include "subplane/transport/aeron_transport.h"
 
+#include "aeron_util.h"
+
 #include "subplane/core/clock.h"
 
 #include <aeronc.h>
@@ -78,30 +80,12 @@ bool AeronTransport::open(std::string& err) {
 
     arena_.assign(static_cast<size_t>(cfg_.batch) * cfg_.max_message, 0);
 
-    if (aeron_context_init(&ctx_) < 0) { err = std::string("aeron context: ") + aeron_errmsg(); close(); return false; }
-    if (!cfg_.aeron_dir.empty() && aeron_context_set_dir(ctx_, cfg_.aeron_dir.c_str()) < 0) {
-        err = std::string("aeron dir: ") + aeron_errmsg(); close(); return false;
-    }
-    aeron_context_set_driver_timeout_ms(ctx_, cfg_.driver_timeout_ms);
-    aeron_context_set_client_name(ctx_, "subplaned");
-    aeron_context_set_error_handler(ctx_, &AeronTransport::on_client_error, this);
-    if (aeron_init(&client_, ctx_) < 0) { err = std::string("aeron init (is the media driver running?): ") + aeron_errmsg(); close(); return false; }
-    if (aeron_start(client_) < 0) { err = std::string("aeron start: ") + aeron_errmsg(); close(); return false; }
-
-    aeron_async_add_subscription_t* async = nullptr;
-    if (aeron_async_add_subscription(&async, client_, cfg_.channel.c_str(), cfg_.stream_id,
-                                     &AeronTransport::on_available_image, this,
-                                     &AeronTransport::on_unavailable_image, this) < 0) {
-        err = std::string("aeron add subscription: ") + aeron_errmsg(); close(); return false;
-    }
-    const uint64_t deadline = now_mono_ns() + cfg_.driver_timeout_ms * 1000000ull;
-    for (;;) {
-        const int rc = aeron_async_add_subscription_poll(&sub_, async);
-        if (rc < 0) { err = std::string("aeron subscription: ") + aeron_errmsg(); close(); return false; }
-        if (rc > 0 && sub_) break;
-        if (now_mono_ns() > deadline) { err = "aeron subscription: timed out waiting for the media driver"; close(); return false; }
-        sched_yield();
-    }
+    if (!aeron_util::open_client(cfg_.aeron_dir, cfg_.driver_timeout_ms, "subplaned", &AeronTransport::on_client_error, this,
+                                 ctx_, client_, err)) { close(); return false; }
+    sub_ = aeron_util::add_subscription(client_, cfg_.channel, cfg_.stream_id,
+                                        &AeronTransport::on_available_image, this,
+                                        &AeronTransport::on_unavailable_image, this, cfg_.driver_timeout_ms, err);
+    if (!sub_) { close(); return false; }
     if (aeron_fragment_assembler_create(&assembler_, &AeronTransport::on_fragment, this) < 0) {
         err = std::string("aeron fragment assembler: ") + aeron_errmsg(); close(); return false;
     }

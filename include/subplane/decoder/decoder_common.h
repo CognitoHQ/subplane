@@ -27,8 +27,9 @@ enum class RecapMarker : uint8_t { NONE = 0, BEGIN = 1, END = 2, REJECT = 3 };
 enum RecapField : uint8_t { RECAP_REQUEST_ID = 0, RECAP_AS_OF = 1, RECAP_SOURCE_EPOCH = 2, RECAP_REASON = 3, kRecapFields = 4 };
 
 struct RecapMarkerFields {
-    uint64_t value[kRecapFields] = {};
-    bool     has[kRecapFields] = {};
+    RecapMarker marker = RecapMarker::NONE;
+    uint64_t    value[kRecapFields] = {};
+    bool        has[kRecapFields] = {};
 };
 
 struct DecodeResult {

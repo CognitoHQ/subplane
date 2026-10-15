@@ -51,6 +51,7 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
             return false;
         }
         out.decoder_node = YAML::Clone(node["decoder"]);
+        if (node["recap"].IsDefined()) out.recap_node = YAML::Clone(node["recap"]);
         out.heartbeat_timeout_ms = node["heartbeat_timeout_ms"].as<uint32_t>(2000u);
         out.dup_window = node["dup_window"].as<uint64_t>(1024u);
         if (const auto l = node["lvc"]) {
@@ -68,7 +69,8 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
     return true;
 }
 
-bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_ptr<Transport> transport_override) {
+bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_ptr<Transport> transport_override,
+                      std::unique_ptr<RecapTransport> recap_override) {
     cfg_ = cfg;
     dup_window = cfg.dup_window;
     lvc_enabled = cfg.lvc;
@@ -147,6 +149,7 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
         return false;
     }
 
+    if (!build_recap(std::move(recap_override), err)) return false;
     if (transport_override) {
         transport_ = std::move(transport_override);
     } else {
@@ -156,6 +159,42 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
             return false;
         }
     }
+    return true;
+}
+
+bool Partition::build_recap(std::unique_ptr<RecapTransport> recap_override, std::string& err) {
+    has_recap_ = false;
+    if (!cfg_.recap_node.IsDefined() || cfg_.recap_node.IsNull()) return true;
+    const std::string pre = "partition " + cfg_.name + ": recap: ";
+    if (!RecapConfig::parse(cfg_.recap_node, recap_cfg_, err)) { err = pre + err; return false; }
+    // INTENT: the reply comes back in the stream's own schema between markers
+    // the decoder must recognise, and the request names the instrument as a
+    // u64; a partition that cannot do both cannot recap.
+    bool begin = false, end = false, str = false;
+    switch (decoder_type_) {
+        case DecoderType::DBN:
+            err = pre + "type dbn cannot recap (DBN has no recap marker records)";
+            return false;
+        case DecoderType::FLATBUFFERS:
+            begin = fb_decoder_.maps_marker(RecapMarker::BEGIN);
+            end = fb_decoder_.maps_marker(RecapMarker::END);
+            str = fb_decoder_.has_string_symbol();
+            break;
+        default:
+            begin = sbe_decoder_.maps_marker(RecapMarker::BEGIN);
+            end = sbe_decoder_.maps_marker(RecapMarker::END);
+            str = sbe_decoder_.has_string_symbol();
+            break;
+    }
+    if (!begin || !end) { err = pre + "the decoder must map RECAP_BEGIN and RECAP_END (decoder.messages, admin: RECAP_BEGIN)"; return false; }
+    if (str) { err = pre + "needs an integer symbol field; the request names the instrument as a u64"; return false; }
+    if (recap_override) {
+        recap_transport_ = std::move(recap_override);
+    } else {
+        recap_transport_ = make_component(recap_components(), recap_cfg_.type, cfg_.recap_node, err);
+        if (!recap_transport_) { err = pre + err; return false; }
+    }
+    has_recap_ = true;
     return true;
 }
 

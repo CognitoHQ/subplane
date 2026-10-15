@@ -29,6 +29,7 @@ class Partition;
 class Pipeline;
 class SessionManager;
 class ControlServer;
+class RecapManager;
 
 class Agent {
 public:
@@ -76,6 +77,7 @@ private:
     std::vector<int>                group_cpus_;
     std::unique_ptr<SessionManager> sessions_;
     std::unique_ptr<ControlServer>  control_;
+    std::unique_ptr<RecapManager>   recap_;
 
     std::atomic<bool> running_;
     uint64_t epoch_ = 0;

@@ -62,6 +62,9 @@ add_library(subplane_core STATIC
     src/framing/framing.cpp
     src/transport/udp_multicast.cpp
     src/transport/tcp_stream.cpp
+    src/recap/recap_config.cpp
+    src/recap/recap_manager.cpp
+    src/recap/recap_status.cpp
     src/registry/builtin_components.cpp
     src/pipeline/session.cpp
     src/pipeline/partition.cpp
@@ -76,7 +79,7 @@ target_link_libraries(subplane_core
     PRIVATE subplane_warnings pugixml
 )
 if(SUBPLANE_WITH_AERON)
-    target_sources(subplane_core PRIVATE src/transport/aeron_transport.cpp)
+    target_sources(subplane_core PRIVATE src/transport/aeron_transport.cpp src/transport/aeron_util.cpp src/recap/aeron_recap.cpp)
     target_link_libraries(subplane_core PUBLIC subplane_aeron)
 endif()
 

@@ -321,21 +321,38 @@ Export of the cache into shared memory for direct app reads is planned.
 
 **Scope.** The cache is for self-contained values only: the newest message for a key is the whole state for that key (instrument definition, trading status, last quote, last trade). Books and accumulated values (volume, VWAP) are built from many messages with the publisher's rules; they are never cached or computed here and come from recap. A per-partition switch to turn the cache off where a snapshot service exists is planned.
 
-## Recap (planned)
+## Recap (partly implemented)
 
 Design: `docs/context/project-vision.md`, "Recovery: recap". Contract summary:
 
-**Declaring a snapshot service.** A partition gains an optional block; the recap component is compiled in and selected by `type`, like a transport:
+**Declaring a snapshot service** (implemented: config, component and manager; the pipeline merge is planned). A partition gains an optional `recap:` block; the recap component is compiled in and selected by `type`, like a transport (`recap_components()` in `src/registry/builtin_components.cpp`):
 ```yaml
 recap:
   type: aeron                       # v1; tcp for buses that are not Aeron later
+  aeron_dir: ""                     # media driver directory; empty = Aeron default
   request:  { channel: "aeron:udp?endpoint=snap-host:40500", stream_id: 1101 }
   response: { channel: "aeron:udp?control-mode=response|control=snap-host:40501", stream_id: 1102 }
-  timeout_ms: 2000
-  max_inflight: 64                  # outstanding requests per partition
-  hold_bytes: 4194304               # preallocated hold arena per partition
-  retry: { base_ms: 50, max_ms: 5000, jitter: true }
+  timeout_ms: 2000                  # per request
+  max_inflight: 64                  # outstanding requests per partition; more wait in FIFO order
+  retry: { base_ms: 50, max_ms: 5000 }   # exponential, jittered within [cap/2, cap]
+  reply_slabs: 8                    # preallocated reply buffers per partition
+  reply_slab_bytes: 1048576         # the largest reply the agent accepts
+  hold_bytes: 4194304               # (planned, 3.4) preallocated hold arena per partition
 ```
+A partition can recap only if its decoder maps `RECAP_BEGIN` and `RECAP_END`, its symbol is an integer (the request names the instrument as a u64), and it is not `dbn`; otherwise startup fails with the reason.
+
+**The `aeron` component.** It adds a subscription on the response channel (an Aeron response channel, `control-mode=response` with `control=` the service's response endpoint), then a request publication carrying `response-correlation-id=<that subscription's registration id>`. The service answers on a response publication made with the requesting image's correlation id, so each agent receives only its own replies. The agent's request channel must not set `response-correlation-id` itself.
+
+**The recap manager** (`recap/recap_manager.h`): one cold thread per agent, started after the control server when any partition has a recap block. Each pipeline group talks to it through three SPSC queues: requests (`REQUEST` or `CANCEL` for a symbol, produced only by the pipeline, which owns who waits), replies, and slab releases. Per partition it:
+- coalesces: one upstream request per symbol however many sessions ask (`recap_coalesced`);
+- numbers requests per agent epoch (`agent_id` = epoch) and fills `instrument`/`venue` from the symbol table's reverse lookup (or the raw id in passthrough mode) and `last_seq_seen` from the partition;
+- limits outstanding requests to `max_inflight`, the rest wait in FIFO order;
+- on a timeout, a rejection, an overflow or a failed send, reports the failure to the pipeline and retries after the backoff, for as long as a session waits (the pipeline sends `CANCEL` when the last waiter leaves; there is no attempt limit);
+- assembles a reply into a free slab: each response fragment is split with the partition's own framing, `RECAP_BEGIN` (known request id, with `as_of`) opens it, records are stored as a u32 little-endian length plus the message bytes, `RECAP_END` closes it and the slab goes to the pipeline until it is released. A reply larger than `reply_slab_bytes` is an overflow (logged, at most every 10 s); with no free slab the reply is skipped and times out.
+
+**Reply contract for a snapshot service.** A reply is `RECAP_BEGIN`, the records, `RECAP_END`, sent contiguously on the response stream (replies to different requests are not interleaved) and framed like the live stream. `RECAP_REJECT` (with the request id and an optional reason) replaces a reply. Messages outside a reply, unknown request ids and late replies are counted (`recap_stray`) and dropped.
+
+**Counters** (per recap partition, in `/metrics` under `recap` and in `/partitions` as `recap`): `recap_requests`, `recap_coalesced`, `recap_replies`, `recap_rejects`, `recap_timeouts`, `recap_overflows`, `recap_send_failed`, `recap_stray`, `recap_cancelled`, `recap_no_slab`, and the gauges `recap_inflight`, `recap_queued`.
 
 **Reply markers, in decoder config** (implemented: parsed, validated at startup, and decoded; the merge that uses them is planned). The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
 ```yaml
@@ -348,7 +365,7 @@ messages:
 
 Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched (planned).
 
-**Upstream request.** subplane's own format, 64 bytes, little-endian, independent of the bus schema; a recap component may translate it to a service's native protocol:
+**Upstream request** (implemented: `recap/recap_request.h`, `RecapRequestWire`). subplane's own format, 64 bytes, little-endian, independent of the bus schema; a recap component may translate it to a service's native protocol:
 
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
@@ -550,7 +567,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`; recap markers also take `fields`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
 - `lvc` (`on` default | `off`): whether this partition's data feeds the last-value cache. Turn it off for partitions whose values are built from many messages (book updates, accumulated volume), where the last single update would mislead; their state comes from recap (planned) instead.
-- `recap` (planned): the snapshot service for this partition; see "Recap (planned)".
+- `recap`: the snapshot service for this partition; see "Recap" (config, component and manager implemented; the merge planned).
 
 `sessions[]` (reloadable)
 - `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `partitions` (names), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true).
@@ -579,9 +596,10 @@ Startup is fail-fast: an unknown component type, a bad schema, a bad framing blo
 
 ```
 include/subplane/
-  core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h
+  core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h spsc_queue.h
   registry/    component_registry.h
   transport/   transport.h udp_multicast.h tcp_stream.h aeron_transport.h
+  recap/       recap_request.h (publisher contract) recap_transport.h aeron_recap.h recap_config.h recap_manager.h
   framing/     framing.h sbe_length.h
   decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h
   pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h

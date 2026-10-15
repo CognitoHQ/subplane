@@ -8,6 +8,7 @@
 #include "subplane/pipeline/lvc.h"
 #include "subplane/pipeline/partition.h"
 #include "subplane/pipeline/pipeline.h"
+#include "subplane/recap/recap_manager.h"
 #include "subplane/pipeline/session.h"
 #include "subplane/pipeline/session_manager.h"
 #include "subplane/symbol_table.h"
@@ -221,6 +222,28 @@ bool Agent::start() {
         LogRegistry::instance().info("PARTITION", "OPEN", p->name() + " " + p->transport().describe());
     }
 
+    // INTENT: recap components open before the pipelines start, so a bad
+    // recap block fails the start like a bad transport does. A snapshot
+    // service that is merely down is not an error: requests fail and retry.
+    recap_.reset();
+    for (size_t gi = 0; gi < groups_.size(); ++gi) {
+        for (Partition* p : groups_[gi]->partitions()) {
+            if (!p->has_recap()) continue;
+            if (!recap_) recap_ = std::make_unique<RecapManager>(epoch_, *symbols_);
+            if (!recap_->add_partition(*p, groups_[gi]->recap_channel(), err)) {
+                LogRegistry::instance().error("AGENT", "START_FAILED", err);
+                for (auto& q : partitions_) q->close();
+                return false;
+            }
+        }
+    }
+    if (recap_ && !recap_->open(err)) {
+        LogRegistry::instance().error("AGENT", "START_FAILED", err);
+        recap_.reset();
+        for (auto& q : partitions_) q->close();
+        return false;
+    }
+
     for (size_t i = 0; i < groups_.size(); ++i) {
         if (!groups_[i]->start(group_cpus_[i], err)) {
             LogRegistry::instance().error("AGENT", "START_FAILED", err);
@@ -266,6 +289,8 @@ bool Agent::start() {
         }
     }
 
+    if (recap_) recap_->start();
+
     if (!metrics_manager_->start()) {
         LogRegistry::instance().error("AGENT", "START_FAILED", "metrics manager");
         return false;
@@ -292,6 +317,7 @@ void Agent::stop() {
     if (api_server_) api_server_->stop();
     metrics_manager_->stop();
     if (control_) { control_->stop(); control_.reset(); }
+    if (recap_) { recap_->stop(); recap_.reset(); }
     if (sessions_) sessions_->destroy_all();
     for (auto& g : groups_) g->stop();
     for (auto& p : partitions_) p->close();
@@ -324,6 +350,7 @@ AgentStatus Agent::get_status() const {
         ps.transport = p->has_transport() ? transport_state_name(p->transport().state()) : "unknown";
         ps.transport_down = c.transport_down;
         ps.transport_up = c.transport_up;
+        if (p->has_recap()) ps.recap_json = p->recap_counters.to_json();
         s.partitions.push_back(std::move(ps));
     }
     if (sessions_) s.sessions = sessions_->status();
@@ -414,6 +441,14 @@ std::string Agent::render_metrics(const std::string& format) const {
         o += (first ? "" : ",");
         first = false;
         o += "\"" + p->name() + "\":" + p->counters.to_json();
+    }
+    o += "},\"recap\":{";
+    first = true;
+    for (const auto& p : partitions_) {
+        if (!p->has_recap()) continue;
+        o += (first ? "" : ",");
+        first = false;
+        o += "\"" + p->name() + "\":" + p->recap_counters.to_json();
     }
     o += "},\"groups\":{";
     first = true;

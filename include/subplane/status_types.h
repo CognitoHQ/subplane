@@ -21,6 +21,7 @@ struct PartitionStatus {
     std::string transport;      // "unknown", "up", "down"
     uint64_t    transport_down = 0;
     uint64_t    transport_up = 0;
+    std::string recap_json;     // recap counters as JSON; empty without a recap block
 };
 
 struct SessionStatus {

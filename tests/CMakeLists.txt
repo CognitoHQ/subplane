@@ -20,6 +20,10 @@ subplane_unit_test(test_transport unit/test_transport.cpp)
 subplane_unit_test(test_framing unit/test_framing.cpp)
 # M5 pipeline
 subplane_unit_test(test_pipeline unit/test_pipeline.cpp)
+subplane_unit_test(test_recap unit/test_recap_manager.cpp)
+if(SUBPLANE_WITH_AERON)
+    subplane_unit_test(test_recap_aeron unit/test_recap_aeron.cpp)
+endif()
 subplane_unit_test(test_session_manager unit/test_session_manager.cpp)
 # M6 control channel
 subplane_unit_test(test_control unit/test_control.cpp)

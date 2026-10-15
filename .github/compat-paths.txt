@@ -10,11 +10,12 @@
 ^include/subplane/client/
 ^include/subplane/fanout/ring_writer\.h$
 
-# Publisher contract: the canonical schema and generated views
+# Publisher contract: the canonical schema and generated views, the recap request
 ^schemas/subplane_canonical\.xml$
 ^tools/schema
+^include/subplane/recap/
 
-# Config vocabulary: framing, decoders, partitions, sessions, transports
+# Config vocabulary: framing, decoders, partitions, sessions, transports, recap
 ^src/framing/
 ^include/subplane/framing/
 ^src/decoder/
@@ -24,6 +25,7 @@
 ^src/transport/
 ^include/subplane/transport/
 ^src/registry/
+^src/recap/
 ^config\.yaml$
 
 # Operator surface: HTTP API

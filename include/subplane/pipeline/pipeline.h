@@ -6,10 +6,12 @@
 // talks to it only through the SPSC command queue.
 
 #include "subplane/core/histogram.h"
+#include "subplane/core/spsc_queue.h"
 #include "subplane/pipeline/lvc.h"
 #include "subplane/pipeline/partition.h"
 #include "subplane/pipeline/session.h"
 #include "subplane/pipeline/symbol_resolver.h"
+#include "subplane/recap/recap_manager.h"
 
 #include <array>
 #include <atomic>
@@ -26,33 +28,6 @@ struct PipelineCommand {
     Session*           session = nullptr;
     const FilterTable* filter = nullptr;
     uint32_t           generation = 0;
-};
-
-// INTENT: single producer (cold side, serialized by the owner's mutex), single
-// consumer (pipeline thread). Fixed capacity, no allocation. If a second cold
-// producer is ever added, wrap post() in a mutex on the cold side only.
-template <class T, size_t N>
-class SpscQueue {
-    static_assert((N & (N - 1)) == 0, "N must be a power of two");
-public:
-    bool push(const T& v) noexcept {
-        const size_t t = tail_.load(std::memory_order_relaxed);
-        if (t - head_.load(std::memory_order_acquire) >= N) return false;
-        buf_[t & (N - 1)] = v;
-        tail_.store(t + 1, std::memory_order_release);
-        return true;
-    }
-    bool pop(T& out) noexcept {
-        const size_t h = head_.load(std::memory_order_relaxed);
-        if (h == tail_.load(std::memory_order_acquire)) return false;
-        out = buf_[h & (N - 1)];
-        head_.store(h + 1, std::memory_order_release);
-        return true;
-    }
-private:
-    alignas(64) std::atomic<size_t> head_{0};
-    alignas(64) std::atomic<size_t> tail_{0};
-    std::array<T, N> buf_{};
 };
 
 class Pipeline {
@@ -84,6 +59,8 @@ public:
     const LogHistogram& hist_recv_to_publish() const noexcept { return hist_recv_to_publish_; }
     uint64_t loops() const noexcept { return loops_.load(std::memory_order_relaxed); }
     uint64_t epoch() const noexcept { return epoch_; }
+    // Recap queues to and from the agent's RecapManager (consumed from step 3.4).
+    RecapChannel& recap_channel() noexcept { return recap_; }
 
 private:
     void loop() noexcept;
@@ -115,6 +92,7 @@ private:
     uint32_t  n_sessions_ = 0;
 
     SpscQueue<PipelineCommand, 1024> commands_;
+    RecapChannel          recap_;
     uint64_t              posted_ = 0;
     std::atomic<uint64_t> applied_{0};
 
