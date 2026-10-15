@@ -94,7 +94,7 @@ struct SnapServer {
         while (!stop.load()) {
             aeron_subscription_poll(sub, aeron_fragment_assembler_handler, fa, 10);
             if (!resp && image_correlation.load() != 0) {
-                const std::string ch = "aeron:udp?control-mode=response|control=" + response_control +
+                const std::string ch = "aeron:udp?control-mode=response|control=" + response_control + "|term-length=65536" +
                                        "|response-correlation-id=" + std::to_string(image_correlation.load());
                 aeron_async_add_exclusive_publication_t* ap = nullptr;
                 if (aeron_async_add_exclusive_publication(&ap, client, ch.c_str(), 1102) == 0) {
@@ -141,6 +141,9 @@ struct Driver {
 
 } // namespace
 
+// INTENT: small term buffers. Two publications at Aeron's 16 MB default need
+// about 100 MB of /dev/shm, more than a default Docker container has (64 MB);
+// CI runs in one.
 TEST_CASE("recap over Aeron: request out, reply back on a response channel, assembled by the manager") {
     const std::string dir = "/dev/shm/subplane-recaptest-" + std::to_string(getpid());
     const int base = 21000 + static_cast<int>(getpid() % 20000);
@@ -167,7 +170,7 @@ decoder:
 recap:
   type: aeron
   aeron_dir: )" + dir + R"(
-  request:  { channel: "aeron:udp?endpoint=)" + req_ep + R"(", stream_id: 1101 }
+  request:  { channel: "aeron:udp?endpoint=)" + req_ep + R"(|term-length=65536", stream_id: 1101 }
   response: { channel: "aeron:udp?control-mode=response|control=)" + ctl_ep + R"(", stream_id: 1102 }
   timeout_ms: 500
   retry: { base_ms: 20, max_ms: 100 }
