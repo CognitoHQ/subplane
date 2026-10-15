@@ -97,6 +97,7 @@ private:
     void emit_control(Partition& p, ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept;
     void emit_control_all(ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept;
     void emit_symbol_mapped(uint32_t id, uint64_t now) noexcept;
+    void apply_transport_changes(Partition& p, Transport& t) noexcept;
     void service_timeouts(uint64_t now) noexcept;
     void apply_commands(uint64_t now) noexcept;
     void heartbeat_rings(uint64_t now) noexcept;

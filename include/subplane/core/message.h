@@ -71,6 +71,8 @@ enum class ControlCode : uint8_t {
     AGENT_RESTARTED     = 0xA4,
     SESSION_CLOSING     = 0xA5,
     SYMBOL_MAPPED       = 0xA6,
+    TRANSPORT_DOWN      = 0xA7,
+    TRANSPORT_UP        = 0xA8,
 
     PAD                 = 0xFE,
 };

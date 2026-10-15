@@ -363,7 +363,8 @@ StringType ApiServer::serialize_partitions(const std::vector<PartitionStatus>& p
           << ",\"state\":\"" << p.state << "\",\"last_sequence\":" << p.last_sequence
           << ",\"packets\":" << p.packets << ",\"messages\":" << p.messages
           << ",\"unknown_templates\":" << p.unknown_templates << ",\"gaps\":" << p.gaps
-          << ",\"last_rx_ns\":" << p.last_rx_ns << "}";
+          << ",\"last_rx_ns\":" << p.last_rx_ns << ",\"transport\":\"" << p.transport
+          << "\",\"transport_down\":" << p.transport_down << ",\"transport_up\":" << p.transport_up << "}";
     }
     j << "]";
     return j.str();

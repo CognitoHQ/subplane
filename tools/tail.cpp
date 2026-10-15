@@ -50,6 +50,8 @@ const char* code_name(const TickHeader& h) {
         case ControlCode::AGENT_RESTARTED: return "AGENT_RESTARTED";
         case ControlCode::SESSION_CLOSING: return "SESSION_CLOSING";
         case ControlCode::SYMBOL_MAPPED: return "SYMBOL_MAPPED";
+        case ControlCode::TRANSPORT_DOWN: return "TRANSPORT_DOWN";
+        case ControlCode::TRANSPORT_UP: return "TRANSPORT_UP";
         case ControlCode::PAD: return "PAD";
         default: return "CONTROL?";
     }
@@ -88,6 +90,15 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             PartitionStateEvent e; std::memcpy(&e, p, sizeof(e));
             std::printf(" partition=%u reason=%u last_seq=%llu", e.partition_id, e.reason,
                         static_cast<unsigned long long>(e.last_seq));
+            break;
+        }
+        case ControlCode::TRANSPORT_DOWN:
+        case ControlCode::TRANSPORT_UP: {
+            if (len < sizeof(TransportStateEvent)) return;
+            TransportStateEvent e; std::memcpy(&e, p, sizeof(e));
+            static const char* const kReason[] = {"none", "source_lost", "local_failure", "publisher_restart"};
+            std::printf(" partition=%u reason=%s last_seq=%llu", e.partition_id,
+                        e.reason < 4 ? kReason[e.reason] : "?", static_cast<unsigned long long>(e.last_seq));
             break;
         }
         default: break;

@@ -16,7 +16,8 @@ inline void inc(std::atomic<uint64_t>& c, uint64_t n = 1) noexcept {
 
 #define SUBPLANE_PARTITION_COUNTERS(X) \
     X(packets) X(bytes) X(messages) X(unknown_templates) X(undecodable_tail) X(schema_mismatch) \
-    X(gaps) X(dups) X(admin) X(degraded_events) X(decode_errors) X(malformed) X(truncated) X(transport_errors) X(seq_resets)
+    X(gaps) X(dups) X(admin) X(degraded_events) X(decode_errors) X(malformed) X(truncated) X(transport_errors) X(seq_resets) \
+    X(transport_down) X(transport_up)
 
 #define SUBPLANE_SESSION_COUNTERS(X) X(published) X(filtered) X(ring_overruns) X(publish_failed)
 

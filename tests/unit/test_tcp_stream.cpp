@@ -168,11 +168,19 @@ TEST_CASE("tcp_stream: prelude none, batch limit, then peer close and reconnect 
     REQUIRE(got.size() == 7);
     for (int i = 0; i < 7; ++i) CHECK(got[static_cast<size_t>(i)][20] == static_cast<uint8_t>(i));
 
+    CHECK(t.state() == TransportState::UP);
+    REQUIRE(t.state_change_count() == 1);
+    CHECK(t.state_change(0).state == TransportState::UP);
+    t.clear_state_changes();
+
     // Peer closed: poll reports 0 (not fatal) and the transport reconnects.
     std::vector<std::vector<uint8_t>> more;
     collect(t, more, 1, 100);
     CHECK(more.empty());
     CHECK(t.disconnects() == 1); // it may already have reconnected to the listener's backlog
+    REQUIRE(t.state_change_count() >= 1);
+    CHECK(t.state_change(0).state == TransportState::DOWN);
+    CHECK(t.state_change(0).reason == TransportReason::SOURCE_LOST);
 
     std::thread server2([&] { int cfd = ls.accept(); REQUIRE(cfd >= 0); auto r = dbn_record(0x00, 32, 0x99); send_chunk(cfd, r, 0, r.size()); std::this_thread::sleep_for(std::chrono::milliseconds(50)); ::close(cfd); });
     REQUIRE(collect(t, more, 1) >= 0);
@@ -180,6 +188,7 @@ TEST_CASE("tcp_stream: prelude none, batch limit, then peer close and reconnect 
     REQUIRE(more.size() == 1);
     CHECK(more[0][1] == 0x00);
     CHECK(t.connects() == 2);
+    CHECK(t.state() == TransportState::UP);
     t.close();
     CHECK(t.poll(b) == -1);
 }
@@ -196,6 +205,9 @@ TEST_CASE("tcp_stream: zstd magic is fatal, bad record length reconnects") {
         server.join();
         CHECK(rc == -1);
         CHECK(t.last_error().find("zstd") != std::string::npos);
+        CHECK(t.state() == TransportState::DOWN);
+        REQUIRE(t.state_change_count() == 2);
+        CHECK(t.state_change(1).reason == TransportReason::LOCAL_FAILURE);
     }
     {
         Listener ls;

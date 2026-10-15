@@ -370,3 +370,88 @@ TEST_CASE("pipeline: threaded start/stop with pinned cpu off and commands applie
     CHECK_FALSE(h.pipe.running());
     CHECK(h.pipe.loops() > 0);
 }
+
+TEST_CASE("pipeline: transport down and up reach the partition's sessions in order, ahead of the batch") {
+    Harness h;
+    FilterSpec spec;
+    spec.all_symbols = true;
+    spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
+    spec.partition_ids = {0};
+    auto s = h.make_session(spec, 1);
+    ShmReader rd;
+    REQUIRE(rd.open(h.ring_path));
+    h.add(s.get());
+    drain(rd);
+
+    auto event = [](const Rec& r) {
+        TransportStateEvent ev{};
+        REQUIRE(r.payload.size() == sizeof(ev));
+        std::memcpy(&ev, r.payload.data(), sizeof(ev));
+        return ev;
+    };
+    const auto DOWN = static_cast<uint8_t>(ControlCode::TRANSPORT_DOWN);
+    const auto UP = static_cast<uint8_t>(ControlCode::TRANSPORT_UP);
+    Enc e{h.schema()};
+
+    // First contact: UP precedes the records of the batch that brought it.
+    h.fake->up();
+    h.fake->push(packet({e.msg(1, {{"SecurityID", 9}, {"SeqNum", 1}})}), now_ns());
+    h.pipe.run_once();
+    auto recs = drain(rd);
+    REQUIRE(recs.size() == 3); // UP, SYMBOL_MAPPED, trade
+    CHECK(recs[0].hdr.msg_type == UP);
+    CHECK(recs[0].hdr.kind == static_cast<uint8_t>(Kind::AGENT_CONTROL));
+    CHECK(recs[0].hdr.partition_id == 0);
+    CHECK(event(recs[0]).reason == static_cast<uint32_t>(TransportStateReason::NONE));
+    CHECK(recs[1].hdr.msg_type == static_cast<uint8_t>(ControlCode::SYMBOL_MAPPED));
+    CHECK(recs[2].hdr.kind == static_cast<uint8_t>(Kind::DATA));
+    CHECK(recs[2].hdr.sequence == 1);
+
+    // Source lost, reported twice: one event, carrying the last sequence seen.
+    h.fake->down(TransportReason::SOURCE_LOST);
+    h.fake->down(TransportReason::LOCAL_FAILURE);
+    h.pipe.run_once();
+    recs = drain(rd);
+    REQUIRE(recs.size() == 1);
+    CHECK(recs[0].hdr.msg_type == DOWN);
+    CHECK(event(recs[0]).reason == static_cast<uint32_t>(TransportStateReason::SOURCE_LOST));
+    CHECK(event(recs[0]).last_seq == 1);
+    CHECK(event(recs[0]).changed_ns != 0);
+    CHECK(h.part.transport().state() == TransportState::DOWN);
+
+    // Back, then a new publisher instance while up: the restart is reported even without a DOWN.
+    h.fake->up();
+    h.fake->up();
+    h.pipe.run_once();
+    h.fake->up(TransportReason::PUBLISHER_RESTART);
+    h.pipe.run_once();
+    recs = drain(rd);
+    REQUIRE(recs.size() == 2);
+    CHECK(recs[0].hdr.msg_type == UP);
+    CHECK(event(recs[0]).reason == static_cast<uint32_t>(TransportStateReason::NONE));
+    CHECK(recs[1].hdr.msg_type == UP);
+    CHECK(event(recs[1]).reason == static_cast<uint32_t>(TransportStateReason::PUBLISHER_RESTART));
+
+    const auto c = h.part.counters.snapshot();
+    CHECK(c.transport_down == 1);
+    CHECK(c.transport_up == 3);
+    CHECK(h.part.transport().state() == TransportState::UP);
+    CHECK(h.part.transport().state_change_count() == 0);
+}
+
+TEST_CASE("pipeline: a session without agent_control does not see transport events") {
+    Harness h;
+    FilterSpec spec;
+    spec.all_symbols = true;
+    spec.partition_ids = {0};
+    spec.agent_control = false;
+    auto s = h.make_session(spec, 1);
+    ShmReader rd;
+    REQUIRE(rd.open(h.ring_path));
+    h.add(s.get());
+    drain(rd);
+    h.fake->down(TransportReason::LOCAL_FAILURE);
+    h.pipe.run_once();
+    CHECK(drain(rd).empty());
+    CHECK(h.part.counters.snapshot().transport_down == 1);
+}

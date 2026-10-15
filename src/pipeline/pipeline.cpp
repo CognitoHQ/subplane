@@ -13,6 +13,11 @@ namespace {
 constexpr uint64_t kRingHeartbeatNs = 1'000'000; // 1 ms
 }
 
+// The transport's reasons are copied into the app-facing event unchanged.
+static_assert(static_cast<uint32_t>(TransportReason::SOURCE_LOST) == static_cast<uint32_t>(TransportStateReason::SOURCE_LOST));
+static_assert(static_cast<uint32_t>(TransportReason::LOCAL_FAILURE) == static_cast<uint32_t>(TransportStateReason::LOCAL_FAILURE));
+static_assert(static_cast<uint32_t>(TransportReason::PUBLISHER_RESTART) == static_cast<uint32_t>(TransportStateReason::PUBLISHER_RESTART));
+
 Pipeline::Pipeline(std::string name, uint64_t epoch, SymbolTable& symbols, Lvc& lvc)
     : name_(std::move(name)), epoch_(epoch), resolver_(symbols), lvc_(lvc) {
     name_buf_.reserve(64);
@@ -88,7 +93,11 @@ int Pipeline::run_once() noexcept {
     for (Partition* pp : partitions_) {
         Partition& p = *pp;
         if (!p.has_transport()) continue;
-        const int n = p.transport().poll(batch_);
+        Transport& t = p.transport();
+        const int n = t.poll(batch_);
+        // INTENT: state changes first, so TRANSPORT_UP precedes the records of
+        // the batch that brought the source back (and DOWN precedes nothing).
+        if (t.state_change_count() != 0) apply_transport_changes(p, t);
         if (n < 0) {
             inc(p.counters.transport_errors);
             continue;
@@ -300,6 +309,22 @@ void Pipeline::emit_control_all(ControlCode code, const void* body, uint32_t len
         if (f == nullptr || !f->agent_control) continue;
         if (!s.ring.publish_control(code, 0, now, body, len)) inc(s.counters.publish_failed);
     }
+}
+
+void Pipeline::apply_transport_changes(Partition& p, Transport& t) noexcept {
+    const uint64_t now = now_ns();
+    for (int i = 0; i < t.state_change_count(); ++i) {
+        const TransportStateChange& c = t.state_change(i);
+        const bool up = c.state == TransportState::UP;
+        inc(up ? p.counters.transport_up : p.counters.transport_down);
+        TransportStateEvent ev{};
+        ev.partition_id = p.id();
+        ev.reason = static_cast<uint32_t>(c.reason);
+        ev.last_seq = p.last_seq;
+        ev.changed_ns = now;
+        emit_control(p, up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, &ev, sizeof(ev), now);
+    }
+    t.clear_state_changes();
 }
 
 void Pipeline::emit_symbol_mapped(uint32_t id, uint64_t now) noexcept {

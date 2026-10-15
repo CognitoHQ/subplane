@@ -73,7 +73,7 @@ private:
     enum class State : uint8_t { DISCONNECTED, CONNECTING, CONNECTED, FATAL };
 
     bool start_connect() noexcept;
-    void drop(const char* why) noexcept;        // close socket, schedule reconnect or go FATAL
+    void drop(const char* why, TransportReason reason) noexcept;        // close socket, schedule reconnect or go FATAL
     bool consume_prelude() noexcept;            // false = need more bytes
     uint32_t record_len_at(const uint8_t* p) const noexcept;
 

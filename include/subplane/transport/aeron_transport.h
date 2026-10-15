@@ -26,8 +26,10 @@
 
 #include "subplane/transport/transport.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -70,10 +72,10 @@ public:
     bool connected() const noexcept;
     uint64_t fragments() const noexcept { return fragments_; }
     uint64_t oversize() const noexcept { return oversize_; }
-    uint64_t images_available() const noexcept { return images_available_; }
-    uint64_t images_unavailable() const noexcept { return images_unavailable_; }
-    uint64_t client_errors() const noexcept { return client_errors_; }
-    const std::string& last_error() const noexcept { return last_error_; }
+    uint64_t images_available() const noexcept { return images_available_.load(std::memory_order_relaxed); }
+    uint64_t images_unavailable() const noexcept { return images_unavailable_.load(std::memory_order_relaxed); }
+    uint64_t client_errors() const noexcept { return client_errors_.load(std::memory_order_relaxed); }
+    std::string last_error() const;
 
     static std::unique_ptr<Transport> create(const YAML::Node& cfg, std::string& err);
 
@@ -83,6 +85,7 @@ private:
     static void on_unavailable_image(void* clientd, aeron_subscription_stct* sub, aeron_image_stct* image) noexcept;
     static void on_client_error(void* clientd, int errcode, const char* message) noexcept;
     bool start_driver(std::string& err);
+    void poll_state() noexcept;         // pipeline thread: image count and session id -> up/down
 
     AeronTransportConfig cfg_;
     aeron_driver_context_stct* driver_ctx_ = nullptr;
@@ -102,8 +105,21 @@ private:
     uint64_t     cur_ts_ = 0;        // one clock read per poll
 
     uint64_t fragments_ = 0, oversize_ = 0;
-    uint64_t images_available_ = 0, images_unavailable_ = 0, client_errors_ = 0;
-    std::string last_error_;
+
+    // INTENT: the image and error handlers run on the Aeron client conductor
+    // thread, not the pipeline thread, so everything they write is atomic (or
+    // behind error_mu_, which the pipeline never takes). poll() turns these
+    // into up/down reports on the pipeline thread.
+    std::atomic<uint64_t> images_available_{0}, images_unavailable_{0}, client_errors_{0};
+    std::atomic<int32_t>  latest_session_{0};   // session id of the newest image; published before images_available_
+    std::atomic<bool>     client_dead_{false};  // driver or client timeout: the Aeron client has shut itself down
+    mutable std::mutex    error_mu_;
+    std::string           last_error_;
+
+    // Pipeline thread only.
+    uint64_t seen_available_ = 0;
+    int32_t  session_ = 0;
+    bool     have_session_ = false;
 };
 
 } // namespace subplane

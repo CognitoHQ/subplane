@@ -20,6 +20,7 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 
 | Date | Repo / PR | Change | Audience | Impact | Migration |
 |---|---|---|---|---|---|
+| 2026-10-15 | subplane (3.1) | Control codes 0xA7 `TRANSPORT_DOWN` and 0xA8 `TRANSPORT_UP` with `TransportStateEvent` (24 bytes); new partition counters `transport_down`, `transport_up` (in `/metrics`); `/partitions` gains `transport`, `transport_down`, `transport_up` | app, operator | additive. Sessions with `agent_control` now receive these events, including a `TRANSPORT_UP` when a source first appears and a `TRANSPORT_DOWN` at start when an Aeron or TCP source is not there yet | Apps that switch on control codes must skip unknown ones (the SDK examples do). JSON readers of `/partitions` see three more fields. |
 | 2026-10-14 | subplane #8 | Recap and relay contract documented: planned control codes 0xA7-0xAD, `recap:` block, reply markers, 64-byte upstream request, INV-017 | app, publisher, config | none yet (planned, docs only) | Codes 0xA7-0xAD and 0xAE are reserved; nothing else may use them. |
 | 2026-10-14 | subplane #7 | `symbol_scope: venue` (opt-in): integer symbols interned as (venue, id), spelled `<venue>:<id>` in filters, `SYMBOL_MAPPED` names and `/lvc` | config, app | additive (default `global` unchanged) | None unless opted in; then filters use `venue:id`. |
 | 2026-10-14 | subplane #7 | `SymbolResolver::resolve_u64(key, venue)` gained a parameter | internal (decoder interface) | not exposed to apps or publishers | n/a |
@@ -32,7 +33,6 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 | 2026-10-13 | subplane bc58c3a | `aeron` transport added | config | additive | n/a |
 
 ## Known upcoming entries (from the active plans)
-- **Transport state events** `TRANSPORT_DOWN`/`TRANSPORT_UP` (0xA7/0xA8). App: additive. Apps that switch on control codes must skip unknown ones; check that the SDK examples do.
 - **Recap:**
   - events 0xA9-0xAD;
   - the `recap` session flag in the `CtlSessionReq` pad byte (additive: old clients send 0);

@@ -18,6 +18,9 @@ struct PartitionStatus {
     uint64_t    unknown_templates = 0;
     uint64_t    gaps = 0;
     uint64_t    last_rx_ns = 0;
+    std::string transport;      // "unknown", "up", "down"
+    uint64_t    transport_down = 0;
+    uint64_t    transport_up = 0;
 };
 
 struct SessionStatus {

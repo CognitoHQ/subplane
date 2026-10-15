@@ -87,7 +87,7 @@ bool TcpStreamTransport::open(std::string& err) {
 
 bool TcpStreamTransport::start_connect() noexcept {
     fd_ = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd_ < 0) { last_error_ = std::string("socket: ") + strerror(errno); state_ = State::DISCONNECTED; next_connect_ns_ = now_ns() + cfg_.reconnect_ms * 1'000'000ull; return false; }
+    if (fd_ < 0) { last_error_ = std::string("socket: ") + strerror(errno); report_down(TransportReason::LOCAL_FAILURE); state_ = State::DISCONNECTED; next_connect_ns_ = now_ns() + cfg_.reconnect_ms * 1'000'000ull; return false; }
     int one = 1;
     ::setsockopt(fd_, IPPROTO_TCP, 1 /* TCP_NODELAY */, &one, sizeof(one));
     const int rb = static_cast<int>(cfg_.rcvbuf);
@@ -99,6 +99,7 @@ bool TcpStreamTransport::start_connect() noexcept {
     if (rc == 0) {
         state_ = State::CONNECTED;
         ++connects_;
+        report_up();
         return true;
     }
     if (errno == EINPROGRESS) {
@@ -106,7 +107,9 @@ bool TcpStreamTransport::start_connect() noexcept {
         connect_deadline_ns_ = now_ns() + cfg_.connect_timeout_ms * 1'000'000ull;
         return true;
     }
-    last_error_ = std::string("connect: ") + strerror(errno);
+    const int cerr = errno;
+    last_error_ = std::string("connect: ") + strerror(cerr);
+    report_down(cerr == ECONNREFUSED ? TransportReason::SOURCE_LOST : TransportReason::LOCAL_FAILURE);
     ::close(fd_);
     fd_ = -1;
     state_ = State::DISCONNECTED;
@@ -114,8 +117,9 @@ bool TcpStreamTransport::start_connect() noexcept {
     return false;
 }
 
-void TcpStreamTransport::drop(const char* why) noexcept {
+void TcpStreamTransport::drop(const char* why, TransportReason reason) noexcept {
     last_error_ = why;
+    report_down(reason);
     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
     if (state_ == State::CONNECTED) ++disconnects_;
     rd_ = wr_ = 0;
@@ -152,6 +156,7 @@ bool TcpStreamTransport::consume_prelude() noexcept {
             }
             if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
             ++framing_errors_;
+            report_down(TransportReason::LOCAL_FAILURE);
             state_ = State::FATAL; // a wrong stream will not fix itself by reconnecting
             return false;
         }
@@ -183,16 +188,17 @@ int TcpStreamTransport::poll(PacketBatch& out) noexcept {
             pollfd pfd{fd_, POLLOUT, 0};
             const int pr = ::poll(&pfd, 1, 0);
             if (pr == 0) {
-                if (now_ns() > connect_deadline_ns_) drop("connect timeout");
+                if (now_ns() > connect_deadline_ns_) drop("connect timeout", TransportReason::LOCAL_FAILURE);
                 return 0;
             }
             int soerr = 0; socklen_t sl = sizeof(soerr);
             if (pr < 0 || ::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &soerr, &sl) < 0 || soerr != 0) {
-                drop(soerr ? strerror(soerr) : "connect failed");
+                drop(soerr ? strerror(soerr) : "connect failed", soerr == ECONNREFUSED ? TransportReason::SOURCE_LOST : TransportReason::LOCAL_FAILURE);
                 return 0;
             }
             state_ = State::CONNECTED;
             ++connects_;
+            report_up();
             break;
         }
         case State::CONNECTED:
@@ -208,9 +214,13 @@ int TcpStreamTransport::poll(PacketBatch& out) noexcept {
     const size_t room = arena_.size() - wr_;
     if (room > 0) {
         const ssize_t n = ::read(fd_, arena_.data() + wr_, room);
-        if (n == 0) { drop("peer closed"); return state_ == State::FATAL ? -1 : 0; }
+        if (n == 0) { drop("peer closed", TransportReason::SOURCE_LOST); return state_ == State::FATAL ? -1 : 0; }
         if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { drop(strerror(errno)); return state_ == State::FATAL ? -1 : 0; }
+            const int rerr = errno;
+            if (rerr != EAGAIN && rerr != EWOULDBLOCK && rerr != EINTR) {
+                drop(strerror(rerr), rerr == ECONNRESET || rerr == EPIPE ? TransportReason::SOURCE_LOST : TransportReason::LOCAL_FAILURE);
+                return state_ == State::FATAL ? -1 : 0;
+            }
         } else {
             wr_ += static_cast<size_t>(n);
         }
@@ -225,7 +235,7 @@ int TcpStreamTransport::poll(PacketBatch& out) noexcept {
         const uint32_t len = record_len_at(p);
         if (len < hdr_need || len > cfg_.max_record) {
             ++framing_errors_;
-            drop("record length out of range (stream misaligned?)");
+            drop("record length out of range (stream misaligned?)", TransportReason::LOCAL_FAILURE);
             return state_ == State::FATAL ? -1 : out.count;
         }
         if (wr_ - rd_ < len) break; // partial record: wait for more bytes

@@ -73,6 +73,13 @@ void on_control(Book& b, const TickHeader& h, const uint8_t* p, uint32_t len, bo
         case ControlCode::PARTITION_RECOVERED:std::printf("CTRL partition recovered\n"); break;
         case ControlCode::AGENT_RESTARTED:    std::printf("CTRL agent restarted\n"); break;
         case ControlCode::SESSION_CLOSING:    std::printf("CTRL session closing\n"); break;
+        case ControlCode::TRANSPORT_DOWN:
+        case ControlCode::TRANSPORT_UP: {
+            TransportStateEvent e; if (len >= sizeof(e)) { std::memcpy(&e, p, sizeof(e));
+                std::printf("CTRL transport %s partition=%u reason=%u\n",
+                            h.msg_type == static_cast<uint8_t>(ControlCode::TRANSPORT_UP) ? "up" : "down", e.partition_id, e.reason); }
+            break;
+        }
         case ControlCode::BUS_HEARTBEAT:      break;
         default: std::printf("CTRL code=0x%02x partition=%u\n", h.msg_type, h.partition_id); break;
     }

@@ -321,6 +321,9 @@ AgentStatus Agent::get_status() const {
         ps.unknown_templates = c.unknown_templates;
         ps.gaps = c.gaps;
         ps.last_rx_ns = p->last_rx_pub.load(std::memory_order_relaxed);
+        ps.transport = p->has_transport() ? transport_state_name(p->transport().state()) : "unknown";
+        ps.transport_down = c.transport_down;
+        ps.transport_up = c.transport_up;
         s.partitions.push_back(std::move(ps));
     }
     if (sessions_) s.sessions = sessions_->status();

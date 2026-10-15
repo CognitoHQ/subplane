@@ -267,8 +267,8 @@ Payloads of AGENT_CONTROL records are packed little-endian PODs in `shm/control_
 | 0xA4 | AGENT_RESTARTED | AGENT_CONTROL | `AgentRestartedEvent` {epoch, prev_epoch}; `prev_epoch` is currently always 0 |
 | 0xA5 | SESSION_CLOSING | AGENT_CONTROL | `SessionClosingEvent` {session_id, reason: 0 shutdown, 1 destroyed or linger expired, 2 removed by reload} |
 | 0xA6 | SYMBOL_MAPPED | AGENT_CONTROL | `SymbolMappedEvent` {symbol_id, venue_id, name_len, name[24]} |
-| 0xA7 | TRANSPORT_DOWN (planned) | AGENT_CONTROL | `TransportStateEvent` {partition_id, reason, changed_ns}; reasons are transport-neutral (INV-015): 1 source lost (an Aeron image went away, a TCP peer closed), 2 local transport failure (driver timeout, socket error), 3 publisher restart. The transport-specific cause goes to the log and `/partitions`, not the ring. |
-| 0xA8 | TRANSPORT_UP (planned) | AGENT_CONTROL | `TransportStateEvent` |
+| 0xA7 | TRANSPORT_DOWN | AGENT_CONTROL | `TransportStateEvent` {partition_id, reason, last_seq, changed_ns}, 24 bytes. Reasons are transport-neutral (INV-015): 1 source lost (the last Aeron image went away, a TCP peer closed, reset or refused), 2 local failure (Aeron driver or client timeout, socket error, a misframed TCP stream). Reported once per change: a transport already down reports nothing more. `last_seq` is the last sequence accepted before the change. |
+| 0xA8 | TRANSPORT_UP | AGENT_CONTROL | `TransportStateEvent`; reason 0, or 3 publisher restart: a new Aeron session replaced the previous one. A restart is reported even without a DOWN before it (over Aeron UDP the old image outlives its publisher by the image liveness timeout). It is written ahead of the records of the batch that brought the source back; on Aeron, when a poll sees a new image before the client has announced it, a plain UP comes first and the restart UP follows on the next poll, possibly after a few records. Over UDP multicast "up" is the first datagram, or the first after a socket error; a silent sender is `PARTITION_DEGRADED`, not a transport state. Both events go to every session of the partition that takes `agent_control`. `/partitions` shows the state (`unknown`, `up`, `down`) and the counts. |
 | 0xA9 | SYMBOL_STALE (planned) | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id, partition_id, reason: 1 gap, 2 transport down, 3 publisher restart, last_seq, changed_ns} |
 | 0xAA | RECAP_PENDING (planned) | AGENT_CONTROL | `RecapEvent` {request_id, symbol_id, partition_id, status, attempt, as_of_seq, record_count} |
 | 0xAB | RECAP_BEGIN (planned) | AGENT_CONTROL | `RecapEvent` |
@@ -513,7 +513,7 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 |---|---|
 | `GET /health` | `{"status":"ok"}` |
 | `GET /status` | name, version, uptime, epoch, partitions, sessions |
-| `GET /partitions` | per partition: name, id, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns |
+| `GET /partitions` | per partition: name, id, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts |
 | `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |

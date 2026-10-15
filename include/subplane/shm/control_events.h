@@ -41,6 +41,23 @@ struct PartitionStateEvent {
     uint64_t changed_ns;
 };
 
+// TRANSPORT_DOWN / TRANSPORT_UP: the partition's transport lost or regained
+// its source. Reasons are transport-neutral (INV-015); the transport-specific
+// cause is in the agent log and /partitions, not here.
+enum class TransportStateReason : uint32_t {
+    NONE              = 0,
+    SOURCE_LOST       = 1, // remote end went away (Aeron image gone, TCP peer closed)
+    LOCAL_FAILURE     = 2, // agent side failed (driver timeout, socket error)
+    PUBLISHER_RESTART = 3, // on UP: a different publisher instance is the source now
+};
+struct TransportStateEvent {
+    uint16_t partition_id;
+    uint16_t reserved0;
+    uint32_t reason;      // TransportStateReason
+    uint64_t last_seq;    // last sequence accepted before the change
+    uint64_t changed_ns;
+};
+
 // FILTER_RELOADED: the session's filter table was swapped.
 struct FilterReloadedEvent {
     uint32_t session_id;
@@ -72,6 +89,7 @@ struct SymbolMappedEvent {
 
 static_assert(sizeof(GapEvent) == 32);
 static_assert(sizeof(PartitionStateEvent) == 24);
+static_assert(sizeof(TransportStateEvent) == 24);
 static_assert(sizeof(FilterReloadedEvent) == 8);
 static_assert(sizeof(AgentRestartedEvent) == 16);
 static_assert(sizeof(SessionClosingEvent) == 8);

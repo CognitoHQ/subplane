@@ -123,6 +123,12 @@ void AeronTransport::on_fragment(void* clientd, const uint8_t* buffer, size_t le
 
 int AeronTransport::poll(PacketBatch& out) noexcept {
     out.count = 0;
+    if (client_dead_.load(std::memory_order_acquire)) {
+        // The client closed itself; its subscription must not be touched.
+        report_down(TransportReason::LOCAL_FAILURE);
+        return -1;
+    }
+    poll_state();
     cur_ = &out;
     cur_ts_ = now_ns();
     // INTENT: the fragment limit equals the arena slot count, so the handler can
@@ -134,16 +140,55 @@ int AeronTransport::poll(PacketBatch& out) noexcept {
     return out.count;
 }
 
-void AeronTransport::on_available_image(void* clientd, aeron_subscription_stct*, aeron_image_stct*) noexcept {
-    ++static_cast<AeronTransport*>(clientd)->images_available_;
+// INTENT: up/down is decided on the pipeline thread, before the fragments
+// are read, so a TRANSPORT_UP lands ahead of the records it announces. The
+// image count is the truth for up/down (an image is in the subscription
+// before its handler runs). The handler only supplies the newest image's
+// session id: a new id means a new publisher instance, reported as
+// UP/PUBLISHER_RESTART even when the old image has not timed out yet. When a
+// poll sees the new image before its handler ran, that UP/PUBLISHER_RESTART
+// follows on the next poll, after a plain UP and possibly a few records.
+void AeronTransport::poll_state() noexcept {
+    const uint64_t avail = images_available_.load(std::memory_order_acquire);
+    if (avail != seen_available_) {
+        seen_available_ = avail;
+        const int32_t sid = latest_session_.load(std::memory_order_relaxed);
+        const bool restart = have_session_ && sid != session_;
+        session_ = sid;
+        have_session_ = true;
+        report_up(restart ? TransportReason::PUBLISHER_RESTART : TransportReason::NONE);
+    }
+    if (aeron_subscription_image_count(sub_) > 0) report_up();
+    else report_down(TransportReason::SOURCE_LOST);
+}
+
+void AeronTransport::on_available_image(void* clientd, aeron_subscription_stct*, aeron_image_stct* image) noexcept {
+    auto* self = static_cast<AeronTransport*>(clientd);
+    aeron_image_constants_t c{};
+    if (aeron_image_constants(image, &c) == 0) self->latest_session_.store(c.session_id, std::memory_order_relaxed);
+    self->images_available_.fetch_add(1, std::memory_order_release);
 }
 void AeronTransport::on_unavailable_image(void* clientd, aeron_subscription_stct*, aeron_image_stct*) noexcept {
-    ++static_cast<AeronTransport*>(clientd)->images_unavailable_;
+    static_cast<AeronTransport*>(clientd)->images_unavailable_.fetch_add(1, std::memory_order_relaxed);
 }
-void AeronTransport::on_client_error(void* clientd, int, const char* message) noexcept {
+void AeronTransport::on_client_error(void* clientd, int errcode, const char* message) noexcept {
     auto* self = static_cast<AeronTransport*>(clientd);
-    ++self->client_errors_;
-    self->last_error_ = message ? message : "";
+    self->client_errors_.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(self->error_mu_);
+        self->last_error_ = message ? message : "";
+    }
+    // INTENT: these three mean the client has given up and closed itself;
+    // every other error is reported and the client carries on.
+    if (errcode == AERON_CLIENT_ERROR_DRIVER_TIMEOUT || errcode == AERON_CLIENT_ERROR_CLIENT_TIMEOUT ||
+        errcode == AERON_CLIENT_ERROR_CONDUCTOR_SERVICE_TIMEOUT) {
+        self->client_dead_.store(true, std::memory_order_release);
+    }
+}
+
+std::string AeronTransport::last_error() const {
+    std::lock_guard<std::mutex> lk(error_mu_);
+    return last_error_;
 }
 
 bool AeronTransport::connected() const noexcept {

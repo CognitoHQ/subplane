@@ -23,6 +23,11 @@ public:
     int poll(PacketBatch& out) noexcept override {
         out.count = 0;
         if (!open_) return -1;
+        for (const auto& c : pending_states_) {
+            if (c.state == TransportState::UP) report_up(c.reason);
+            else report_down(c.reason);
+        }
+        pending_states_.clear();
         int n = 0;
         while (n < batch_ && !queue_.empty()) {
             auto& pkt = queue_.front();
@@ -42,6 +47,9 @@ public:
 
     void push(std::vector<uint8_t> bytes, uint64_t ts) { queue_.push_back({std::move(bytes), ts}); }
     size_t pending() const { return queue_.size(); }
+    // Reported from inside the next poll(), before its packets, as a real transport would.
+    void up(TransportReason r = TransportReason::NONE) { pending_states_.push_back({TransportState::UP, r}); }
+    void down(TransportReason r) { pending_states_.push_back({TransportState::DOWN, r}); }
 
 private:
     struct Pkt { std::vector<uint8_t> bytes; uint64_t ts; };
@@ -50,6 +58,7 @@ private:
     bool open_ = false;
     std::vector<uint8_t> arena_;
     std::deque<Pkt> queue_;
+    std::vector<TransportStateChange> pending_states_;
 };
 
 } // namespace subplane::test
