@@ -378,7 +378,7 @@ Records between the markers are delivered with the snapshot-origin flag and `Tic
 
 **What a recapping session sees for symbol X:** `SYMBOL_STALE` (when a failure triggered it), `RECAP_PENDING`, `RECAP_BEGIN`, the snapshot records, `RECAP_COMPLETE{S}`, then live data in sequence order with no gap and no duplicate.
 
-**Canonical schema.** Version 2 (planned) adds `RecapBegin` (21), `RecapEnd` (22), `RecapReject` (23) and `SourceEpoch` on `Heartbeat`, so the feeds package's `spsnapd` can serve canonical streams. A firm's own bus maps its own markers instead.
+**Canonical schema.** Version 2 (planned) adds `RecapBegin` (21), `RecapEnd` (22), `RecapReject` (23) and `SourceEpoch` on `Heartbeat`, so the feeds package's `spwsgw-snapd` can serve canonical streams. A firm's own bus maps its own markers instead.
 
 ## Relay (planned)
 
