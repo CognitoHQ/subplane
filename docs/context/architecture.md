@@ -418,7 +418,7 @@ A separate process (working name `sprelayd`), not the agent: the agent never pub
 
 Two header-only files, libc and the standard library only. They re-export `shm/ring_layout.h`, `shm/control_events.h` and `core/message.h`.
 
-- `client/shm_reader.h`: `ShmReader` maps a ring `PROT_READ` and validates magic, layout version, record version, capacity and size (otherwise `LayoutMismatch`). `poll(RecordView&)` returns `Ok`, `Empty`, `Overrun` (position resynced to head), or `Closed`; `liveness()` and `writer_alive()` report `WriterGone` on a stale heartbeat. Also `seek`, `seek_to_head`, `head`, `lag`, `overruns`, `epoch`. `poll` never blocks, throws or allocates. PAD records are skipped transparently.
+- `client/shm_reader.h`: `ShmReader` maps a ring's header and data `PROT_READ`, claims a reader slot (see "Reader slots") and validates magic, layout version, record version, capacity and size (otherwise `LayoutMismatch`). `poll(RecordView&)` returns `Ok`, `Empty`, `Overrun` (position resynced to head), or `Closed`; `liveness()` and `writer_alive()` report `WriterGone` on a stale heartbeat. Also `seek`, `seek_to_head`, `head`, `lag`, `overruns`, `epoch`, and for the slot `slot_status`, `tracing`, `report_now` (`ReaderOptions::report = false` opts out). `poll` never blocks, throws or allocates. PAD records are skipped transparently.
 - `client/control_client.h`: `ControlClient` with blocking calls and a receive timeout (default 5 s), not thread-safe: `connect`, `hello`, `attach`, `create_session`, `set_filter`, `destroy_session`, `snapshot`, `symbols`, `ping`, `identify`. When `SUBPLANE_APP_NAME` is set, `connect` sends `IDENTIFY` with it (best effort).
 
 **Late-join idiom** (also `examples/shm_demo_app.cpp`):
@@ -559,7 +559,7 @@ Anything else is 404 with a JSON error body. There is no per-session detail path
 Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
 - Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, plus `last_unknown_template`.
-- Per session: `published`, `filtered`, `publish_failed`, `ring_overruns` (reserved; the writer cannot observe reader overruns, so it stays 0).
+- Per session: `published`, `filtered`, `publish_failed`, `ring_overruns` (reserved; the writer cannot observe reader overruns, so it stays 0: each reader reports its own through its reader slot, `subplane_app_overruns_total`).
 - Histogram: one `LogHistogram` per thread group, `recv_to_publish` in ns (receive timestamp to after the packet is published, recorded per packet). 64 power-of-two buckets by 4 sub-buckets (256 total), relative error up to 25%, single writer with relaxed load and store, snapshotted cold for p50, p90, p99, p99.9, min, max, mean. Per-stage histograms are planned.
 - Transports keep their own one-writer counters (`aeron`: fragments, oversize, image events, client errors; `tcp_stream`: connects, disconnects, framing errors), exported through the cold `Transport::counters()`.
 - `/metrics` serves all of these in Prometheus format, with the metric names, labels and identity rules in `docs/context/observability.md`; `?format=json` gives the JSON form. The metrics manager can write periodic reports per `metrics.*` config.

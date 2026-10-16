@@ -284,14 +284,19 @@ build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 
 ## Documentation
 
-- `GETTING_STARTED.md`: a 10-minute hands-on walkthrough.
-- `docs/context/project-vision.md`: identity, thesis, latency budget, non-goals, roadmap.
-- `docs/context/architecture.md`: data flow, ring and record format, control channel, configuration reference, source layout, tools.
-- `docs/context/invariants.md`: the non-negotiable engineering rules.
-- `docs/context/landscape.md`: how subplane compares with agents, libraries and middleware.
-- `docs/protocol/developer-guide.md`: talking to subplane, for gateway and snapshot-service developers and for app developers, with diagrams.
-- `docs/protocol/subplane-protocol.md`: the subplane protocol (SPP), the normative spec.
-- `skills/subplane-schema-designer/`: a Claude Code skill for designing schemas and SPP extensions the subplane way. It is active in this repo through `.claude/skills/`; elsewhere, copy the directory to `~/.claude/skills/`. It relies on `subplane schema --lint`.
+Read one file, the one for your task. `docs/README.md` is the map; coding agents start at `AGENTS.md`.
+
+| I want to | Read |
+|---|---|
+| try it on one machine | `GETTING_STARTED.md` |
+| deploy a known-good setup (crypto exchanges, a firm SBE bus) | `docs/guides/deploy-reference.md` |
+| write an app that consumes data | `docs/guides/app-developer.md` |
+| run and monitor agents and gateways | `docs/guides/operator.md` |
+| connect my own bus, publish my own data, design a schema | `docs/guides/custom-integration.md` |
+| write a gateway or snapshot service | `docs/protocol/developer-guide.md` |
+| the full reference: formats, configuration, contracts | `docs/context/architecture.md`, `docs/context/observability.md`, `docs/protocol/subplane-protocol.md` |
+
+`skills/subplane-schema-designer/` is a Claude Code skill for designing schemas and SPP extensions the subplane way. It is active in this repo through `.claude/skills/`; elsewhere, copy the directory to `~/.claude/skills/`.
 
 Everything in the docs is implemented unless marked "(planned)".
 

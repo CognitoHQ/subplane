@@ -1,8 +1,6 @@
 # Developer guide: talking to subplane
 
-Two audiences:
-- **Gateway and snapshot-service developers** publish a bus and answer subplane's control messages.
-- **App developers** read a ring and ask the agent for what they need.
+For **gateway and snapshot-service developers**: you publish a bus and answer subplane's control messages. App developers: read `docs/guides/app-developer.md` instead.
 
 The normative rules are in `subplane-protocol.md` (SPP). This guide is the walk-through. Items marked (planned) are specified but not built yet.
 
@@ -105,40 +103,7 @@ Pick an id (0x8000 and up for your own deployment; ask for one below 0x8000 in `
 
 ## For app developers
 
-Apps never see SPP or Aeron. They read a ring and use the agent's control socket (the SDK: `client/shm_reader.h`, `client/control_client.h`).
-
-### 1. Get data
-Create or attach a session (YAML or `ControlClient::create_session`), then poll the ring. Every record is a 64-byte `TickHeader` followed by the publisher's bytes; decode them with your codecs or with the generated views.
-
-### 2. Start from a snapshot: recap sessions
-Set `recap: true` (YAML) or `SessionRequest::recap = true`. A recap session needs a symbol list and agent-control events. For each symbol you then see:
-
-```mermaid
-sequenceDiagram
-    participant R as Your ring
-    Note over R: RECAP_PENDING{symbol}
-    Note over R: RECAP_BEGIN{as_of_seq = S, record_count}
-    Note over R: snapshot records (FLAG_SNAPSHOT_ORIGIN, sequence = S)
-    Note over R: RECAP_COMPLETE{S, records on this ring}
-    Note over R: live records, sequence > S, no gap, no duplicate
-```
-
-- Build your state from the snapshot records, then apply live records.
-- On `RECAP_FAILED{status, attempt}` the symbol stays pending and the agent asks again. Keep the symbol marked stale until `RECAP_COMPLETE`.
-- On `SYMBOL_STALE{reason}` (a sequence gap, a sequence reset or a publisher restart) your state for the symbol is no longer exact. Mark it stale and wait: the agent has already started a new recap, and the same sequence follows (`RECAP_PENDING` if the symbol was live, then `RECAP_BEGIN` … `RECAP_COMPLETE`). Throw away your state for the symbol at `RECAP_BEGIN`, not before, so you can keep showing it as stale.
-- Other sessions on the box are never delayed by your recap.
-
-### 3. Ask a service something (planned)
-`ControlClient::relay(service, extension_id, ext_type, body, reply_cb, timeout)`:
-- The agent forwards your `Extension` to a service declared in its config, if the id is allowed and the service advertised it.
-- You get the reply, or `Unsupported`, `Denied` or `Timeout` quickly.
-- The agent never reads your body.
-
-### 4. Versions
-- Old apps keep working when the agent is upgraded. Agents are upgraded first, then gateways, then apps.
-- Skip control codes and message types you don't know.
-- Read `payload_len` rather than assuming an event's size.
-- Use a new feature only when the agent offers it; a request it doesn't know returns `Unsupported`.
+Apps never see SPP or Aeron: they read a ring and use the agent's control socket. Everything an app developer needs is in `docs/guides/app-developer.md`, including recap sessions and the events above from the app's side.
 
 ## Message map
 

@@ -107,7 +107,9 @@ This drives the pipeline on the calling thread with an in-memory transport and p
 
 ## Next steps
 
-- Point `partitions[].decoder.schema` at your publisher's SBE schema and map its field names under `decoder.fields` and its template ids under `decoder.messages`.
-- Write the `framing:` block for your bus and validate it with `subplane probe` against live traffic.
 - Run `build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10` to see the function-style consumer, and start several `shm_demo_app --seconds 10` instances at once to see short-lived sessions come and go in `/sessions`.
-- Read `docs/context/architecture.md` for the ring format, control channel and configuration reference.
+- Then pick the one guide for what you are doing (`docs/README.md` has the map):
+  - a real deployment from a reference config (crypto exchanges, a firm SBE bus): `docs/guides/deploy-reference.md`;
+  - your own app: `docs/guides/app-developer.md`;
+  - your own bus, publisher or schema: `docs/guides/custom-integration.md`;
+  - running and monitoring it: `docs/guides/operator.md`.

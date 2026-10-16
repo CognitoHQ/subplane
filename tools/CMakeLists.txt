@@ -37,6 +37,9 @@ if(BUILD_TESTING OR SUBPLANE_BUILD_TESTS)
     add_test(NAME canonical_views_app
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_views_app.sh
                 ${SP} $<TARGET_FILE:subplaned> $<TARGET_FILE:views_app> ${SP_CANONICAL_SCHEMA})
+    # Reference deployments (deploy/*/agent.yaml) start an agent.
+    add_test(NAME reference_configs
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_reference_configs.sh $<TARGET_FILE:subplaned> ${CMAKE_SOURCE_DIR})
     # The sample publisher -> agent -> ring -> views_app.
     add_test(NAME canonical_pub
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_pub.sh

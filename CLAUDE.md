@@ -25,7 +25,8 @@ Only what builds today:
 
 ## Context Documents
 
-**Public docs** (in git):
+**Public docs** (in git), layered by reader (map: `docs/README.md`; task-to-file for coding agents: `AGENTS.md`):
+- **Task guides** (`docs/guides/`): `deploy-reference.md`, `app-developer.md`, `operator.md`, `custom-integration.md`; one self-contained file per reader. Keep them in step with the reference below.
 - **[Project Vision](docs/context/project-vision.md)**: identity, thesis, latency budget, non-goals, roadmap
 - **[Architecture](docs/context/architecture.md)**: data flow, ring and record format, control channel, config reference, source layout
 - **[Invariants](docs/context/invariants.md)**: non-negotiable engineering rules

@@ -1,0 +1,59 @@
+# Reference deployment: crypto exchanges through gateways (docs/guides/deploy-reference.md).
+#
+#   spwsgw (one per exchange) --Aeron IPC, stream 1001--> subplaned --ring per session--> apps
+#
+# The agent embeds the Aeron media driver, so nothing else needs to run. Every
+# gateway on the box publishes canonical SBE (schemas/subplane_canonical.xml)
+# on the same stream; instruments are told apart by InstrumentId and VenueId.
+# Tested by ctest -R reference_configs.
+
+agent:
+  name: crypto
+  version: reference
+  max_symbols: 65536
+  ring_mode: "0644"            # "0660" + a shared group if apps run as other users
+  thread_groups:
+    - { name: g0, cpu: -1, partitions: [crypto] }   # pin cpu to an isolated core in production
+
+partitions:
+  - name: crypto
+    transport:
+      type: aeron
+      channel: "aeron:ipc"
+      stream_id: 1001          # spwsgw --stream-id
+      aeron_dir: ""            # empty: Aeron's default (/dev/shm/aeron-<user>); spwsgw --aeron-dir must match
+      driver: { embedded: true, threading_mode: shared }
+    framing: { length: schema, sequence: message.Sequence }   # gateways batch several messages per offer
+    decoder:
+      type: sbe_routing
+      schema: ../../schemas/subplane_canonical.xml            # relative to this file
+      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+      symbol_id_mode: table
+      messages:
+        - { template: 1,   msg_type: TRADE }
+        - { template: 2,   msg_type: QUOTE }
+        - { template: 3,   msg_type: BOOK_UPDATE }
+        - { template: 4,   msg_type: BOOK_SNAPSHOT }
+        - { template: 5,   msg_type: OHLCV }
+        - { template: 6,   msg_type: STATUS }
+        - { template: 10,  msg_type: DEFINITION }
+        - { template: 100, admin: HEARTBEAT }
+    heartbeat_timeout_ms: 5000
+
+# Sessions defined here exist from start-up; apps may also create their own
+# over the control socket. POST /reload applies changes to this section.
+sessions:
+  - name: all
+    ring: { capacity_mb: 64, max_payload: 4096 }
+    partitions: [crypto]
+    symbols: ["*"]
+    msg_types: []
+    deliver: { bus_admin: true, agent_control: true }
+
+fanout: { ring_dir: /dev/shm }
+control: { socket_path: /run/subplane/crypto.sock, fallback_socket_path: /tmp/subplane.crypto.sock, linger_ms: 5000 }
+lvc: { max_payload: 512 }
+api: { enabled: true, host: 127.0.0.1, port: 8080 }
+metrics: { enabled: false, report_interval_seconds: 60, output_format: json, console_output: false }
+observability: { site: "", env: "" }
+logging: { level: info, console_output: true, output_format: text }
