@@ -4,16 +4,17 @@ Every subplane service serves the same observability surface on its HTTP port, s
 
 **Status:**
 - The agent's `/metrics` and `/topology` are implemented.
-- The gateway's HTTP server and the collector (`subplane topo`) are planned.
+- The gateway's (`spwsgw --http`) are implemented.
+- The collector (`subplane topo`) is planned.
 
 ## Routes
 
 | Route | Returns | Agent | Gateway |
 |---|---|---|---|
-| `GET /metrics` | Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`) | implemented | planned |
-| `GET /metrics?format=json` | the same counters as JSON, for humans and scripts | implemented | planned |
-| `GET /topology` | what the service consumes and what it feeds, `"schema": "subplane.topology/1"` | implemented | planned |
-| `GET /health` | 200, or 503 with a reason | implemented (always 200) | planned |
+| `GET /metrics` | Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`) | implemented | implemented |
+| `GET /metrics?format=json` | the same counters as JSON, for humans and scripts | implemented | implemented |
+| `GET /topology` | what the service consumes and what it feeds, `"schema": "subplane.topology/1"` | implemented | implemented |
+| `GET /health` | 200, or 503 with a reason | implemented (always 200) | implemented: 503 while not connected to the exchange |
 
 `?format=text` used to return an ad hoc line format. It now returns the Prometheus text, as the default does.
 
@@ -82,6 +83,36 @@ Label names must match `[a-zA-Z_][a-zA-Z0-9_]*` and must not start with `__`; ot
 - a silent feed: `subplane_partition_last_receive_age_seconds > 5`;
 - a ring that cannot keep up: `rate(subplane_session_publish_failed_total[1m]) > 0`.
 
+## The gateway's metrics (implemented)
+
+`spwsgw --http 127.0.0.1:9101` serves the routes from its own thread, never the gateway thread, so `--spin` and the data path are unaffected. Without `--http` there is no server.
+
+**Identity flags:**
+- `--instance NAME` (default: the pack's `exchange`);
+- `--site S`, `--env E`;
+- `--labels k=v,...`, added to `subplane_service_info` only, with the agent's label-name rules.
+
+Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's own series add `venue` (the pack's `exchange`).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `subplane_service_info` | gauge | identity, `venue` | always 1 |
+| `subplane_uptime_seconds` | gauge | | seconds since start |
+| `subplane_gateway_<counter>_total` | counter | venue | `frames`, `records`, `acks`, `unmatched_streams`, `unknown_symbols`, `parse_errors`, `map_errors`, `book_errors`, `published`, `offers`, `offer_bytes`, `trades`, `quotes`, `book_updates`, `book_snapshots`, `heartbeats`, `definitions`, `other`, `snapshot_requests`, `snapshots_applied`, `connects`, `disconnects`, `resyncs` |
+| `subplane_gateway_dropped_total` | counter | venue, reason | messages not delivered: `back_pressured` (a subscriber is behind and the retry spin ran out), `not_connected` (nobody subscribes yet), `failed` (publication closed or at its position limit) |
+| `subplane_gateway_connected` | gauge | venue | 1 while connected to the exchange |
+| `subplane_gateway_publication_connected` | gauge | venue | 1 while a subscriber is connected to the output stream |
+| `subplane_gateway_last_sequence` | gauge | venue | Sequence of the last message offered |
+| `subplane_gateway_instruments` | gauge | venue | instruments configured |
+| `subplane_gateway_frame_to_offer_seconds` | histogram | venue | frame entry to the end of its last offer (frames that published) |
+| `subplane_gateway_recv_to_offer_seconds` | histogram | venue | frame receive (`RecvTs`, `CLOCK_REALTIME`) to the end of its last offer; the agent's `recv_to_publish` starts from the same clock |
+| `subplane_topology_edge` | gauge | direction, role, key, venue | 1 when the edge is up |
+
+**Useful queries:**
+- a gateway that lost its exchange: `subplane_gateway_connected == 0`;
+- output nobody reads: `rate(subplane_gateway_dropped_total{reason="not_connected"}[1m]) > 0`;
+- an agent that cannot keep up: `rate(subplane_gateway_dropped_total{reason="back_pressured"}[1m]) > 0`.
+
 ## Topology
 
 `GET /topology` returns one JSON document per service. Collectors join the documents of every service on endpoint keys, so no service needs to know any other.
@@ -131,6 +162,12 @@ An app needs no code to appear in `consumers`. The agent finds it in two ways:
 - `name` is the `IDENTIFY` name if one was sent, else the systemd unit or container scope (`unit`, from `/proc/<pid>/cgroup`), else `comm`.
 - A process still mapping a ring that an agent restart unlinked has `"stale_ring": true` and is not counted in `subplane_session_consumers`.
 
+### The gateway's topology
+- **Upstream `data`:** the pack's WebSocket URL, as a URL key. `state` is `up` while connected. On `--replay`, the recording, as `file://<path>`, always `up`.
+- **Upstream `recap`:** each distinct REST book-snapshot endpoint, live only. It is the exchange's recovery path: losing it loses book resyncs, not the live stream. A REST endpoint has no connection to watch, so it is reported `up`; failures show in `snapshot_requests` against `snapshots_applied`.
+- **Downstream `data`:** the Aeron publication, keyed as the agent keys its upstream (the driver directory resolves the same way). `state` is `up` while a subscriber is connected. An Aeron publication knows only whether someone subscribes, not who; the collector finds who by joining on the key. `--out stdout` and `--out null` have no downstream edge.
+- `local` names the `venue`, `venue_id` and number of `instruments`.
+
 ### Endpoint keys
 A key names one stream. One service's downstream key equals the next service's upstream key. These rules are normative, and both repositories check them against the vectors in `docs/topology-keys.json`:
 
@@ -160,5 +197,4 @@ Example alert, a session nobody reads: `subplane_session_consumers == 0`.
 - **Collector:** `subplane topo fetch | render | impact | serve`.
   - It joins documents into a flow graph and renders it as Mermaid, dot or a Grafana node graph.
   - It answers "if X fails, what loses data and what loses only recovery".
-- **Gateway `/topology`:** the gateway's `/topology` uses the same contract.
 - **The ring's shared reader section (PR C):** apps report their lag, heartbeat and read latency there.
