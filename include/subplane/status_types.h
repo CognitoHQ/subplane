@@ -32,7 +32,12 @@ struct SessionStatus {
     uint64_t    epoch = 0;
     uint64_t    published = 0;
     uint64_t    filtered = 0;
+    uint64_t    publish_failed = 0;
+    uint64_t    ring_overruns = 0;
     uint32_t    filter_generation = 0;
+    uint64_t    ring_head = 0;          // bytes written to the ring since it opened
+    uint64_t    ring_capacity = 0;
+    uint64_t    heartbeat_ns = 0;       // the writer's last ring heartbeat (CLOCK_REALTIME), 0 if none
 };
 
 struct AgentStatus {

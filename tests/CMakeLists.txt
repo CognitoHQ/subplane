@@ -7,7 +7,7 @@ function(subplane_unit_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-subplane_unit_test(test_core unit/test_message.cpp unit/test_api_server.cpp)
+subplane_unit_test(test_core unit/test_message.cpp unit/test_api_server.cpp unit/test_prom_writer.cpp)
 
 # M1 core types
 subplane_unit_test(test_core_types unit/test_filter_table.cpp unit/test_seqlock.cpp unit/test_histogram.cpp unit/test_symbol_table.cpp unit/test_lvc.cpp)

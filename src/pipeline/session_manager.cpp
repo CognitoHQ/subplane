@@ -411,7 +411,12 @@ std::vector<SessionStatus> SessionManager::status() const {
         const auto c = e.session->counters.snapshot();
         s.published = c.published;
         s.filtered = c.filtered;
+        s.publish_failed = c.publish_failed;
+        s.ring_overruns = c.ring_overruns;
         s.filter_generation = e.generation;
+        s.ring_head = e.session->ring.published_head();
+        s.ring_capacity = e.session->ring.capacity();
+        s.heartbeat_ns = e.session->ring.heartbeat_ns();
         out.push_back(std::move(s));
     }
     return out;

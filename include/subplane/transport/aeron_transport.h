@@ -70,12 +70,14 @@ public:
     int fd() const noexcept override { return -1; }
 
     bool connected() const noexcept;
-    uint64_t fragments() const noexcept { return fragments_; }
-    uint64_t oversize() const noexcept { return oversize_; }
+    uint64_t fragments() const noexcept { return fragments_.load(std::memory_order_relaxed); }
+    uint64_t oversize() const noexcept { return oversize_.load(std::memory_order_relaxed); }
     uint64_t images_available() const noexcept { return images_available_.load(std::memory_order_relaxed); }
     uint64_t images_unavailable() const noexcept { return images_unavailable_.load(std::memory_order_relaxed); }
     uint64_t client_errors() const noexcept { return client_errors_.load(std::memory_order_relaxed); }
     std::string last_error() const;
+
+    void counters(const std::function<void(std::string_view, uint64_t)>& out) const override;
 
     static std::unique_ptr<Transport> create(const YAML::Node& cfg, std::string& err);
 
@@ -104,7 +106,8 @@ private:
     PacketBatch* cur_ = nullptr;     // batch being filled during poll()
     uint64_t     cur_ts_ = 0;        // one clock read per poll
 
-    uint64_t fragments_ = 0, oversize_ = 0;
+    // One writer (the pipeline thread, in on_fragment); read cold by /metrics.
+    std::atomic<uint64_t> fragments_{0}, oversize_{0};
 
     // INTENT: the image and error handlers run on the Aeron client conductor
     // thread, not the pipeline thread, so everything they write is atomic (or

@@ -1,5 +1,7 @@
 #include "subplane/transport/aeron_transport.h"
 
+#include "subplane/core/counters.h"
+
 #include "aeron_util.h"
 
 #include "subplane/core/clock.h"
@@ -94,8 +96,8 @@ bool AeronTransport::open(std::string& err) {
 
 void AeronTransport::on_fragment(void* clientd, const uint8_t* buffer, size_t length, aeron_header_stct*) noexcept {
     auto* self = static_cast<AeronTransport*>(clientd);
-    ++self->fragments_;
-    if (length > self->cfg_.max_message) { ++self->oversize_; return; }
+    inc(self->fragments_);
+    if (length > self->cfg_.max_message) { inc(self->oversize_); return; }
     PacketBatch& b = *self->cur_;
     uint8_t* slot = self->arena_.data() + static_cast<size_t>(b.count) * self->cfg_.max_message;
     std::memcpy(slot, buffer, length);
@@ -186,6 +188,14 @@ void AeronTransport::close() noexcept {
     if (ctx_) { aeron_context_close(ctx_); ctx_ = nullptr; }
     if (driver_) { aeron_driver_close(driver_); driver_ = nullptr; }
     if (driver_ctx_) { aeron_driver_context_close(driver_ctx_); driver_ctx_ = nullptr; }
+}
+
+void AeronTransport::counters(const std::function<void(std::string_view, uint64_t)>& out) const {
+    out("fragments", fragments());
+    out("oversize", oversize());
+    out("images_available", images_available());
+    out("images_unavailable", images_unavailable());
+    out("client_errors", client_errors());
 }
 
 std::string AeronTransport::describe() const {

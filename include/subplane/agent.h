@@ -86,6 +86,10 @@ private:
     std::string version_;
     std::string config_dir_;
     uint32_t    max_symbols_ = 65536;
+    // `observability:` identity (docs/context/observability.md).
+    std::string host_;
+    std::string site_, env_;
+    std::vector<std::pair<std::string, std::string>> info_labels_;
     mutable std::mutex mutex_;
 };
 

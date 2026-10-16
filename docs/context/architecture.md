@@ -531,10 +531,10 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 | `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |
-| `GET /metrics` | JSON counters and the `recv_to_publish` histogram; `?format=text` for line-oriented text |
+| `GET /metrics` | Prometheus text exposition (`docs/context/observability.md`: every partition, transport, recap, group and session counter, state gauges, the `recv_to_publish` histogram, `subplane_service_info`); `?format=json` for the JSON form |
 | `POST /reload` | re-reads the config file and reconciles the `sessions` section |
 
-Anything else is 404 with a JSON error body. There is no per-session detail path and no Prometheus format (planned).
+Anything else is 404 with a JSON error body. There is no per-session detail path. `/topology` is planned (`observability.md`).
 
 ## Observability
 
@@ -543,7 +543,8 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, plus `last_unknown_template`.
 - Per session: `published`, `filtered`, `publish_failed`, `ring_overruns` (reserved; the writer cannot observe reader overruns, so it stays 0).
 - Histogram: one `LogHistogram` per thread group, `recv_to_publish` in ns (receive timestamp to after the packet is published, recorded per packet). 64 power-of-two buckets by 4 sub-buckets (256 total), relative error up to 25%, single writer with relaxed load and store, snapshotted cold for p50, p90, p99, p99.9, min, max, mean. Per-stage histograms are planned.
-- `/metrics` also reports each group's loop count and each session's published, filtered and generation. The metrics manager can write periodic reports per `metrics.*` config.
+- Transports keep their own one-writer counters (`aeron`: fragments, oversize, image events, client errors; `tcp_stream`: connects, disconnects, framing errors), exported through the cold `Transport::counters()`.
+- `/metrics` serves all of these in Prometheus format, with the metric names, labels and identity rules in `docs/context/observability.md`; `?format=json` gives the JSON form. The metrics manager can write periodic reports per `metrics.*` config.
 
 ## Configuration reference
 
@@ -584,6 +585,9 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
 `logging`
 - `level`, `console_output`, `output_format`.
+
+`observability` (optional)
+- `site`, `env`, `labels` (a map): identity carried by `subplane_service_info` (`observability.md`). Invalid label names fail startup.
 
 Startup is fail-fast: an unknown component type, a bad schema, a bad framing block, an invalid decoder mapping, or a thread-group assignment error stops the agent with a message. A failure to open a session or bind the control socket is logged and the agent keeps running.
 

@@ -50,6 +50,12 @@ struct alignas(64) PartitionCounters {
         s.last_unknown_template = last_unknown_template.load(std::memory_order_relaxed);
         return s;
     }
+    // Cold. f(name, value) for every counter, in declaration order.
+    template <class F> static void each(const Snapshot& s, F&& f) {
+#define X(n) f(#n, s.n);
+        SUBPLANE_PARTITION_COUNTERS(X)
+#undef X
+    }
 
     std::string to_json() const {
         const Snapshot s = snapshot();
@@ -68,6 +74,13 @@ struct alignas(64) RecapCounters {
 #undef X
     std::atomic<uint64_t> inflight{0};  // gauge
     std::atomic<uint64_t> queued{0};    // gauge: waiting for an in-flight slot or a retry
+
+    // Cold. f(name, value) for every counter (not the gauges).
+    template <class F> void each(F&& f) const {
+#define X(n) f(#n, n.load(std::memory_order_relaxed));
+        SUBPLANE_RECAP_COUNTERS(X)
+#undef X
+    }
 
     std::string to_json() const {
         std::string o = "{";
@@ -99,6 +112,11 @@ struct alignas(64) SessionCounters {
         SUBPLANE_SESSION_COUNTERS(X)
 #undef X
         return s;
+    }
+    template <class F> static void each(const Snapshot& s, F&& f) {
+#define X(n) f(#n, s.n);
+        SUBPLANE_SESSION_COUNTERS(X)
+#undef X
     }
 
     std::string to_json() const {

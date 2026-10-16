@@ -207,11 +207,12 @@ HttpResponse ApiServer::handle_metrics(const HttpRequest& request) {
     }
     HttpResponse r;
     auto it = request.query_params.find("format");
-    if (it != request.query_params.end() && it->second == "text") {
-        r.headers["Content-Type"] = "text/plain";
-        r.body = agent_->get_metrics_manager().get_summary();
-    } else {
+    if (it != request.query_params.end() && it->second == "json") {
         r.body = agent_->get_metrics_manager().get_metrics_json();
+    } else {
+        // Prometheus text exposition 0.0.4 by default (and for the old ?format=text).
+        r.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8";
+        r.body = agent_->get_metrics_manager().get_summary();
     }
     return r;
 }

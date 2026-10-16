@@ -50,6 +50,7 @@ add_library(subplane_core STATIC
     src/config_manager.cpp
     src/logging/log_registry.cpp
     src/metrics/metrics_manager.cpp
+    src/metrics/prom_writer.cpp
     src/persistence_manager.cpp
     src/symbol_table.cpp
     src/core/filter_table.cpp

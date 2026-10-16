@@ -17,7 +17,7 @@ Only what builds today:
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK
 - **Control**: Unix `SOCK_SEQPACKET` control channel (dynamic sessions, snapshots)
 - **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/reload`)
-- **Metrics**: lock-free log histogram and one-writer counters
+- **Metrics**: lock-free log histogram and one-writer counters; `/metrics` in Prometheus format (contract in `docs/context/observability.md`)
 - Planned, not built: `aeron_ipc` fan-out, Kafka, derived feeds, Python client
 
 ## Vocabulary
@@ -29,6 +29,7 @@ Only what builds today:
 - **[Project Vision](docs/context/project-vision.md)**: identity, thesis, latency budget, non-goals, roadmap
 - **[Architecture](docs/context/architecture.md)**: data flow, ring and record format, control channel, config reference, source layout
 - **[Invariants](docs/context/invariants.md)**: non-negotiable engineering rules
+- **[Observability](docs/context/observability.md)**: the metrics and topology contract every service serves
 - **[Landscape](docs/context/landscape.md)**: agent vs library vs middleware (Fluent Bit, Helix, OpenMAMA, Aeron, etc.)
 
 **Private docs** (gitignored, in `.subplane/`):

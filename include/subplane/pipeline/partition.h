@@ -126,6 +126,7 @@ public:
     std::unique_ptr<RecapTransport> take_recap_transport() noexcept { return std::move(recap_transport_); }
 
     Transport& transport() noexcept { return *transport_; }
+    const Transport& transport() const noexcept { return *transport_; }
     bool has_transport() const noexcept { return transport_ != nullptr; }
     const PartitionConfig& config() const noexcept { return cfg_; }
 

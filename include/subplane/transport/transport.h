@@ -11,7 +11,9 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <string>
+#include <string_view>
 
 #include <yaml-cpp/yaml.h>
 
@@ -66,6 +68,10 @@ public:
 
     // Cold. File descriptor for epoll integration (-1 if none).
     virtual int fd() const noexcept = 0;
+
+    // Cold. The transport's own counters for /metrics, by name ("fragments",
+    // "connects"); each is a one-writer relaxed atomic the poll thread writes.
+    virtual void counters(const std::function<void(std::string_view name, uint64_t value)>& out) const { (void)out; }
 
     // Hot, non-virtual. State changes the transport noticed during poll(), in
     // order. The pipeline reads them right after poll() and before the batch's

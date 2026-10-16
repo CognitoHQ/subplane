@@ -5,6 +5,7 @@
 #include "subplane/core/clock.h"
 #include "subplane/logging/log_registry.h"
 #include "subplane/metrics/metrics_manager.h"
+#include "subplane/metrics/prom_writer.h"
 #include "subplane/pipeline/lvc.h"
 #include "subplane/pipeline/partition.h"
 #include "subplane/pipeline/pipeline.h"
@@ -51,6 +52,26 @@ bool Agent::initialize(const std::string& config_path) {
     name_ = config_manager_->get_value<std::string>("agent.name", "subplane");
     version_ = config_manager_->get_value<std::string>("agent.version", "2.0.0-dev");
     max_symbols_ = config_manager_->get_value<uint32_t>("agent.max_symbols", 65536u);
+
+    {
+        char host[256] = {};
+        host_ = ::gethostname(host, sizeof host - 1) == 0 ? host : "unknown";
+        site_ = config_manager_->get_value<std::string>("observability.site", "");
+        env_ = config_manager_->get_value<std::string>("observability.env", "");
+        auto labels = config_manager_->get_section("observability");
+        if (labels.IsMap() && labels["labels"].IsMap()) {
+            for (const auto& kv : labels["labels"]) {
+                const std::string k = kv.first.as<std::string>();
+                bool ok = !k.empty() && !(k[0] >= '0' && k[0] <= '9') && k.rfind("__", 0) != 0;
+                for (char c : k) ok = ok && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+                if (!ok) {
+                    std::cerr << "observability.labels: invalid label name '" << k << "'" << std::endl;
+                    return false;
+                }
+                info_labels_.emplace_back(k, kv.second.as<std::string>());
+            }
+        }
+    }
 
     auto metrics_node = config_manager_->get_section("metrics");
     std::string metrics_config = metrics_node.IsDefined() ? YAML::Dump(metrics_node) : "{}";
@@ -414,60 +435,106 @@ std::vector<std::pair<uint32_t, std::string>> Agent::symbols(uint32_t from_id, u
 
 std::string Agent::render_metrics(const std::string& format) const {
     const AgentStatus st = get_status();
-    if (format == "text") {
-        std::string o = "subplane_uptime_seconds " + std::to_string(st.uptime_seconds) + "\n";
+    if (format == "json") {
+        std::string o = "{\"uptime_seconds\":" + std::to_string(st.uptime_seconds) + ",\"partitions\":{";
+        bool first = true;
         for (const auto& p : partitions_) {
-            const auto c = p->counters.snapshot();
-            const std::string l = "{partition=\"" + p->name() + "\"}";
-            o += "subplane_partition_packets" + l + " " + std::to_string(c.packets) + "\n";
-            o += "subplane_partition_messages" + l + " " + std::to_string(c.messages) + "\n";
-            o += "subplane_partition_gaps" + l + " " + std::to_string(c.gaps) + "\n";
-            o += "subplane_partition_unknown_templates" + l + " " + std::to_string(c.unknown_templates) + "\n";
-            o += "subplane_partition_undecodable_tail" + l + " " + std::to_string(c.undecodable_tail) + "\n";
+            o += (first ? "" : ",");
+            first = false;
+            o += "\"" + p->name() + "\":" + p->counters.to_json();
         }
+        o += "},\"recap\":{";
+        first = true;
+        for (const auto& p : partitions_) {
+            if (!p->has_recap()) continue;
+            o += (first ? "" : ",");
+            first = false;
+            o += "\"" + p->name() + "\":" + p->recap_counters.to_json();
+        }
+        o += "},\"groups\":{";
+        first = true;
         for (const auto& g : groups_) {
-            const auto h = g->hist_recv_to_publish().snapshot();
-            const std::string l = "{group=\"" + g->name() + "\"}";
-            o += "subplane_recv_to_publish_ns_p50" + l + " " + std::to_string(percentile(h, 0.50)) + "\n";
-            o += "subplane_recv_to_publish_ns_p99" + l + " " + std::to_string(percentile(h, 0.99)) + "\n";
-            o += "subplane_recv_to_publish_ns_p999" + l + " " + std::to_string(percentile(h, 0.999)) + "\n";
-            o += "subplane_recv_to_publish_count" + l + " " + std::to_string(h.count) + "\n";
+            o += (first ? "" : ",");
+            first = false;
+            o += "\"" + g->name() + "\":{\"loops\":" + std::to_string(g->loops()) + ",\"recv_to_publish_ns\":" +
+                 to_json(g->hist_recv_to_publish().snapshot(), "recv_to_publish_ns") + "}";
         }
+        o += "},\"sessions\":{";
+        first = true;
+        for (const auto& s : st.sessions) {
+            o += (first ? "" : ",");
+            first = false;
+            o += "\"" + s.name + "\":{\"published\":" + std::to_string(s.published) + ",\"filtered\":" +
+                 std::to_string(s.filtered) + ",\"filter_generation\":" + std::to_string(s.filter_generation) + "}";
+        }
+        o += "}}";
         return o;
     }
-    std::string o = "{\"uptime_seconds\":" + std::to_string(st.uptime_seconds) + ",\"partitions\":{";
-    bool first = true;
-    for (const auto& p : partitions_) {
-        o += (first ? "" : ",");
-        first = false;
-        o += "\"" + p->name() + "\":" + p->counters.to_json();
+
+    // Prometheus text exposition (docs/context/observability.md): every
+    // format other than "json", including the old "text".
+    PromWriter w({{"service", "subplaned"}, {"instance", name_}, {"host", host_}});
+    const uint64_t now = now_ns();
+    auto age_s = [now](uint64_t t) { return t == 0 || t > now ? 0.0 : static_cast<double>(now - t) / 1e9; };
+
+    PromWriter::Labels info = {{"version", version_}, {"epoch", std::to_string(epoch_)}, {"site", site_}, {"env", env_}};
+    info.insert(info.end(), info_labels_.begin(), info_labels_.end());
+    w.gauge("subplane_service_info", "Identity of this service; always 1", info, 1);
+    w.gauge("subplane_uptime_seconds", "Seconds since the agent started", {}, static_cast<double>(st.uptime_seconds));
+    w.gauge("subplane_sessions", "Sessions open on this agent", {}, static_cast<double>(st.sessions.size()));
+    if (control_) w.gauge("subplane_control_clients", "Clients connected to the control socket", {}, static_cast<double>(control_->clients()));
+    if (symbols_) {
+        w.gauge("subplane_symbols", "Symbols interned in the symbol table", {}, symbols_->size());
+        w.gauge("subplane_symbols_capacity", "Symbol table capacity (agent.max_symbols)", {}, symbols_->capacity());
     }
-    o += "},\"recap\":{";
-    first = true;
-    for (const auto& p : partitions_) {
-        if (!p->has_recap()) continue;
-        o += (first ? "" : ",");
-        first = false;
-        o += "\"" + p->name() + "\":" + p->recap_counters.to_json();
+    if (lvc_) w.counter("subplane_lvc_writes_total", "Last-value cache slot writes", {}, lvc_->writes());
+
+    for (size_t i = 0; i < partitions_.size() && i < st.partitions.size(); ++i) {
+        const Partition& p = *partitions_[i];
+        const PartitionStatus& ps = st.partitions[i];
+        const PromWriter::Labels l = {{"partition", p.name()}};
+        PartitionCounters::each(p.counters.snapshot(), [&](const char* n, uint64_t v) {
+            w.counter("subplane_partition_" + std::string(n) + "_total", "Partition counter " + std::string(n), l, v);
+        });
+        for (const char* s : {"init", "active", "degraded"}) {
+            w.gauge("subplane_partition_state", "1 for the partition's current state", {{"partition", p.name()}, {"state", s}}, ps.state == s ? 1 : 0);
+        }
+        w.gauge("subplane_partition_last_sequence", "Last sequence accepted", l, static_cast<double>(ps.last_sequence));
+        w.gauge("subplane_partition_last_receive_age_seconds", "Seconds since the last packet (0 before the first)", l, age_s(ps.last_rx_ns));
+        for (const char* s : {"unknown", "up", "down"}) {
+            w.gauge("subplane_transport_state", "1 for the transport's current state", {{"partition", p.name()}, {"state", s}}, ps.transport == s ? 1 : 0);
+        }
+        if (p.has_transport()) {
+            p.transport().counters([&](std::string_view n, uint64_t v) {
+                w.counter("subplane_transport_" + std::string(n) + "_total", "Transport counter " + std::string(n), l, v);
+            });
+        }
+        if (p.has_recap()) {
+            p.recap_counters.each([&](const char* n, uint64_t v) {
+                std::string_view sn(n);
+                if (sn.rfind("recap_", 0) == 0) sn.remove_prefix(6);
+                w.counter("subplane_recap_" + std::string(sn) + "_total", "Recap counter " + std::string(n), l, v);
+            });
+            w.gauge("subplane_recap_inflight", "Recap requests in flight", l, static_cast<double>(p.recap_counters.inflight.load(std::memory_order_relaxed)));
+            w.gauge("subplane_recap_queued", "Recap requests waiting to be sent", l, static_cast<double>(p.recap_counters.queued.load(std::memory_order_relaxed)));
+        }
     }
-    o += "},\"groups\":{";
-    first = true;
     for (const auto& g : groups_) {
-        o += (first ? "" : ",");
-        first = false;
-        o += "\"" + g->name() + "\":{\"loops\":" + std::to_string(g->loops()) + "," +
-             to_json(g->hist_recv_to_publish().snapshot(), "recv_to_publish_ns") + "}";
+        const PromWriter::Labels l = {{"group", g->name()}};
+        w.counter("subplane_group_loops_total", "Pipeline loop iterations", l, g->loops());
+        w.histogram_ns("subplane_recv_to_publish_seconds", "Packet receive timestamp to after its last publish", l, g->hist_recv_to_publish().snapshot());
     }
-    o += "},\"sessions\":{";
-    first = true;
     for (const auto& s : st.sessions) {
-        o += (first ? "" : ",");
-        first = false;
-        o += "\"" + s.name + "\":{\"published\":" + std::to_string(s.published) + ",\"filtered\":" +
-             std::to_string(s.filtered) + ",\"filter_generation\":" + std::to_string(s.filter_generation) + "}";
+        const PromWriter::Labels l = {{"session", s.name}};
+        w.counter("subplane_session_published_total", "Records published to the session's ring", l, s.published);
+        w.counter("subplane_session_filtered_total", "Records the session's filter rejected", l, s.filtered);
+        w.counter("subplane_session_publish_failed_total", "Records that did not fit the ring", l, s.publish_failed);
+        w.counter("subplane_session_ring_bytes_total", "Bytes written to the session's ring", l, s.ring_head);
+        w.gauge("subplane_session_ring_capacity_bytes", "Ring data capacity", l, static_cast<double>(s.ring_capacity));
+        w.gauge("subplane_session_ring_heartbeat_age_seconds", "Seconds since the writer's last ring heartbeat", l, age_s(s.heartbeat_ns));
+        w.gauge("subplane_session_filter_generation", "Generation of the session's current filter", l, s.filter_generation);
     }
-    o += "}}";
-    return o;
+    return w.str();
 }
 
 } // namespace subplane

@@ -33,5 +33,8 @@
 ^src/recap/
 ^config\.yaml$
 
-# Operator surface: HTTP API
+# Operator surface: HTTP API, metric names and labels, the observability contract
 ^src/api_server\.cpp$
+^src/agent\.cpp$
+^src/metrics/
+^docs/context/observability\.md$

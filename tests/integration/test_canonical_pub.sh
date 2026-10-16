@@ -27,6 +27,7 @@ control: { socket_path: $SOCK, fallback_socket_path: $SOCK, linger_ms: 1000 }
 lvc: { max_payload: 512 }
 api: { enabled: true, host: 127.0.0.1, port: $API }
 metrics: { enabled: false, report_interval_seconds: 60, output_format: json, console_output: false }
+observability: { site: lab, env: test, labels: { team: md } }
 logging: { level: info, console_output: true, output_format: text }
 YAML
 "$AGENT" --config "$TMP/config.yaml" > "$TMP/agent.log" 2>&1 & AGENT_PID=$!
@@ -39,5 +40,22 @@ for _ in $(seq 1 50); do [ -f "$RING" ] && break; sleep 0.1; done
 "$APP" "$RING" --from-start --quiet --seconds 2 > "$TMP/app.log" 2>&1 || fail "views_app exit $?"
 SUMMARY=$(tail -1 "$TMP/app.log"); echo "$SUMMARY"
 [ "$SUMMARY" = "trades=500 quotes=500 books=0 snapshots=0 other=0 heartbeats=0 bad=0" ] || fail "unexpected summary"
+# /metrics: Prometheus text by default (docs/context/observability.md), JSON on request.
+http_get "$API" /metrics > "$TMP/metrics.txt" || fail "GET /metrics"
+for want in \
+  '# TYPE subplane_partition_messages_total counter' \
+  'subplane_partition_messages_total{service="subplaned",instance="pubtest",host="'"$(hostname)"'",partition="can0"} 1000' \
+  'subplane_session_published_total{service="subplaned",instance="pubtest",host="'"$(hostname)"'",session="all"}' \
+  '# TYPE subplane_recv_to_publish_seconds histogram' \
+  'subplane_recv_to_publish_seconds_count{service="subplaned",instance="pubtest",host="'"$(hostname)"'",group="g0"} 500' \
+  'subplane_service_info{service="subplaned",instance="pubtest",host="'"$(hostname)"'",version="test",epoch="' \
+  'site="lab",env="test",team="md"} 1' ; do
+  grep -qF -- "$want" "$TMP/metrics.txt" || fail "metrics missing: $want"
+done
+# Every family has HELP then TYPE, once.
+[ "$(grep -c '^# TYPE ' "$TMP/metrics.txt")" = "$(grep -c '^# HELP ' "$TMP/metrics.txt")" ] || fail "HELP/TYPE mismatch"
+[ -z "$(grep '^# TYPE ' "$TMP/metrics.txt" | awk '{print $3}' | sort | uniq -d)" ] || fail "a family is split"
+http_get "$API" '/metrics?format=json' > "$TMP/metrics.json" || fail "GET /metrics?format=json"
+if command -v python3 >/dev/null; then python3 -m json.tool "$TMP/metrics.json" >/dev/null || fail "metrics JSON invalid"; fi
 kill $AGENT_PID; wait $AGENT_PID 2>/dev/null
 echo "PASS"

@@ -1,5 +1,7 @@
 #include "subplane/transport/tcp_stream.h"
 
+#include "subplane/core/counters.h"
+
 #include "subplane/core/clock.h"
 
 #include <arpa/inet.h>
@@ -98,7 +100,7 @@ bool TcpStreamTransport::start_connect() noexcept {
     const int rc = ::connect(fd_, reinterpret_cast<sockaddr*>(&addr_), sizeof(addr_));
     if (rc == 0) {
         state_ = State::CONNECTED;
-        ++connects_;
+        inc(connects_);
         report_up();
         return true;
     }
@@ -121,7 +123,7 @@ void TcpStreamTransport::drop(const char* why, TransportReason reason) noexcept 
     last_error_ = why;
     report_down(reason);
     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
-    if (state_ == State::CONNECTED) ++disconnects_;
+    if (state_ == State::CONNECTED) inc(disconnects_);
     rd_ = wr_ = 0;
     if (cfg_.reconnect_ms == 0) { state_ = State::FATAL; return; }
     state_ = State::DISCONNECTED;
@@ -155,7 +157,7 @@ bool TcpStreamTransport::consume_prelude() noexcept {
                 last_error_ = "stream does not start with a DBN prelude";
             }
             if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
-            ++framing_errors_;
+            inc(framing_errors_);
             report_down(TransportReason::LOCAL_FAILURE);
             state_ = State::FATAL; // a wrong stream will not fix itself by reconnecting
             return false;
@@ -197,7 +199,7 @@ int TcpStreamTransport::poll(PacketBatch& out) noexcept {
                 return 0;
             }
             state_ = State::CONNECTED;
-            ++connects_;
+            inc(connects_);
             report_up();
             break;
         }
@@ -234,7 +236,7 @@ int TcpStreamTransport::poll(PacketBatch& out) noexcept {
         const uint8_t* p = arena_.data() + rd_;
         const uint32_t len = record_len_at(p);
         if (len < hdr_need || len > cfg_.max_record) {
-            ++framing_errors_;
+            inc(framing_errors_);
             drop("record length out of range (stream misaligned?)", TransportReason::LOCAL_FAILURE);
             return state_ == State::FATAL ? -1 : out.count;
         }

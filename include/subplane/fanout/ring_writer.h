@@ -175,6 +175,9 @@ public:
         hdr_->heartbeat_ns.store(now_ns, std::memory_order_relaxed);
     }
 
+    // Cold, any thread: the last heartbeat (0 before the first).
+    uint64_t heartbeat_ns() const noexcept { return hdr_ ? hdr_->heartbeat_ns.load(std::memory_order_relaxed) : 0; }
+
     // Marks the ring CLOSED. Further publish() calls fail. Idempotent.
     void close() noexcept {
         if (hdr_ == nullptr || !active_) return;

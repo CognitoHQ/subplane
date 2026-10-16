@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -62,9 +63,14 @@ public:
     int fd() const noexcept override { return fd_; }
 
     bool connected() const noexcept { return state_ == State::CONNECTED; }
-    uint64_t connects() const noexcept { return connects_; }
-    uint64_t disconnects() const noexcept { return disconnects_; }
-    uint64_t framing_errors() const noexcept { return framing_errors_; }
+    uint64_t connects() const noexcept { return connects_.load(std::memory_order_relaxed); }
+    uint64_t disconnects() const noexcept { return disconnects_.load(std::memory_order_relaxed); }
+    uint64_t framing_errors() const noexcept { return framing_errors_.load(std::memory_order_relaxed); }
+    void counters(const std::function<void(std::string_view, uint64_t)>& out) const override {
+        out("connects", connects());
+        out("disconnects", disconnects());
+        out("framing_errors", framing_errors());
+    }
     const std::string& last_error() const noexcept { return last_error_; }
 
     static std::unique_ptr<Transport> create(const YAML::Node& cfg, std::string& err);
@@ -92,7 +98,8 @@ private:
     bool   prelude_pending_ = false;
     size_t prelude_skip_ = 0;
 
-    uint64_t connects_ = 0, disconnects_ = 0, framing_errors_ = 0;
+    // One writer (the pipeline thread); read cold by /metrics.
+    std::atomic<uint64_t> connects_{0}, disconnects_{0}, framing_errors_{0};
     std::string last_error_;
 };
 
