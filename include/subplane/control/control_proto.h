@@ -27,6 +27,9 @@
 //   PING             CtlPingReq         -> CtlPingResp
 //   SYMBOLS          CtlSymbolsReq      -> CtlSymbolsResp + count * CtlSymbolEntry
 //   SNAPSHOT         CtlNameReq         -> multi-datagram, see below
+//   IDENTIFY         CtlIdentifyReq     -> (empty). Optional: names this
+//                    connection's app for /topology. An older agent answers
+//                    UNSUPPORTED, which a client treats as success.
 //
 // SNAPSHOT framing (all datagrams have op SNAPSHOT and the request's req_id):
 //   1. status OK, body = CtlSnapshotResp { ring_head_at_snapshot, record_count, skipped }
@@ -68,6 +71,7 @@ enum class CtlOp : uint16_t {
     SNAPSHOT        = 6,
     PING            = 7,
     SYMBOLS         = 8,
+    IDENTIFY        = 9,
 };
 
 enum class CtlStatus : uint32_t {
@@ -192,8 +196,14 @@ struct CtlPingResp {
     uint64_t server_ns;
 };
 
+// IDENTIFY: printable ASCII, 1 to 31 chars, NUL-padded.
+struct CtlIdentifyReq {
+    char app_name[32];
+};
+
 #pragma pack(pop)
 
+static_assert(sizeof(CtlIdentifyReq) == 32);
 static_assert(sizeof(CtlHeader) == 16);
 static_assert(sizeof(CtlHelloResp) == 64);
 static_assert(sizeof(CtlPartitionEntry) == 34);

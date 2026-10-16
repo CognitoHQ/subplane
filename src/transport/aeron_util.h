@@ -16,6 +16,10 @@ bool open_client(const std::string& aeron_dir, uint64_t driver_timeout_ms, const
                  aeron_error_handler_t on_error, void* error_clientd,
                  aeron_context_t*& ctx, aeron_t*& client, std::string& err);
 
+// The media driver directory a client opened with `aeron_dir` uses: the
+// configured one, or Aeron's default (/dev/shm/aeron-<user> on Linux).
+std::string resolved_dir(const std::string& aeron_dir);
+
 // Adds a subscription and waits up to timeout_ms for the driver to confirm it.
 aeron_subscription_t* add_subscription(aeron_t* client, const std::string& channel, int32_t stream_id,
                                        aeron_on_available_image_t on_available, void* available_clientd,

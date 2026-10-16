@@ -69,6 +69,14 @@ public:
     // Cold. File descriptor for epoll integration (-1 if none).
     virtual int fd() const noexcept = 0;
 
+    // Cold. The canonical key of the stream this transport reads
+    // (observability/endpoint_key.h), with `host` the local host name; empty
+    // if it has none. /topology joins services on it.
+    virtual std::string endpoint_key(std::string_view host) const { (void)host; return {}; }
+    // Cold. What the transport knows about the current publisher, as the
+    // members of a JSON object ("\"aeron_session\":1234"); empty if nothing.
+    virtual std::string publisher_json() const { return {}; }
+
     // Cold. The transport's own counters for /metrics, by name ("fragments",
     // "connects"); each is a one-writer relaxed atomic the poll thread writes.
     virtual void counters(const std::function<void(std::string_view name, uint64_t value)>& out) const { (void)out; }

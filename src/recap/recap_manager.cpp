@@ -577,6 +577,7 @@ void RecapManager::publish_gauges(PState& ps) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
     rc.inflight.store(ps.inflight, std::memory_order_relaxed);
     rc.queued.store(ps.entries.size() - ps.inflight, std::memory_order_relaxed);
+    rc.connected.store(ps.was_connected ? 1 : 0, std::memory_order_relaxed);
 }
 
 } // namespace subplane

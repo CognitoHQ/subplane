@@ -53,6 +53,7 @@ public:
     int poll(RecapFragmentSink& sink, int limit) noexcept override;
     void close() noexcept override;
     std::string describe() const override;
+    std::string endpoint_key(std::string_view host) const override;
     bool connected() const noexcept override;
 
     // The request channel as sent to the driver, with response-correlation-id.

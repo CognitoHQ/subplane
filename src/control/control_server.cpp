@@ -158,6 +158,7 @@ void ControlServer::stop() {
     // Thread is gone: clients_ is ours. Closing a connection counts as a
     // client disconnect so lingering semantics stay the same on shutdown.
     while (!clients_.empty()) drop(clients_.size() - 1);
+    publish_clients();
     if (listen_fd_ >= 0) {
         ::close(listen_fd_);
         listen_fd_ = -1;
@@ -218,7 +219,27 @@ void ControlServer::run() {
             if (!keep) drop(i);
         }
         if (pfds[0].revents & POLLIN) accept_clients();
+        if (clients_dirty_) publish_clients();
     }
+}
+
+void ControlServer::note_attached(Client& c, const std::string& name) {
+    if (std::find(c.attached.begin(), c.attached.end(), name) == c.attached.end()) c.attached.push_back(name);
+    clients_dirty_ = true;
+}
+
+void ControlServer::publish_clients() {
+    std::vector<ClientInfo> v;
+    v.reserve(clients_.size());
+    for (const auto& c : clients_) v.push_back({c.pid, c.uid, c.app_name, c.attached});
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    snapshot_ = std::move(v);
+    clients_dirty_ = false;
+}
+
+std::vector<ControlServer::ClientInfo> ControlServer::client_snapshot() const {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    return snapshot_;
 }
 
 void ControlServer::accept_clients() {
@@ -248,6 +269,7 @@ void ControlServer::accept_clients() {
         }
         clients_.push_back(std::move(c));
         n_clients_.store(clients_.size(), std::memory_order_relaxed);
+        clients_dirty_ = true;
         LogRegistry::instance().info("CONTROL", "CLIENT_CONNECTED", who);
     }
 }
@@ -263,7 +285,9 @@ bool ControlServer::held_by_other(const std::string& name, const Client* except)
 void ControlServer::release_everywhere(const std::string& name) {
     for (auto& c : clients_) {
         c.holds.erase(std::remove(c.holds.begin(), c.holds.end(), name), c.holds.end());
+        c.attached.erase(std::remove(c.attached.begin(), c.attached.end(), name), c.attached.end());
     }
+    clients_dirty_ = true;
 }
 
 void ControlServer::drop(size_t idx) {
@@ -280,6 +304,7 @@ void ControlServer::drop(size_t idx) {
     ::close(c.fd);
     clients_.erase(clients_.begin() + static_cast<std::ptrdiff_t>(idx));
     n_clients_.store(clients_.size(), std::memory_order_relaxed);
+    clients_dirty_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +389,7 @@ ControlServer::Rx ControlServer::serve(Client& c) {
     case CtlOp::SNAPSHOT:        ok = op_snapshot(c, h, body); break;
     case CtlOp::PING:            ok = op_ping(c, h, body); break;
     case CtlOp::SYMBOLS:         ok = op_symbols(c, h, body); break;
+    case CtlOp::IDENTIFY:        ok = op_identify(c, h, body); break;
     default:
         ok = reply_err(c, h, CtlStatus::UNSUPPORTED, "unknown op " + std::to_string(h.op));
         break;
@@ -524,6 +550,7 @@ bool ControlServer::op_attach(Client& c, const CtlHeader& h, const uint8_t* body
         sessions_.client_reattached(name);
         if (std::find(c.holds.begin(), c.holds.end(), name) == c.holds.end()) c.holds.push_back(name);
     }
+    note_attached(c, name);
     LogRegistry::instance().info("CONTROL", "ATTACH",
                                  name + " by uid=" + std::to_string(c.uid) + " pid=" + std::to_string(c.pid));
     return reply(c, h, CtlStatus::OK, &r, sizeof(r));
@@ -549,6 +576,7 @@ bool ControlServer::op_create(Client& c, const CtlHeader& h, const uint8_t* body
         return reply_err(c, h, exists ? CtlStatus::EXISTS : CtlStatus::INTERNAL, err);
     }
     c.holds.push_back(spec.name);
+    note_attached(c, spec.name);
     CtlAttachResp r;
     if (!fill_attach(spec.name, r, err)) return reply_err(c, h, CtlStatus::INTERNAL, err);
     LogRegistry::instance().info("CONTROL", "SESSION_CREATED",
@@ -660,6 +688,21 @@ bool ControlServer::op_symbols(Client& c, const CtlHeader& h, const uint8_t* bod
     std::memcpy(out.data(), &r, sizeof(r));
     if (!entries.empty()) std::memcpy(out.data() + sizeof(r), entries.data(), entries.size() * sizeof(CtlSymbolEntry));
     return reply(c, h, CtlStatus::OK, out.data(), out.size());
+}
+
+bool ControlServer::op_identify(Client& c, const CtlHeader& h, const uint8_t* body) {
+    if (h.len != sizeof(CtlIdentifyReq)) return reply_err(c, h, CtlStatus::BAD_REQUEST, "IDENTIFY: bad body");
+    CtlIdentifyReq q {};
+    std::memcpy(&q, body, sizeof(q));
+    const std::string_view name = get_name(q.app_name);
+    bool ok = !name.empty() && name.size() < sizeof(q.app_name);
+    for (char ch : name) ok = ok && ch >= 0x20 && ch < 0x7f && ch != '"' && ch != '\\';
+    if (!ok) return reply_err(c, h, CtlStatus::BAD_REQUEST, "IDENTIFY: app name must be 1-31 printable chars, no quote or backslash");
+    c.app_name = std::string(name);
+    clients_dirty_ = true;
+    LogRegistry::instance().info("CONTROL", "IDENTIFY",
+                                 c.app_name + " uid=" + std::to_string(c.uid) + " pid=" + std::to_string(c.pid));
+    return reply(c, h, CtlStatus::OK, nullptr, 0);
 }
 
 bool ControlServer::op_ping(Client& c, const CtlHeader& h, const uint8_t* body) {

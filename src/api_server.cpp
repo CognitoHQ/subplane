@@ -178,6 +178,7 @@ HttpResponse ApiServer::route_request(const HttpRequest& request) {
     if (path == "/health")     return handle_health(request);
     if (path == "/status")     return handle_status(request);
     if (path == "/metrics")    return handle_metrics(request);
+    if (path == "/topology")   return handle_topology(request);
     if (path == "/partitions") return handle_partitions(request);
     if (path == "/sessions")   return handle_sessions(request);
     if (path == "/reload")     return handle_reload(request);
@@ -214,6 +215,15 @@ HttpResponse ApiServer::handle_metrics(const HttpRequest& request) {
         r.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8";
         r.body = agent_->get_metrics_manager().get_summary();
     }
+    return r;
+}
+
+HttpResponse ApiServer::handle_topology(const HttpRequest&) {
+    if (!agent_) {
+        return error_response(500, "agent not available");
+    }
+    HttpResponse r;
+    r.body = agent_->render_topology();
     return r;
 }
 

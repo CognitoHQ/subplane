@@ -417,6 +417,9 @@ std::vector<SessionStatus> SessionManager::status() const {
         s.ring_head = e.session->ring.published_head();
         s.ring_capacity = e.session->ring.capacity();
         s.heartbeat_ns = e.session->ring.heartbeat_ns();
+        for (const Partition* p : partitions_) {
+            if ((e.session->partition_mask >> p->id()) & 1ull) s.partitions.push_back(p->name());
+        }
         out.push_back(std::move(s));
     }
     return out;

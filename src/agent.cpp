@@ -6,6 +6,8 @@
 #include "subplane/logging/log_registry.h"
 #include "subplane/metrics/metrics_manager.h"
 #include "subplane/metrics/prom_writer.h"
+#include "subplane/observability/endpoint_key.h"
+#include "subplane/observability/proc_scan.h"
 #include "subplane/pipeline/lvc.h"
 #include "subplane/pipeline/partition.h"
 #include "subplane/pipeline/pipeline.h"
@@ -15,7 +17,10 @@
 #include "subplane/symbol_table.h"
 #include "subplane/control/control_server.h"
 
+#include <cstdio>
 #include <iostream>
+#include <unordered_map>
+#include <unordered_set>
 #include <unistd.h>
 
 namespace subplane {
@@ -251,6 +256,8 @@ bool Agent::start() {
         for (Partition* p : groups_[gi]->partitions()) {
             if (!p->has_recap()) continue;
             if (!recap_) recap_ = std::make_unique<RecapManager>(epoch_, *symbols_);
+            // Before the manager takes the component: /topology needs its key.
+            if (const RecapTransport* rt = p->recap_transport()) recap_keys_[p->id()] = rt->endpoint_key(host_);
             if (!recap_->add_partition(*p, groups_[gi]->recap_channel(), err)) {
                 LogRegistry::instance().error("AGENT", "START_FAILED", err);
                 for (auto& q : partitions_) q->close();
@@ -433,6 +440,127 @@ std::vector<std::pair<uint32_t, std::string>> Agent::symbols(uint32_t from_id, u
     return out;
 }
 
+namespace {
+std::string jstr(std::string_view s) {
+    std::string o = "\"";
+    for (char c : s) {
+        if (c == '"' || c == '\\') { o += '\\'; o += c; }
+        else if (static_cast<unsigned char>(c) < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+        else o += c;
+    }
+    return o + "\"";
+}
+} // namespace
+
+Agent::ConsumerScan Agent::consumers(const std::vector<SessionStatus>& sessions) const {
+    std::lock_guard<std::mutex> lock(scan_mutex_);
+    const uint64_t now = now_mono_ns();
+    if (scan_at_ns_ != 0 && now - scan_at_ns_ < kScanCacheNs) return scan_cache_;
+    std::unordered_set<std::string> rings;
+    std::unordered_map<std::string, std::string> session_of; // ring path -> session
+    for (const auto& s : sessions) { rings.insert(s.ring_path); session_of[s.ring_path] = s.name; }
+    const observability::ScanResult r = observability::scan_mappers(rings, static_cast<int32_t>(::getpid()));
+    ConsumerScan out;
+    out.processes = r.processes;
+    out.unreadable = r.unreadable;
+    for (const auto& m : r.mappers) {
+        Consumer c;
+        c.session = session_of[m.path];
+        c.pid = m.pid;
+        c.start_time = m.start_time;
+        c.uid = m.uid;
+        c.comm = m.comm;
+        c.unit = m.unit;
+        c.mapping = true;
+        c.stale = m.deleted;
+        out.consumers.push_back(std::move(c));
+    }
+    // INTENT: a control client is the same process as a mapper when the pid
+    // matches; its IDENTIFY name then labels that entry. A client that holds
+    // a session but has not mapped the ring (yet) is listed on its own.
+    if (control_) {
+        for (const auto& cl : control_->client_snapshot()) {
+            for (const auto& sname : cl.sessions) {
+                bool merged = false;
+                for (auto& c : out.consumers) {
+                    if (c.session == sname && c.pid == cl.pid && !c.stale) { c.control = true; c.name = cl.app_name; merged = true; }
+                }
+                if (merged) continue;
+                Consumer c;
+                observability::Mapper id;
+                if (observability::read_identity("/proc", cl.pid, id)) { c.start_time = id.start_time; c.comm = id.comm; c.unit = id.unit; }
+                c.session = sname;
+                c.pid = cl.pid;
+                c.uid = cl.uid;
+                c.name = cl.app_name;
+                c.control = true;
+                out.consumers.push_back(std::move(c));
+            }
+        }
+    }
+    scan_cache_ = out;
+    scan_at_ns_ = now;
+    return out;
+}
+
+std::string Agent::render_topology() const {
+    const AgentStatus st = get_status();
+    std::string o = "{\"schema\":\"subplane.topology/1\",\"node\":{";
+    o += "\"id\":" + jstr(host_ + "/subplaned/" + name_);
+    o += ",\"service\":\"subplaned\",\"instance\":" + jstr(name_) + ",\"host\":" + jstr(host_);
+    o += ",\"pid\":" + std::to_string(::getpid()) + ",\"version\":" + jstr(version_) + ",\"epoch\":" + std::to_string(epoch_);
+    o += ",\"site\":" + jstr(site_) + ",\"env\":" + jstr(env_) + "},\"upstream\":[";
+    bool first = true;
+    for (size_t i = 0; i < partitions_.size() && i < st.partitions.size(); ++i) {
+        const Partition& p = *partitions_[i];
+        const PartitionStatus& ps = st.partitions[i];
+        if (p.has_transport()) {
+            o += first ? "" : ",";
+            first = false;
+            o += "{\"key\":" + jstr(p.transport().endpoint_key(host_)) + ",\"role\":\"data\",\"state\":" + jstr(ps.transport);
+            o += ",\"local\":{\"partition\":" + jstr(p.name()) + "},\"describe\":" + jstr(p.transport().describe());
+            const std::string pub = p.transport().publisher_json();
+            if (!pub.empty()) o += ",\"publisher\":{" + pub + "}";
+            o += "}";
+        }
+        if (p.has_recap()) {
+            o += first ? "" : ",";
+            first = false;
+            const bool up = p.recap_counters.connected.load(std::memory_order_relaxed) != 0;
+            o += "{\"key\":" + jstr(recap_keys_[p.id()]) + ",\"role\":\"recap\",\"state\":" + jstr(up ? "up" : "down");
+            o += ",\"local\":{\"partition\":" + jstr(p.name()) + "}}";
+        }
+    }
+    o += "],\"downstream\":[";
+    const ConsumerScan scan = consumers(st.sessions);
+    first = true;
+    for (const auto& s : st.sessions) {
+        o += first ? "" : ",";
+        first = false;
+        o += "{\"key\":" + jstr(observability::shm_ring_key(s.ring_path, host_)) + ",\"role\":\"data\",\"state\":\"up\"";
+        o += ",\"local\":{\"session\":" + jstr(s.name) + ",\"owner\":" + jstr(s.owner) + ",\"partitions\":[";
+        for (size_t k = 0; k < s.partitions.size(); ++k) o += (k ? "," : "") + jstr(s.partitions[k]);
+        o += "]},\"consumers\":[";
+        bool fc = true;
+        for (const auto& c : scan.consumers) {
+            if (c.session != s.name) continue;
+            o += fc ? "" : ",";
+            fc = false;
+            o += "{\"pid\":" + std::to_string(c.pid) + ",\"start_time\":" + std::to_string(c.start_time) + ",\"uid\":" + std::to_string(c.uid);
+            o += ",\"comm\":" + jstr(c.comm) + ",\"name\":" + jstr(c.name.empty() ? (c.unit.empty() ? c.comm : c.unit) : c.name);
+            o += ",\"unit\":" + jstr(c.unit);
+            if (c.stale) o += ",\"stale_ring\":true";
+            o += ",\"via\":[";
+            o += c.control ? "\"control\"" : "";
+            o += c.mapping ? (c.control ? ",\"mapping\"" : "\"mapping\"") : "";
+            o += "]}";
+        }
+        o += "]}";
+    }
+    o += "],\"scan\":{\"processes\":" + std::to_string(scan.processes) + ",\"unreadable\":" + std::to_string(scan.unreadable) + "}}";
+    return o;
+}
+
 std::string Agent::render_metrics(const std::string& format) const {
     const AgentStatus st = get_status();
     if (format == "json") {
@@ -517,6 +645,7 @@ std::string Agent::render_metrics(const std::string& format) const {
             });
             w.gauge("subplane_recap_inflight", "Recap requests in flight", l, static_cast<double>(p.recap_counters.inflight.load(std::memory_order_relaxed)));
             w.gauge("subplane_recap_queued", "Recap requests waiting to be sent", l, static_cast<double>(p.recap_counters.queued.load(std::memory_order_relaxed)));
+            w.gauge("subplane_recap_connected", "1 while the recap component is connected to its snapshot service", l, static_cast<double>(p.recap_counters.connected.load(std::memory_order_relaxed)));
         }
     }
     for (const auto& g : groups_) {
@@ -534,6 +663,31 @@ std::string Agent::render_metrics(const std::string& format) const {
         w.gauge("subplane_session_ring_heartbeat_age_seconds", "Seconds since the writer's last ring heartbeat", l, age_s(s.heartbeat_ns));
         w.gauge("subplane_session_filter_generation", "Generation of the session's current filter", l, s.filter_generation);
     }
+
+    // Topology as metrics: the same edges as /topology, so PromQL and alerts
+    // can join them without the collector. 1 = up, 0 = not up.
+    for (size_t i = 0; i < partitions_.size() && i < st.partitions.size(); ++i) {
+        const Partition& p = *partitions_[i];
+        if (p.has_transport()) {
+            w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
+                    {{"direction", "upstream"}, {"role", "data"}, {"key", p.transport().endpoint_key(host_)}, {"partition", p.name()}},
+                    st.partitions[i].transport == "up" ? 1 : 0);
+        }
+        if (p.has_recap()) {
+            w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
+                    {{"direction", "upstream"}, {"role", "recap"}, {"key", recap_keys_[p.id()]}, {"partition", p.name()}},
+                    p.recap_counters.connected.load(std::memory_order_relaxed) != 0 ? 1 : 0);
+        }
+    }
+    const ConsumerScan scan = consumers(st.sessions);
+    for (const auto& s : st.sessions) {
+        w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
+                {{"direction", "downstream"}, {"role", "data"}, {"key", observability::shm_ring_key(s.ring_path, host_)}, {"session", s.name}}, 1);
+        double n = 0;
+        for (const auto& c : scan.consumers) n += c.session == s.name && !c.stale ? 1 : 0;
+        w.gauge("subplane_session_consumers", "Processes reading the session's ring (control clients and ring mappers)", {{"session", s.name}}, n);
+    }
+    w.gauge("subplane_topology_scan_unreadable", "Processes whose memory maps the consumer scan could not read", {}, scan.unreadable);
     return w.str();
 }
 

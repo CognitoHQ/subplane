@@ -1,4 +1,5 @@
 #include "subplane/recap/aeron_recap.h"
+#include "subplane/observability/endpoint_key.h"
 
 #include "../transport/aeron_util.h"
 
@@ -108,6 +109,10 @@ void AeronRecap::close() noexcept {
     if (sub_) { aeron_subscription_close(sub_, nullptr, nullptr); sub_ = nullptr; }
     if (client_) { aeron_close(client_); client_ = nullptr; }
     if (ctx_) { aeron_context_close(ctx_); ctx_ = nullptr; }
+}
+
+std::string AeronRecap::endpoint_key(std::string_view host) const {
+    return observability::aeron_key(cfg_.request_channel, cfg_.request_stream, aeron_util::resolved_dir(cfg_.aeron_dir), host);
 }
 
 std::string AeronRecap::describe() const {

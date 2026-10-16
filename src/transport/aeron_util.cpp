@@ -6,6 +6,12 @@
 
 namespace subplane::aeron_util {
 
+std::string resolved_dir(const std::string& aeron_dir) {
+    if (!aeron_dir.empty()) return aeron_dir;
+    char buf[512] = {};
+    return aeron_default_path(buf, sizeof buf) >= 0 ? std::string(buf) : std::string();
+}
+
 bool open_client(const std::string& aeron_dir, uint64_t driver_timeout_ms, const char* client_name,
                  aeron_error_handler_t on_error, void* error_clientd,
                  aeron_context_t*& ctx, aeron_t*& client, std::string& err) {

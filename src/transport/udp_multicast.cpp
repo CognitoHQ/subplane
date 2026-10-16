@@ -1,4 +1,5 @@
 #include "subplane/transport/udp_multicast.h"
+#include "subplane/observability/endpoint_key.h"
 
 #include "subplane/core/clock.h"
 
@@ -225,6 +226,10 @@ void UdpMulticastTransport::close() noexcept {
         ::close(fd_);
         fd_ = -1;
     }
+}
+
+std::string UdpMulticastTransport::endpoint_key(std::string_view host) const {
+    return observability::udp_key(cfg_.group, cfg_.interface, cfg_.port, host);
 }
 
 std::string UdpMulticastTransport::describe() const {

@@ -124,6 +124,7 @@ public:
     bool has_recap() const noexcept { return has_recap_; }
     const RecapConfig& recap_config() const noexcept { return recap_cfg_; }
     std::unique_ptr<RecapTransport> take_recap_transport() noexcept { return std::move(recap_transport_); }
+    const RecapTransport* recap_transport() const noexcept { return recap_transport_.get(); } // null once taken
 
     Transport& transport() noexcept { return *transport_; }
     const Transport& transport() const noexcept { return *transport_; }

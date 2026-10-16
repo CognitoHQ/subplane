@@ -1,6 +1,7 @@
 #include "subplane/transport/aeron_transport.h"
 
 #include "subplane/core/counters.h"
+#include "subplane/observability/endpoint_key.h"
 
 #include "aeron_util.h"
 
@@ -188,6 +189,16 @@ void AeronTransport::close() noexcept {
     if (ctx_) { aeron_context_close(ctx_); ctx_ = nullptr; }
     if (driver_) { aeron_driver_close(driver_); driver_ = nullptr; }
     if (driver_ctx_) { aeron_driver_context_close(driver_ctx_); driver_ctx_ = nullptr; }
+}
+
+std::string AeronTransport::endpoint_key(std::string_view host) const {
+    return observability::aeron_key(cfg_.channel, cfg_.stream_id, aeron_util::resolved_dir(cfg_.aeron_dir), host);
+}
+
+std::string AeronTransport::publisher_json() const {
+    // The newest image's session id: a new one means a new publisher instance.
+    if (images_available() == images_unavailable()) return {};
+    return "\"aeron_session\":" + std::to_string(latest_session_.load(std::memory_order_relaxed));
 }
 
 void AeronTransport::counters(const std::function<void(std::string_view, uint64_t)>& out) const {

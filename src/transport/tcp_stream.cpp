@@ -1,6 +1,7 @@
 #include "subplane/transport/tcp_stream.h"
 
 #include "subplane/core/counters.h"
+#include "subplane/observability/endpoint_key.h"
 
 #include "subplane/core/clock.h"
 
@@ -253,6 +254,10 @@ void TcpStreamTransport::close() noexcept {
     arena_.shrink_to_fit();
     rd_ = wr_ = 0;
     state_ = State::DISCONNECTED;
+}
+
+std::string TcpStreamTransport::endpoint_key(std::string_view host) const {
+    return observability::tcp_key(cfg_.host, cfg_.port, host);
 }
 
 std::string TcpStreamTransport::describe() const {

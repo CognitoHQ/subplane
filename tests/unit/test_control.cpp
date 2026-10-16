@@ -477,3 +477,53 @@ TEST_CASE("control: bad version, short and oversized datagrams do not kill the s
     CHECK_FALSE(dup.start(err));
     CHECK(err.find("in use") != std::string::npos);
 }
+
+TEST_CASE("control: IDENTIFY names a connection; the client snapshot lists its sessions; SUBPLANE_APP_NAME identifies on connect") {
+    CH h;
+    ControlClient cli;
+    ::setenv("SUBPLANE_APP_NAME", "mm-engine", 1);
+    REQUIRE_MESSAGE(cli.connect(h.sock_path), cli.last_error());
+    ::unsetenv("SUBPLANE_APP_NAME");
+    SessionRequest req;
+    req.name = "topo";
+    req.ring_capacity_bytes = 1u << 20;
+    req.max_payload = 1024;
+    req.msg_type_mask = bit(MsgType::TRADE);
+    AttachInfo ai;
+    REQUIRE_MESSAGE(cli.create_session(req, ai), cli.last_error());
+    auto one = [&](const std::string& name, size_t sessions) {
+        return wait_for([&] {
+            const auto s = h.srv->client_snapshot();
+            return s.size() == 1 && s[0].app_name == name && s[0].sessions.size() == sessions &&
+                   s[0].pid == static_cast<int32_t>(::getpid()) && s[0].uid == ::getuid();
+        });
+    };
+    CHECK(one("mm-engine", 1));
+    CHECK(h.srv->client_snapshot()[0].sessions[0] == "topo");
+
+    CHECK(cli.identify("risk app 2"));
+    CHECK(one("risk app 2", 1));
+    CHECK_FALSE(cli.identify(""));
+    CHECK_FALSE(cli.identify("has\"quote"));
+    CHECK(cli.last_status() == CtlStatus::BAD_REQUEST);
+    CHECK(one("risk app 2", 1)); // unchanged by the rejected names
+
+    // A second connection attaching to the same session is listed with it too.
+    ControlClient other;
+    REQUIRE(other.connect(h.sock_path));
+    AttachInfo ai2;
+    REQUIRE_MESSAGE(other.attach("topo", ai2), other.last_error());
+    CHECK(wait_for([&] {
+        const auto s = h.srv->client_snapshot();
+        return s.size() == 2 && s[1].sessions.size() == 1 && s[1].app_name.empty();
+    }));
+
+    REQUIRE(cli.destroy_session("topo"));
+    CHECK(wait_for([&] {
+        const auto s = h.srv->client_snapshot();
+        return s.size() == 2 && s[0].sessions.empty() && s[1].sessions.empty();
+    }));
+    other.close();
+    cli.close();
+    CHECK(wait_for([&] { return h.srv->client_snapshot().empty(); }));
+}

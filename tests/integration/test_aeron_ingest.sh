@@ -52,6 +52,11 @@ SUMMARY=$(tail -1 "$TMP/app.log"); echo "$SUMMARY"
 [ "$SUMMARY" = "trades=500 quotes=500 books=0 snapshots=0 other=0 heartbeats=10 bad=0" ] || fail "unexpected summary"
 STATUS=$(http_get "$API" /partitions); echo "$STATUS" | grep -q '"packets":1010,"messages":1010,"unknown_templates":0,"gaps":0' || fail "unexpected partition status: $STATUS"
 grep -q "aeron $CHANNEL stream 1001 (embedded driver)" "$TMP/agent.log" || fail "agent log lacks the aeron transport description"
+# The upstream endpoint key, and the Aeron metrics (docs/context/observability.md).
+H=$(hostname | tr 'A-Z' 'a-z')
+if [ "$MODE" = ipc ]; then KEY="aeron-ipc://$H$AGENT_DIR#1001"; else KEY="aeron-udp://$H:$PORT#1001"; fi
+http_get "$API" /topology | grep -qF '"key":"'"$KEY"'","role":"data"' || fail "topology key: want $KEY in $(http_get "$API" /topology)"
+http_get "$API" /metrics | grep -q '^subplane_transport_fragments_total{.*partition="aer0"} 1010$' || fail "aeron fragments metric: $(http_get "$API" /metrics | grep fragments)"
 # Transport state events. IPC: the image goes within about a second of the
 # publisher exiting (TRANSPORT_DOWN, source lost). UDP: the image outlives the
 # publisher, so only the restart is seen. Either way a second publisher run is

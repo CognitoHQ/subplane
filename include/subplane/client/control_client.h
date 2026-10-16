@@ -40,6 +40,7 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -121,7 +122,25 @@ public:
         }
         fd_ = fd;
         rx_.assign(CTL_MAX_DATAGRAM, 0);
+        // INTENT: apps get a name in the agent's /topology without code: the
+        // environment names them. Best effort; a failure never fails connect().
+        if (const char* app = std::getenv("SUBPLANE_APP_NAME"); app != nullptr && *app != '\0') {
+            const std::string saved = err_;
+            if (!identify(app)) err_ = saved;
+        }
         return true;
+    }
+
+    // Names this connection's app in the agent's /topology (optional; also
+    // sent by connect() from SUBPLANE_APP_NAME). 1 to 31 printable chars. An
+    // agent without IDENTIFY answers UNSUPPORTED, which counts as success.
+    bool identify(std::string_view app_name) {
+        CtlIdentifyReq q {};
+        if (app_name.empty() || app_name.size() >= sizeof(q.app_name)) return fail("IDENTIFY: app name must be 1-31 chars");
+        set_name(q.app_name, app_name);
+        std::vector<uint8_t> body;
+        if (call(CtlOp::IDENTIFY, &q, sizeof(q), body)) return true;
+        return last_status_ == CtlStatus::UNSUPPORTED;
     }
 
     void close() noexcept {

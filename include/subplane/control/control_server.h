@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -58,13 +59,27 @@ public:
     const std::string& bound_path() const noexcept { return bound_path_; }
     size_t clients() const noexcept { return n_clients_.load(std::memory_order_relaxed); }
 
+    // Cold, any thread: the connected clients as of the server thread's last
+    // change (accept, disconnect, ATTACH, CREATE, DESTROY, IDENTIFY). For /topology.
+    struct ClientInfo {
+        int32_t     pid = 0;
+        uint32_t    uid = 0;
+        std::string app_name;               // from IDENTIFY; empty if never sent
+        std::vector<std::string> sessions;  // sessions it created or attached to
+    };
+    std::vector<ClientInfo> client_snapshot() const;
+
 private:
     struct Client {
         int         fd = -1;
         uint32_t    uid = 0;
         int32_t     pid = 0;
         std::vector<std::string> holds;    // client-owned sessions this connection keeps alive
+        std::vector<std::string> attached; // every session it created or attached to (for /topology)
+        std::string app_name;              // IDENTIFY
     };
+    void note_attached(Client& c, const std::string& name);
+    void publish_clients();                // server thread: copies clients_ into the snapshot
 
     bool bind_at(const std::string& path, std::string& err);
     void run();
@@ -89,6 +104,7 @@ private:
     bool op_snapshot(Client& c, const CtlHeader& h, const uint8_t* body);
     bool op_symbols(Client& c, const CtlHeader& h, const uint8_t* body);
     bool op_ping(Client& c, const CtlHeader& h, const uint8_t* body);
+    bool op_identify(Client& c, const CtlHeader& h, const uint8_t* body);
 
     // Decodes a CREATE/SET_FILTER body into a SessionSpec (owner = client).
     bool to_spec(const CtlHeader& h, const uint8_t* body, bool check_ring, SessionSpec& out,
@@ -110,6 +126,9 @@ private:
     std::atomic<size_t>     n_clients_{0};
     std::vector<Client>     clients_;        // server thread only
     std::vector<uint8_t>    rx_;             // server thread only
+    bool                    clients_dirty_ = false; // server thread only
+    mutable std::mutex      snapshot_mutex_;
+    std::vector<ClientInfo> snapshot_;       // guarded by snapshot_mutex_
 };
 
 } // namespace subplane

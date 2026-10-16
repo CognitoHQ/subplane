@@ -38,6 +38,7 @@ struct SessionStatus {
     uint64_t    ring_head = 0;          // bytes written to the ring since it opened
     uint64_t    ring_capacity = 0;
     uint64_t    heartbeat_ns = 0;       // the writer's last ring heartbeat (CLOCK_REALTIME), 0 if none
+    std::vector<std::string> partitions; // names of the partitions it is attached to
 };
 
 struct AgentStatus {

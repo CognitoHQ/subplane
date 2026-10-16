@@ -74,6 +74,7 @@ struct alignas(64) RecapCounters {
 #undef X
     std::atomic<uint64_t> inflight{0};  // gauge
     std::atomic<uint64_t> queued{0};    // gauge: waiting for an in-flight slot or a retry
+    std::atomic<uint64_t> connected{0}; // gauge: 1 while the recap component is connected to its service
 
     // Cold. f(name, value) for every counter (not the gauges).
     template <class F> void each(F&& f) const {

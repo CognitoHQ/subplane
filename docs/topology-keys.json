@@ -1,0 +1,34 @@
+{
+  "schema": "subplane.topology-keys/1",
+  "note": "Normative test vectors for endpoint keys (docs/context/observability.md). Both subplane and subplane-feeds check every vector; change the rules only together with this file.",
+  "aeron": [
+    { "channel": "aeron:ipc", "stream": 1001, "aeron_dir": "/dev/shm/aeron-satya", "host": "box1", "key": "aeron-ipc://box1/dev/shm/aeron-satya#1001" },
+    { "channel": "aeron:ipc?term-length=65536", "stream": 7, "aeron_dir": "/dev/shm/aeron-feeds/", "host": "Box1", "key": "aeron-ipc://box1/dev/shm/aeron-feeds#7" },
+    { "channel": "aeron-spy:aeron:ipc", "stream": 1001, "aeron_dir": "/dev/shm/aeron-satya", "host": "box1", "key": "aeron-ipc://box1/dev/shm/aeron-satya#1001" },
+    { "channel": "aeron:udp?endpoint=snap-host:40500|term-length=65536", "stream": 1101, "aeron_dir": "/x", "host": "box1", "key": "aeron-udp://snap-host:40500#1101" },
+    { "channel": "aeron:udp?endpoint=0.0.0.0:40456", "stream": 1001, "aeron_dir": "/x", "host": "box1", "key": "aeron-udp://box1:40456#1001" },
+    { "channel": "aeron:udp?endpoint=localhost:40456", "stream": 1001, "aeron_dir": "/x", "host": "box1", "key": "aeron-udp://box1:40456#1001" },
+    { "channel": "aeron:udp?endpoint=224.0.1.1:40456|interface=10.0.0.0/24", "stream": 3, "aeron_dir": "/x", "host": "box1", "key": "aeron-udp://224.0.1.1:40456#3" },
+    { "channel": "aeron:udp?control-mode=response|control=Snap-Host:40501", "stream": 1102, "aeron_dir": "/x", "host": "box1", "key": "aeron-udp://snap-host:40501#1102" },
+    { "channel": "aeron:udp?term-length=65536", "stream": 1, "aeron_dir": "/x", "host": "box1", "key": "" },
+    { "channel": "not-aeron", "stream": 1, "aeron_dir": "/x", "host": "box1", "key": "" }
+  ],
+  "udp": [
+    { "group": "239.1.1.1", "address": "10.0.0.5", "port": 30001, "host": "box1", "key": "udp-mcast://239.1.1.1:30001" },
+    { "group": "", "address": "", "port": 30002, "host": "box1", "key": "udp://box1:30002" },
+    { "group": "", "address": "10.0.0.5", "port": 30003, "host": "box1", "key": "udp://10.0.0.5:30003" }
+  ],
+  "tcp": [
+    { "address": "127.0.0.1", "port": 9000, "host": "box1", "key": "tcp://box1:9000" },
+    { "address": "Feed.Example.com", "port": 9001, "host": "box1", "key": "tcp://feed.example.com:9001" }
+  ],
+  "shm_ring": [
+    { "path": "/dev/shm/subplane.prod.mm.ring", "host": "Box1", "key": "shm-ring://box1/dev/shm/subplane.prod.mm.ring" }
+  ],
+  "url": [
+    { "url": "wss://stream.binance.com:9443/stream?streams=btcusdt@trade", "key": "wss://stream.binance.com:9443/stream" },
+    { "url": "WSS://WS.Kraken.com:443/v2", "key": "wss://ws.kraken.com/v2" },
+    { "url": "https://user:pw@api.binance.com/api/v3/depth?symbol=BTCUSDT", "key": "https://api.binance.com/api/v3/depth" },
+    { "url": "wss://ws-feed.exchange.coinbase.com", "key": "wss://ws-feed.exchange.coinbase.com" }
+  ]
+}

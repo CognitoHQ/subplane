@@ -16,7 +16,7 @@ Only what builds today:
 - **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/subplane_canonical.xml`) with typed C++/Python/q views generated at build time by `subplane schema`.
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK
 - **Control**: Unix `SOCK_SEQPACKET` control channel (dynamic sessions, snapshots)
-- **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/reload`)
+- **Cold API**: HTTP/JSON (`/status`, `/partitions`, `/sessions`, `/lvc`, `/metrics`, `/topology`, `/reload`)
 - **Metrics**: lock-free log histogram and one-writer counters; `/metrics` in Prometheus format (contract in `docs/context/observability.md`)
 - Planned, not built: `aeron_ipc` fan-out, Kafka, derived feeds, Python client
 

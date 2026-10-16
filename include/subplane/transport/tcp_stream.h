@@ -60,6 +60,7 @@ public:
     int  poll(PacketBatch& out) noexcept override;
     void close() noexcept override;
     std::string describe() const override;
+    std::string endpoint_key(std::string_view host) const override;
     int fd() const noexcept override { return fd_; }
 
     bool connected() const noexcept { return state_ == State::CONNECTED; }

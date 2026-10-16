@@ -66,6 +66,31 @@ private:
     bool build_groups(std::string& err);
     bool load_session_specs(std::vector<struct SessionSpec>& out, std::string& err) const;
     std::string render_metrics(const std::string& format) const;
+public:
+    // Cold. The /topology document (docs/context/observability.md).
+    std::string render_topology() const;
+private:
+    // The apps reading a session's ring: control-socket clients that created
+    // or attached to it, and processes mapping its ring file (/proc scan,
+    // cached for kScanCacheNs). One entry per (session, process).
+    struct Consumer {
+        std::string session;
+        int32_t     pid = 0;
+        uint64_t    start_time = 0;
+        uint32_t    uid = 0;
+        std::string comm, name, unit;
+        bool        control = false, mapping = false;
+        bool        stale = false;      // maps an unlinked ring from an earlier agent run
+    };
+    struct ConsumerScan {
+        std::vector<Consumer> consumers;
+        uint32_t processes = 0, unreadable = 0;
+    };
+    ConsumerScan consumers(const std::vector<SessionStatus>& sessions) const;
+    static constexpr uint64_t kScanCacheNs = 2'000'000'000ull;
+    mutable std::mutex   scan_mutex_;
+    mutable uint64_t     scan_at_ns_ = 0;
+    mutable ConsumerScan scan_cache_;
 
     std::unique_ptr<ConfigManager>  config_manager_;
     std::unique_ptr<MetricsManager> metrics_manager_;
@@ -90,6 +115,7 @@ private:
     std::string host_;
     std::string site_, env_;
     std::vector<std::pair<std::string, std::string>> info_labels_;
+    std::string recap_keys_[64];            // by partition id: the recap request stream's endpoint key
     mutable std::mutex mutex_;
 };
 

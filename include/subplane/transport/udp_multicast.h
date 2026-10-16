@@ -39,6 +39,7 @@ public:
     int  poll(PacketBatch& out) noexcept override;
     void close() noexcept override;
     std::string describe() const override;
+    std::string endpoint_key(std::string_view host) const override;
     int fd() const noexcept override { return fd_; }
 
     // Effective receive buffer after the kernel clamped it (0 before open).

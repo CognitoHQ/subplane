@@ -78,6 +78,8 @@ public:
     std::string last_error() const;
 
     void counters(const std::function<void(std::string_view, uint64_t)>& out) const override;
+    std::string endpoint_key(std::string_view host) const override;
+    std::string publisher_json() const override;
 
     static std::unique_ptr<Transport> create(const YAML::Node& cfg, std::string& err);
 

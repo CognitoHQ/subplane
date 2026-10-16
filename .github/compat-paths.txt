@@ -38,3 +38,6 @@
 ^src/agent\.cpp$
 ^src/metrics/
 ^docs/context/observability\.md$
+^docs/topology-keys\.json$
+^src/observability/
+^include/subplane/observability/

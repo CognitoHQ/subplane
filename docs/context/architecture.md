@@ -308,6 +308,7 @@ Every datagram is `CtlHeader {u32 len, u16 op, u16 version, u32 req_id, u32 stat
 | SNAPSHOT | 6 | session name | multi-datagram, see below |
 | PING | 7 | client ns | client ns, server ns |
 | SYMBOLS | 8 | from_id, max | paged id to name entries (up to 1024 per reply) |
+| IDENTIFY | 9 | app name (char[32], 1 to 31 printable chars, no quote or backslash) | empty. Optional: names the connection's app in `/topology`. An older agent answers `UNSUPPORTED`, which the SDK treats as success |
 
 Statuses: `OK`, `BAD_REQUEST`, `NOT_FOUND`, `EXISTS`, `INTERNAL`, `UNSUPPORTED`, `TOO_LARGE`. A client ring may be at most 1 GiB.
 
@@ -403,7 +404,7 @@ A separate process (working name `sprelayd`), not the agent: the agent never pub
 Two header-only files, libc and the standard library only. They re-export `shm/ring_layout.h`, `shm/control_events.h` and `core/message.h`.
 
 - `client/shm_reader.h`: `ShmReader` maps a ring `PROT_READ` and validates magic, layout version, record version, capacity and size (otherwise `LayoutMismatch`). `poll(RecordView&)` returns `Ok`, `Empty`, `Overrun` (position resynced to head), or `Closed`; `liveness()` and `writer_alive()` report `WriterGone` on a stale heartbeat. Also `seek`, `seek_to_head`, `head`, `lag`, `overruns`, `epoch`. `poll` never blocks, throws or allocates. PAD records are skipped transparently.
-- `client/control_client.h`: `ControlClient` with blocking calls and a receive timeout (default 5 s), not thread-safe: `connect`, `hello`, `attach`, `create_session`, `set_filter`, `destroy_session`, `snapshot`, `symbols`, `ping`.
+- `client/control_client.h`: `ControlClient` with blocking calls and a receive timeout (default 5 s), not thread-safe: `connect`, `hello`, `attach`, `create_session`, `set_filter`, `destroy_session`, `snapshot`, `symbols`, `ping`, `identify`. When `SUBPLANE_APP_NAME` is set, `connect` sends `IDENTIFY` with it (best effort).
 
 **Late-join idiom** (also `examples/shm_demo_app.cpp`):
 
@@ -531,10 +532,11 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 | `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |
+| `GET /topology` | what the agent consumes (one `data` entry per partition, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it), each by canonical endpoint key: `docs/context/observability.md` |
 | `GET /metrics` | Prometheus text exposition (`docs/context/observability.md`: every partition, transport, recap, group and session counter, state gauges, the `recv_to_publish` histogram, `subplane_service_info`); `?format=json` for the JSON form |
 | `POST /reload` | re-reads the config file and reconciles the `sessions` section |
 
-Anything else is 404 with a JSON error body. There is no per-session detail path. `/topology` is planned (`observability.md`).
+Anything else is 404 with a JSON error body. There is no per-session detail path.
 
 ## Observability
 

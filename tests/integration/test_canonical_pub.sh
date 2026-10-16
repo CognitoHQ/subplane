@@ -37,7 +37,27 @@ kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
 grep -q "sent 1000 messages in 500 packets" "$TMP/pub.log" || fail "publisher report: $(cat "$TMP/pub.log")"
 RING=/dev/shm/subplane.pubtest.all.ring
 for _ in $(seq 1 50); do [ -f "$RING" ] && break; sleep 0.1; done
-"$APP" "$RING" --from-start --quiet --seconds 2 > "$TMP/app.log" 2>&1 || fail "views_app exit $?"
+"$APP" "$RING" --from-start --quiet --seconds 3 > "$TMP/app.log" 2>&1 & APP_PID=$!
+# /topology while views_app reads the ring: the agent finds it by its mapping
+# of the ring file (docs/context/observability.md).
+H=$(hostname | tr 'A-Z' 'a-z')
+TOPO=""
+for _ in $(seq 1 20); do
+  sleep 0.25
+  TOPO=$(http_get "$API" /topology) || continue
+  case "$TOPO" in *'"comm":"views_app"'*) break ;; esac
+done
+for want in '"schema":"subplane.topology/1"' \
+  '"id":"'"$(hostname)"'/subplaned/pubtest"' \
+  '"key":"udp://'"$H"':'"$PORT"'","role":"data"' \
+  '"key":"shm-ring://'"$H"'/dev/shm/subplane.pubtest.all.ring","role":"data","state":"up","local":{"session":"all","owner":"config","partitions":["can0"]}' \
+  '"comm":"views_app","name":"views_app"' '"via":["mapping"]'; do
+  case "$TOPO" in *"$want"*) ;; *) fail "topology missing: $want in $TOPO" ;; esac
+done
+if command -v python3 >/dev/null; then printf '%s' "$TOPO" | python3 -m json.tool >/dev/null || fail "topology JSON invalid"; fi
+http_get "$API" /metrics | grep -qF 'subplane_session_consumers{service="subplaned",instance="pubtest",host="'"$(hostname)"'",session="all"} 1' \
+  || fail "consumers metric"
+wait $APP_PID || fail "views_app exit $?"
 SUMMARY=$(tail -1 "$TMP/app.log"); echo "$SUMMARY"
 [ "$SUMMARY" = "trades=500 quotes=500 books=0 snapshots=0 other=0 heartbeats=0 bad=0" ] || fail "unexpected summary"
 # /metrics: Prometheus text by default (docs/context/observability.md), JSON on request.

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <yaml-cpp/yaml.h>
 
@@ -39,6 +40,9 @@ public:
     virtual int poll(RecapFragmentSink& sink, int limit) noexcept = 0;
     virtual void close() noexcept = 0;
     virtual std::string describe() const = 0;
+    // Cold. Canonical key of the request stream to the snapshot service
+    // (observability/endpoint_key.h); empty if it has none.
+    virtual std::string endpoint_key(std::string_view host) const { (void)host; return {}; }
     virtual bool connected() const noexcept = 0;
 };
 
