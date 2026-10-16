@@ -52,6 +52,7 @@ const char* code_name(const TickHeader& h) {
         case ControlCode::SYMBOL_MAPPED: return "SYMBOL_MAPPED";
         case ControlCode::TRANSPORT_DOWN: return "TRANSPORT_DOWN";
         case ControlCode::TRANSPORT_UP: return "TRANSPORT_UP";
+        case ControlCode::SYMBOL_STALE: return "SYMBOL_STALE";
         case ControlCode::RECAP_PENDING: return "RECAP_PENDING";
         case ControlCode::RECAP_BEGIN: return "RECAP_BEGIN";
         case ControlCode::RECAP_COMPLETE: return "RECAP_COMPLETE";
@@ -103,6 +104,14 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             static const char* const kReason[] = {"none", "source_lost", "local_failure", "publisher_restart"};
             std::printf(" partition=%u reason=%s last_seq=%llu", e.partition_id,
                         e.reason < 4 ? kReason[e.reason] : "?", static_cast<unsigned long long>(e.last_seq));
+            break;
+        }
+        case ControlCode::SYMBOL_STALE: {
+            if (len < sizeof(SymbolStaleEvent)) return;
+            SymbolStaleEvent e; std::memcpy(&e, p, sizeof(e));
+            static const char* const kReason[] = {"none", "gap", "transport_down", "publisher_restart", "sequence_reset"};
+            std::printf(" partition=%u symbol=%u reason=%s last_seq=%llu", e.partition_id, e.symbol_id,
+                        e.reason < 5 ? kReason[e.reason] : "?", static_cast<unsigned long long>(e.last_seq));
             break;
         }
         case ControlCode::RECAP_PENDING:

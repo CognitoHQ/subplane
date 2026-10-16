@@ -125,6 +125,7 @@ sequenceDiagram
 
 - Build your state from the snapshot records, then apply live records.
 - On `RECAP_FAILED{status, attempt}` the symbol stays pending and the agent asks again. Keep the symbol marked stale until `RECAP_COMPLETE`.
+- On `SYMBOL_STALE{reason}` (a sequence gap, a sequence reset or a publisher restart) your state for the symbol is no longer exact. Mark it stale and wait: the agent has already started a new recap, and the same sequence follows (`RECAP_PENDING` if the symbol was live, then `RECAP_BEGIN` … `RECAP_COMPLETE`). Throw away your state for the symbol at `RECAP_BEGIN`, not before, so you can keep showing it as stale.
 - Other sessions on the box are never delayed by your recap.
 
 ### 3. Ask a service something (planned)
@@ -151,6 +152,7 @@ sequenceDiagram
 
 | Ring event | Code | Means |
 |---|---|---|
+| `SYMBOL_STALE` | 0xA9 | your view of the symbol has a hole; a new recap has started |
 | `RECAP_PENDING` | 0xAA | waiting for a snapshot of the symbol |
 | `RECAP_BEGIN` | 0xAB | snapshot records follow, as of S |
 | `RECAP_COMPLETE` | 0xAC | snapshot done; live continues from S+1 |

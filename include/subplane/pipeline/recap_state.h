@@ -75,6 +75,17 @@ public:
     void erase(RecapPending& e) noexcept;
     RecapPending& at(uint32_t i) noexcept { return pool_[i]; }
 
+    // INTENT: the generation rises each time the stream changes under the
+    // pending recaps (gap, sequence reset, publisher restart). Every request
+    // carries it and every reply echoes it; a reply from an older generation
+    // is a snapshot of the stream as it was before the change and is dropped.
+    uint32_t generation() const noexcept { return generation_; }
+    void renew() noexcept { ++generation_; }
+    // After a sequence reset or a publisher restart, until the first sequence
+    // of the new stream arrives: floors are unknown, so an OK reply is parked.
+    bool awaiting_seq() const noexcept { return awaiting_seq_; }
+    void set_awaiting_seq(bool v) noexcept { awaiting_seq_ = v; }
+
     void set_parked(RecapPending& e, const RecapReply& r) noexcept {
         if (!e.parked) ++parked_;
         e.parked = true;
@@ -122,6 +133,8 @@ private:
     uint32_t                  mask_ = 0;
     uint32_t                  n_ = 0;
     uint32_t                  parked_ = 0;
+    uint32_t                  generation_ = 0;
+    bool                      awaiting_seq_ = false;
 
     std::vector<uint8_t>      arena_;
     std::vector<uint32_t>     next_;       // per chunk: next in its chain

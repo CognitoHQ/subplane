@@ -140,10 +140,13 @@ void RecapManager::handle_command(PState& ps, const RecapCommand& c) noexcept {
     if (c.op == RecapCommand::Op::REQUEST) {
         if (it != ps.entries.end()) {
             it->second.cancelled = false;
-            inc(rc.recap_coalesced);
+            if (it->second.generation != c.generation) renew(ps, c.symbol_id, it->second, c.generation);
+            else inc(rc.recap_coalesced);
             return;
         }
-        ps.entries.emplace(c.symbol_id, Entry{});
+        Entry e;
+        e.generation = c.generation;
+        ps.entries.emplace(c.symbol_id, e);
         ps.fifo.push_back(c.symbol_id);
         return;
     }
@@ -152,6 +155,24 @@ void RecapManager::handle_command(PState& ps, const RecapCommand& c) noexcept {
     inc(rc.recap_cancelled);
     if (it->second.state == Entry::State::INFLIGHT) it->second.cancelled = true; // ends with its reply or timeout
     else ps.entries.erase(it);                                                  // fifo skips it lazily
+}
+
+void RecapManager::renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t generation) noexcept {
+    inc(ps.part->recap_counters.recap_renewed);
+    if (e.state == Entry::State::INFLIGHT) {
+        // INTENT: forget the request id, so its reply, now or later, is stray.
+        // A reply being assembled is skipped to its end.
+        if (ps.asm_.active && ps.asm_.request_id == e.request_id) {
+            abort_assembly(ps);
+            ps.asm_.skipping = true;
+        }
+        ps.by_request.erase(e.request_id);
+        --ps.inflight;
+    }
+    e.generation = generation;
+    e.attempt = 0;
+    e.state = Entry::State::QUEUED;
+    ps.fifo.push_front(symbol_id); // ahead of first requests: a renewed symbol has waited already
 }
 
 uint64_t RecapManager::backoff_ns(const PState& ps, uint32_t attempt) noexcept {
@@ -240,6 +261,7 @@ void RecapManager::fail(PState& ps, uint32_t symbol_id, RecapStatus st, uint64_t
         r.symbol_id = symbol_id;
         r.request_id = it->second.request_id;
         r.attempt = it->second.attempt + 1;
+        r.generation = it->second.generation;
         r.status = st;
         r.reason = reason;
         push_reply(ps, r);
@@ -510,6 +532,7 @@ void RecapManager::reply_end(PState& ps, bool has_id, uint64_t rid) noexcept {
     r.symbol_id = sym;
     r.request_id = rid;
     r.attempt = it->second.attempt + 1;
+    r.generation = it->second.generation;
     r.status = RecapStatus::OK;
     r.as_of = a.as_of;
     r.has_source_epoch = a.has_source_epoch;

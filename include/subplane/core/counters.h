@@ -19,12 +19,13 @@ inline void inc(std::atomic<uint64_t>& c, uint64_t n = 1) noexcept {
     X(gaps) X(dups) X(admin) X(degraded_events) X(decode_errors) X(malformed) X(truncated) X(transport_errors) X(seq_resets) \
     X(transport_down) X(transport_up) X(recap_markers)
 
-// One writer per counter, as above: the first line and a half by the recap
-// manager thread, from recap_held on by the partition's pipeline thread.
+// One writer per counter, as above: up to recap_renewed by the recap manager
+// thread, from recap_held on by the partition's pipeline thread.
 #define SUBPLANE_RECAP_COUNTERS(X) \
     X(recap_requests) X(recap_coalesced) X(recap_replies) X(recap_rejects) X(recap_timeouts) \
-    X(recap_overflows) X(recap_send_failed) X(recap_stray) X(recap_cancelled) X(recap_no_slab) \
-    X(recap_held) X(recap_merged) X(recap_records) X(recap_too_old) X(recap_hold_overflows) X(recap_post_dropped)
+    X(recap_overflows) X(recap_send_failed) X(recap_stray) X(recap_cancelled) X(recap_no_slab) X(recap_renewed) \
+    X(recap_held) X(recap_merged) X(recap_records) X(recap_too_old) X(recap_hold_overflows) X(recap_post_dropped) \
+    X(recap_resyncs) X(recap_superseded)
 
 #define SUBPLANE_SESSION_COUNTERS(X) X(published) X(filtered) X(ring_overruns) X(publish_failed)
 

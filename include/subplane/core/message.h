@@ -73,7 +73,7 @@ enum class ControlCode : uint8_t {
     SYMBOL_MAPPED       = 0xA6,
     TRANSPORT_DOWN      = 0xA7,
     TRANSPORT_UP        = 0xA8,
-    // 0xA9 SYMBOL_STALE is reserved (recap step 3.4b).
+    SYMBOL_STALE        = 0xA9,
     RECAP_PENDING       = 0xAA,
     RECAP_BEGIN         = 0xAB,
     RECAP_COMPLETE      = 0xAC,

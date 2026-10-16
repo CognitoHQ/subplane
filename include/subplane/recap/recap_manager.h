@@ -37,11 +37,21 @@ namespace subplane {
 class Partition;
 class SymbolTable;
 
+// INTENT: `generation` is the pipeline's recap generation for the partition
+// (RecapState::generation). It rises when the partition's stream changes under
+// the pending recaps: a gap, a sequence reset, a publisher restart. A REQUEST
+// with a newer generation than the symbol's request renews it: the request in
+// flight is abandoned (its reply becomes stray) and a fresh one goes out at
+// once. Every reply carries the generation of its request, and the pipeline
+// drops one from an older generation, which covers a reply already queued
+// when the renew arrived. Coalescing into the old request instead would merge
+// a snapshot of the stream as it was before the change.
 struct RecapCommand {
     enum class Op : uint8_t { REQUEST, CANCEL };
     Op       op = Op::REQUEST;
     uint16_t partition = 0;
     uint32_t symbol_id = 0;
+    uint32_t generation = 0;
 };
 
 enum class RecapStatus : uint8_t { OK, REJECTED, TIMEOUT, OVERFLOW, SEND_FAILED };
@@ -56,6 +66,7 @@ struct RecapReply {
     uint32_t       symbol_id = 0;
     uint64_t       request_id = 0;
     uint32_t       attempt = 0;        // 1 for the first request of this recap, +1 per retry
+    uint32_t       generation = 0;     // RecapCommand::generation of the request
     RecapStatus    status = RecapStatus::OK;
     bool           has_source_epoch = false;
     uint64_t       as_of = 0;          // S: the sequence the snapshot is consistent with
@@ -100,6 +111,7 @@ private:
         State    state = State::QUEUED;
         bool     cancelled = false;
         uint32_t attempt = 0;
+        uint32_t generation = 0;
         uint64_t request_id = 0;
         uint64_t due_ns = 0;     // INFLIGHT: timeout; BACKOFF: next try
     };
@@ -157,6 +169,7 @@ private:
     void send_status(PState& ps, uint64_t correlation_id, uint16_t code) noexcept;
     RecapSendStatus send_frame(PState& ps, uint32_t msg_len) noexcept; // ps.tx[4..] holds the message
     void handle_command(PState& ps, const RecapCommand& c) noexcept;
+    void renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t generation) noexcept;
     void send_ready(PState& ps) noexcept;
     void service_timeouts(PState& ps) noexcept;
     void finish(PState& ps, uint32_t symbol_id, bool success) noexcept;   // request over: retry or forget

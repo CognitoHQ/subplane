@@ -180,7 +180,7 @@ struct Rig {
         REQUIRE_MESSAGE(mgr.add_partition(part, ch, err), err);
         REQUIRE_MESSAGE(mgr.open(err), err);
     }
-    void request(uint32_t sym) { REQUIRE(ch.requests.push({RecapCommand::Op::REQUEST, 0, sym})); }
+    void request(uint32_t sym, uint32_t generation = 0) { REQUIRE(ch.requests.push({RecapCommand::Op::REQUEST, 0, sym, generation})); }
     void cancel(uint32_t sym) { REQUIRE(ch.requests.push({RecapCommand::Op::CANCEL, 0, sym})); }
     void step(uint64_t advance_ms = 0) { now += advance_ms * kMs; mgr.run_once(now); }
     std::vector<RecapReply> replies() {
@@ -342,6 +342,59 @@ TEST_CASE("recap manager: timeout reports, backs off, retries with a new id; can
     CHECK(r.c().recap_cancelled == 1);
     CHECK(r.c().inflight == 0);
     CHECK(r.c().queued == 0);
+}
+
+TEST_CASE("recap manager: a request with a newer generation renews the symbol at once; the old reply is stray") {
+    Rig r;
+    const uint32_t sym = r.symbols.intern_u64(7);
+    r.request(sym);
+    r.step();
+    const uint64_t first = requests(*r.recap)[0].id;
+    // The first reply is half assembled when the renew arrives.
+    r.recap->push(cat({s_begin(first, 10), s_record(first, trade_msg(7, 1))}));
+    r.step();
+    r.request(sym, 1);
+    r.step();
+    REQUIRE(requests(*r.recap).size() == 2);
+    const uint64_t second = requests(*r.recap)[1].id;
+    CHECK(second != first);
+    CHECK(r.c().recap_renewed == 1);
+    CHECK(r.c().recap_coalesced == 0);
+    CHECK(r.c().inflight == 1);
+    r.recap->push(s_end(first, 1)); // the rest of the abandoned reply is skipped
+    r.recap->push(s_reply(second, 20, {trade_msg(7, 2)}));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].request_id == second);
+    CHECK(rs[0].generation == 1);
+    CHECK(rs[0].attempt == 1);
+    CHECK(rs[0].as_of == 20);
+    r.mgr.run_once(r.now); // nothing else arrives
+    CHECK(r.replies().empty());
+    for (const auto& x : rs) REQUIRE(r.ch.releases.push({0, x.slab}));
+
+    // Same generation coalesces; a renew in backoff goes out without waiting
+    // for it, with the attempt count reset.
+    r.request(sym, 1);
+    r.step();
+    REQUIRE(requests(*r.recap).size() == 3);
+    r.request(sym, 1);
+    r.step();
+    CHECK(r.c().recap_coalesced == 1);
+    r.step(100); // timed out: backoff
+    rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].status == RecapStatus::TIMEOUT);
+    CHECK(rs[0].generation == 1);
+    r.request(sym, 2);
+    r.step();
+    REQUIRE(requests(*r.recap).size() == 4);
+    r.step(100);
+    rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].generation == 2);
+    CHECK(rs[0].attempt == 1);
 }
 
 TEST_CASE("recap manager: backoff grows to max_ms and stays within [cap/2, cap]") {

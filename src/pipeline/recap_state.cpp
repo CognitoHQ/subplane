@@ -13,6 +13,8 @@ void RecapState::init(const RecapConfig& cfg) {
     mask_ = cap - 1;
     n_ = 0;
     parked_ = 0;
+    generation_ = 0;
+    awaiting_seq_ = false;
 
     chunk_bytes_ = cfg.hold_chunk_bytes;
     const uint32_t chunks = static_cast<uint32_t>(cfg.hold_bytes / cfg.hold_chunk_bytes);

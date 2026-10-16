@@ -13,6 +13,7 @@
 #include "subplane/pipeline/session.h"
 #include "subplane/pipeline/symbol_resolver.h"
 #include "subplane/recap/recap_manager.h"
+#include "subplane/shm/control_events.h"
 
 #include <array>
 #include <atomic>
@@ -88,7 +89,8 @@ private:
     void recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now) noexcept;
     void recap_drop_waiter(Partition& p, RecapPending& e, Session& s) noexcept;
     void recap_drop_session(Session& s) noexcept;
-    void recap_resync(Partition& p, uint64_t seq) noexcept;
+    void recap_restart(Partition& p, SymbolStaleReason reason, uint64_t now) noexcept;
+    void recap_rebase(Partition& p, uint64_t seq) noexcept;
     void apply_recaps(uint64_t now) noexcept;
     void recap_reply(Partition& p, const RecapReply& r, uint64_t now) noexcept;
     void recap_consider(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept;

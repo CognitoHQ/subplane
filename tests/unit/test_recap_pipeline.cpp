@@ -190,8 +190,9 @@ struct Rig {
         return out;
     }
 
+    // `generation` < 0: the partition's current one, as a reply to its latest request.
     void reply(uint64_t sec, uint64_t as_of, const std::vector<std::vector<uint8_t>>& records, uint16_t slab = 3,
-               uint32_t attempt = 1) {
+               uint32_t attempt = 1, int64_t generation = -1) {
         std::vector<uint8_t> buf;
         for (const auto& m : records) { put(buf, m.size(), 4); buf.insert(buf.end(), m.begin(), m.end()); }
         slabs.push_back(std::move(buf));
@@ -201,6 +202,7 @@ struct Rig {
         r.symbol_id = sym(sec);
         r.request_id = 900 + slab;
         r.attempt = attempt;
+        r.generation = generation < 0 ? part.recap->generation() : static_cast<uint32_t>(generation);
         r.status = RecapStatus::OK;
         r.as_of = as_of;
         r.data = slabs.back().data();
@@ -215,6 +217,7 @@ struct Rig {
         r.symbol_id = sym(sec);
         r.request_id = 77;
         r.attempt = attempt;
+        r.generation = part.recap->generation();
         r.status = st;
         REQUIRE(pipe.recap_channel().replies.push(r));
         pipe.run_once();
@@ -399,13 +402,15 @@ TEST_CASE("recap merge: hold overflow raises the floor, told once; a sequence ga
     CHECK(recap_ev(got[0]).status == static_cast<uint8_t>(RecapEventStatus::TOO_OLD));
     REQUIRE(r.requests().size() == 1);
 
-    // Gap: 8 and 9 never arrive.
+    // Gap: 8 and 9 never arrive. The request is renewed.
     r.seq = 9;
     r.live(1001); // seq 10
     CHECK(r.part.recap->find(r.sym(1001))->floor == 9);
     got = rec->drain();
-    REQUIRE(got.size() == 1);
+    REQUIRE(got.size() == 2);
     CHECK(is(got[0], ControlCode::GAP_DETECTED));
+    CHECK(is(got[1], ControlCode::SYMBOL_STALE));
+    REQUIRE(r.requests().size() == 1);
     r.reply(1001, 8, {trade(1001, 0)}, 2);
     got = rec->drain();
     REQUIRE(got.size() == 1);
@@ -573,4 +578,171 @@ TEST_CASE("recap waiters: the last waiter leaving releases a parked reply") {
     CHECK(rel[0].slab == 7);
     CHECK(r.part.recap->pending() == 0);
     CHECK(r.part.recap->parked() == 0);
+}
+
+namespace {
+SymbolStaleEvent stale_ev(const Rec& r) { SymbolStaleEvent ev{}; REQUIRE(r.payload.size() == sizeof(ev)); std::memcpy(&ev, r.payload.data(), sizeof(ev)); return ev; }
+} // namespace
+
+TEST_CASE("recap triggers: a gap makes every symbol of a recap session pending, renews the rest, drops older replies") {
+    Rig r;
+    auto live_app = r.app({1001, 1002}, false);
+    auto rec = r.app({1001, 1002}, true);
+    r.requests();
+    rec->drain();
+    r.live(1001, 1); // seq 1
+    r.reply(1001, 1, {trade(1001, 0, 10)}, 1); // 1001 merged: live from here
+    rec->drain();
+    CHECK(r.part.recap->pending() == 1); // 1002 still waits
+    const uint32_t gen0 = r.part.recap->generation();
+
+    r.seq = 5;
+    r.live(1001, 6); // seq 6: 2..5 lost
+    CHECK(r.part.recap->generation() == gen0 + 1);
+    CHECK(r.part.recap_counters.recap_resyncs.load() == 1);
+    auto got = rec->drain();
+    REQUIRE(got.size() == 4);
+    CHECK(is(got[0], ControlCode::GAP_DETECTED));
+    REQUIRE(is(got[1], ControlCode::SYMBOL_STALE));
+    CHECK(stale_ev(got[1]).symbol_id == r.sym(1001));
+    CHECK(stale_ev(got[1]).reason == static_cast<uint16_t>(SymbolStaleReason::GAP));
+    CHECK(stale_ev(got[1]).last_seq == 1);
+    CHECK(is(got[2], ControlCode::RECAP_PENDING)); // 1001 was live
+    CHECK(recap_ev(got[2]).symbol_id == r.sym(1001));
+    REQUIRE(is(got[3], ControlCode::SYMBOL_STALE)); // 1002 was pending already: no second PENDING
+    CHECK(stale_ev(got[3]).symbol_id == r.sym(1002));
+    auto reqs = r.requests();
+    REQUIRE(reqs.size() == 2); // 1002 renewed, 1001 asked for
+    for (const auto& c : reqs) CHECK(c.generation == gen0 + 1);
+    CHECK(r.part.recap->find(r.sym(1001))->floor == 5);
+    CHECK(r.part.recap->find(r.sym(1002))->floor == 5);
+
+    // The live session hears of the gap and nothing else, and is not held.
+    auto lv = live_app->drain();
+    size_t data = 0, ctl = 0;
+    for (auto& x : lv) (x.hdr.kind == static_cast<uint8_t>(Kind::DATA) ? data : ctl)++;
+    CHECK(data == 2);
+    CHECK(ctl == 1);
+
+    // 1002's reply to the old request: dropped unseen, slab released.
+    r.reply(1002, 6, {trade(1002, 0)}, 2, 1, gen0);
+    CHECK(rec->drain().empty());
+    CHECK(r.part.recap_counters.recap_superseded.load() == 1);
+    REQUIRE(r.releases().size() == 2);
+    CHECK(r.part.recap->pending() == 2);
+    // The renewed replies merge; seq 6 is held for 1001 and comes after its snapshot.
+    r.reply(1001, 5, {trade(1001, 0, 50)}, 3);
+    got = rec->drain();
+    REQUIRE(got.size() == 4);
+    CHECK(tag(got[1]) == 50);
+    CHECK(got[3].hdr.sequence == 6);
+    r.reply(1002, 6, {trade(1002, 0, 60)}, 4);
+    got = rec->drain();
+    REQUIRE(got.size() == 3);
+    CHECK(tag(got[1]) == 60);
+    CHECK(r.part.recap->pending() == 0);
+}
+
+TEST_CASE("recap triggers: a sequence reset drops holds and parked replies, renews, and rebases the floor") {
+    Rig r;
+    for (int i = 0; i < 2000; ++i) r.live(1001); // seq 2000
+    auto rec = r.app({1001}, true);
+    r.requests();
+    rec->drain();
+    r.live(1001); // seq 2001: held
+    r.reply(1001, 2500, {trade(1001, 0)}, 1); // ahead of live: parked
+    CHECK(r.part.recap->parked() == 1);
+
+    r.seq = 0;
+    r.live(1001, 1); // seq 1: back beyond dup_window
+    CHECK(r.part.counters.seq_resets.load() == 1);
+    auto got = rec->drain();
+    REQUIRE(got.size() == 2);
+    CHECK(is(got[0], ControlCode::GAP_DETECTED));
+    REQUIRE(is(got[1], ControlCode::SYMBOL_STALE));
+    CHECK(stale_ev(got[1]).reason == static_cast<uint16_t>(SymbolStaleReason::SEQUENCE_RESET));
+    CHECK(stale_ev(got[1]).last_seq == 2001);
+    CHECK(r.part.recap->parked() == 0);
+    CHECK(r.releases().size() == 1);
+    REQUIRE(r.requests().size() == 1);
+    RecapPending* e = r.part.recap->find(r.sym(1001));
+    REQUIRE(e);
+    CHECK(e->floor == 0);
+    CHECK(e->held == 1); // seq 1 of the new stream; 2001 is gone
+
+    r.reply(1001, 0, {trade(1001, 0, 7)}, 2);
+    got = rec->drain();
+    REQUIRE(got.size() == 4);
+    CHECK(tag(got[1]) == 7);
+    CHECK(got[3].hdr.sequence == 1);
+    CHECK(tag(got[3]) == 1);
+}
+
+TEST_CASE("recap triggers: a publisher restart renews at once and parks replies until the new stream's first sequence") {
+    Rig r;
+    for (int i = 0; i < 10; ++i) r.live(1001); // seq 10
+    auto rec = r.app({1001, 1002}, true);
+    r.requests();
+    r.reply(1001, 10, {trade(1001, 0)}, 1); // 1001 live
+    rec->drain();
+    const uint32_t gen0 = r.part.recap->generation();
+
+    r.fake->up(TransportReason::PUBLISHER_RESTART);
+    r.pipe.run_once();
+    auto got = rec->drain();
+    REQUIRE(got.size() == 4); // TRANSPORT_UP, STALE 1001, PENDING 1001, STALE 1002
+    CHECK(is(got[0], ControlCode::TRANSPORT_UP));
+    CHECK(stale_ev(got[1]).reason == static_cast<uint16_t>(SymbolStaleReason::PUBLISHER_RESTART));
+    CHECK(is(got[2], ControlCode::RECAP_PENDING));
+    CHECK(is(got[3], ControlCode::SYMBOL_STALE));
+    CHECK(r.requests().size() == 2);
+    CHECK(r.part.recap->awaiting_seq());
+
+    // A reply from before the restart never merges, even one that would fit.
+    r.reply(1002, 10, {trade(1002, 0)}, 2, 1, gen0);
+    CHECK(rec->drain().empty());
+    // A renewed reply before the new stream has a sequence: parked.
+    r.reply(1001, 3, {trade(1001, 0, 30)}, 3);
+    CHECK(rec->drain().empty());
+    CHECK(r.part.recap->parked() == 1);
+
+    // The new publisher starts at 4, with no gap or reset reported against the old stream.
+    r.seq = 3;
+    r.live(1001, 4);
+    CHECK_FALSE(r.part.recap->awaiting_seq());
+    CHECK(r.part.counters.gaps.load() == 0);
+    CHECK(r.part.counters.seq_resets.load() == 0);
+    got = rec->drain();
+    REQUIRE(got.size() == 4); // the parked S = 3 = floor merges, then seq 4
+    CHECK(is(got[0], ControlCode::RECAP_BEGIN));
+    CHECK(tag(got[1]) == 30);
+    CHECK(got[3].hdr.sequence == 4);
+}
+
+TEST_CASE("recap triggers: no recap session, no recap work; a transport bounce alone is no trigger") {
+    Rig r;
+    auto live_app = r.app({1001}, false);
+    r.live(1001);
+    r.fake->down(TransportReason::SOURCE_LOST);
+    r.fake->up(TransportReason::NONE);
+    r.live(1001);
+    r.seq = 9;
+    r.live(1001); // a gap
+    CHECK(r.requests().empty());
+    CHECK(r.part.recap->pending() == 0);
+    CHECK(r.part.recap_counters.recap_resyncs.load() == 1); // the gap; it found nothing to recap
+
+    auto rec = r.app({1002}, true);
+    r.requests();
+    r.reply(1002, 10, {trade(1002, 0)}, 1);
+    rec->drain();
+    const uint32_t gen = r.part.recap->generation();
+    r.fake->down(TransportReason::SOURCE_LOST);
+    r.fake->up(TransportReason::NONE);
+    r.live(1002);
+    auto got = rec->drain();
+    REQUIRE(got.size() == 3); // DOWN, UP, the trade
+    CHECK(got[2].hdr.kind == static_cast<uint8_t>(Kind::DATA));
+    CHECK(r.part.recap->generation() == gen);
+    CHECK(r.requests().empty());
 }

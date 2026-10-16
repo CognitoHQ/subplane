@@ -97,7 +97,7 @@ enum class RecapEventStatus : uint8_t {
     REJECTED      = 2, // the snapshot service refused (RECAP_REJECT)
     TOO_OLD       = 3, // the snapshot is older than the messages the agent holds
     HOLD_OVERFLOW = 4, // the agent ran out of room for the live messages it holds
-    GAP_WHILE_HELD = 5, // (3.4b)
+    GAP_WHILE_HELD = 5, // reserved: a gap while pending is reported as SYMBOL_STALE{GAP}
     IDENTITY      = 6, // the snapshot came from another publisher instance (planned)
     SEND_FAILED   = 7, // the request could not be sent upstream
     REPLY_TOO_LARGE = 8, // the reply exceeds the partition's recap.reply_slab_bytes
@@ -113,6 +113,24 @@ struct RecapEvent {
     uint64_t as_of_seq;    // S, on BEGIN and COMPLETE
 };
 
+// SYMBOL_STALE: the session's view of one symbol is no longer exact, and the
+// agent has started a recap of it. Written only to recap sessions, once for
+// each symbol of theirs on the partition. RECAP_PENDING follows for a symbol
+// that was live; one already pending stays pending under a renewed request.
+enum class SymbolStaleReason : uint16_t {
+    GAP               = 1, // the partition's sequence jumped forward
+    TRANSPORT_DOWN    = 2, // reserved: a transport going down is not a trigger by itself
+    PUBLISHER_RESTART = 3, // TRANSPORT_UP{PUBLISHER_RESTART}
+    SEQUENCE_RESET    = 4, // BUS_SEQ_RESET, or a backward jump beyond dup_window
+};
+struct SymbolStaleEvent {
+    uint32_t symbol_id;
+    uint16_t partition_id;
+    uint16_t reason;       // SymbolStaleReason
+    uint64_t last_seq;     // the partition's last sequence before the change
+    uint64_t changed_ns;
+};
+
 #pragma pack(pop)
 
 static_assert(sizeof(GapEvent) == 32);
@@ -123,6 +141,7 @@ static_assert(sizeof(AgentRestartedEvent) == 16);
 static_assert(sizeof(SessionClosingEvent) == 8);
 static_assert(sizeof(SymbolMappedEvent) == 32);
 static_assert(sizeof(RecapEvent) == 32);
+static_assert(sizeof(SymbolStaleEvent) == 24);
 static_assert(std::is_trivially_copyable_v<GapEvent>);
 static_assert(std::is_trivially_copyable_v<SymbolMappedEvent>);
 

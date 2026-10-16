@@ -229,23 +229,23 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
         publish_data(p, h, msg, len);
     } else {
         inc(p.counters.admin);
-        switch (static_cast<ControlCode>(h.msg_type)) {
-            case ControlCode::BUS_SEQ_RESET:
-                // INTENT: the bus restarted its sequence. Accept whatever comes
-                // next rather than flagging a gap against the old stream.
-                p.expected_seq = 0;
-                break;
-            case ControlCode::BUS_HEARTBEAT:
-            default:
-                break;
-        }
+        const bool seq_reset = static_cast<ControlCode>(h.msg_type) == ControlCode::BUS_SEQ_RESET;
+        // INTENT: the bus restarted its sequence. Accept whatever comes
+        // next rather than flagging a gap against the old stream.
+        if (seq_reset) p.expected_seq = 0;
         publish_admin(p, h, msg, len);
+        // After the reset itself, so a recap session sees BUS_SEQ_RESET, then
+        // SYMBOL_STALE. The floors wait for the new stream's first sequence.
+        if (seq_reset && p.recap != nullptr) {
+            recap_restart(p, SymbolStaleReason::SEQUENCE_RESET, recv_ts);
+            p.recap->set_awaiting_seq(true);
+        }
     }
 }
 
 bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept {
     if (p.expected_seq == 0) {
-        if (p.recap != nullptr && p.recap->pending() != 0) recap_resync(p, seq);
+        if (p.recap != nullptr && (p.recap->pending() != 0 || p.recap->awaiting_seq())) recap_rebase(p, seq);
         p.expected_seq = seq + 1;
         p.last_seq = seq;
         p.last_seq_pub.store(seq, std::memory_order_relaxed);
@@ -265,13 +265,13 @@ bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept
         ev.received_seq = seq;
         ev.detected_ns = now;
         emit_control(p, ControlCode::GAP_DETECTED, &ev, sizeof(ev), now);
-        // INTENT: held messages for a pending symbol now have a hole before
-        // `seq`; only a snapshot as of seq - 1 or later closes it.
-        if (p.recap != nullptr && p.recap->pending() != 0) {
-            for (uint32_t i = 0; i < p.recap->capacity(); ++i) {
-                RecapPending& e = p.recap->at(i);
-                if (e.in_use && e.floor < seq - 1) e.floor = seq - 1;
-            }
+        // INTENT: every recap session's view now has a hole before `seq`, for
+        // any of its symbols (the sequence is per stream, not per symbol). All
+        // of them become pending, and only a snapshot as of seq - 1 or later
+        // closes the hole. Before last_seq moves: the events carry the old one.
+        if (p.recap != nullptr) {
+            recap_restart(p, SymbolStaleReason::GAP, now);
+            recap_rebase(p, seq);
         }
         p.expected_seq = seq + 1;
         p.last_seq = seq;
@@ -284,13 +284,16 @@ bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept
         // jump beyond dup_window is treated as a reset: counted, reported
         // in-band as a GAP with received < expected, and resynced.
         inc(p.counters.seq_resets);
-        if (p.recap != nullptr && p.recap->pending() != 0) recap_resync(p, seq);
         GapEvent ev{};
         ev.partition_id = p.id();
         ev.expected_seq = p.expected_seq;
         ev.received_seq = seq;
         ev.detected_ns = now;
         emit_control(p, ControlCode::GAP_DETECTED, &ev, sizeof(ev), now);
+        if (p.recap != nullptr) {
+            recap_restart(p, SymbolStaleReason::SEQUENCE_RESET, now);
+            recap_rebase(p, seq);
+        }
         p.expected_seq = seq + 1;
         p.last_seq = seq;
         p.last_seq_pub.store(seq, std::memory_order_relaxed);
@@ -359,6 +362,17 @@ void Pipeline::apply_transport_changes(Partition& p, Transport& t) noexcept {
         ev.last_seq = p.last_seq;
         ev.changed_ns = now;
         emit_control(p, up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, &ev, sizeof(ev), now);
+        // INTENT: a new publisher instance is a new stream: its sequences say
+        // nothing about the old one's, so the next sequence is accepted as a
+        // fresh start (as after BUS_SEQ_RESET) and the floors wait for it. A
+        // transport going down and up with the same publisher is no trigger:
+        // anything missed shows as a gap. Only on recap partitions, where the
+        // floors need the new stream's first sequence.
+        if (up && c.reason == TransportReason::PUBLISHER_RESTART && p.recap != nullptr) {
+            recap_restart(p, SymbolStaleReason::PUBLISHER_RESTART, now);
+            p.recap->set_awaiting_seq(true);
+            p.expected_seq = 0;
+        }
     }
     t.clear_state_changes();
 }
@@ -599,25 +613,61 @@ void Pipeline::recap_drop_session(Session& s) noexcept {
     recap_slots_.clear(s.recap_slot);
 }
 
-void Pipeline::recap_resync(Partition& p, uint64_t seq) noexcept {
-    // INTENT: the partition (re)starts its sequence at `seq`. Holds from before
-    // are not comparable with a snapshot of the new stream, and only a
-    // snapshot as of seq - 1 or later covers the messages from `seq` on. On a
-    // reset (sequences seen before) a parked reply belongs to the old stream:
-    // it is dropped and asked for again. A reply still in flight from before a
-    // reset is the RENEW case (step 3.4b).
-    const bool reset = p.last_seq != 0;
+void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t now) noexcept {
+    // INTENT: the stream changed under the recaps (architecture.md, "Recap",
+    // triggers). Holds and parked replies describe the stream as it was, and
+    // a request in flight would be answered with a snapshot of it: the new
+    // generation renews every pending request and drops any older reply.
+    // Then every symbol of every recap session on the partition is stale and
+    // pending, whether it was live or already waiting.
     RecapState& st = *p.recap;
-    for (uint32_t i = 0; i < st.capacity(); ++i) {
+    st.renew();
+    inc(p.recap_counters.recap_resyncs);
+    for (uint32_t i = 0; i < st.capacity() && st.pending() != 0; ++i) {
+        RecapPending& e = st.at(i);
+        if (!e.in_use) continue;
+        st.free_holds(e);
+        if (e.parked) {
+            recap_release(p, e.reply.slab);
+            st.clear_parked(e);
+        }
+        e.overflowed = false;
+        recap_post(p, {RecapCommand::Op::REQUEST, p.id(), e.symbol_id});
+    }
+    SymbolStaleEvent ev{};
+    ev.partition_id = p.id();
+    ev.reason = static_cast<uint16_t>(reason);
+    ev.last_seq = p.last_seq;
+    ev.changed_ns = now;
+    for (uint32_t i = 0; i < p.n_sessions; ++i) {
+        Session& s = *p.sessions[i];
+        if (!s.recap) continue;
+        const FilterTable* f = s.filter.load(std::memory_order_acquire);
+        if (f == nullptr) continue;
+        for (size_t w = 0; w < f->symbol_bits.size(); ++w) {
+            for (uint64_t bits = f->symbol_bits[w]; bits != 0; bits &= bits - 1) {
+                ev.symbol_id = static_cast<uint32_t>(w * 64 + static_cast<size_t>(__builtin_ctzll(bits)));
+                if (f->agent_control && !s.ring.publish_control(ControlCode::SYMBOL_STALE, p.id(), now, &ev, sizeof(ev))) {
+                    inc(s.counters.publish_failed);
+                }
+                recap_add_waiter(p, s, ev.symbol_id, now); // RECAP_PENDING when it was live
+            }
+        }
+    }
+}
+
+void Pipeline::recap_rebase(Partition& p, uint64_t seq) noexcept {
+    // INTENT: the partition's sequence (re)starts at `seq`, after a gap, a
+    // reset, a restart or at the first message. Only a snapshot as of seq - 1
+    // or later covers the messages from `seq` on, and nothing held before
+    // `seq` is needed with one.
+    RecapState& st = *p.recap;
+    st.set_awaiting_seq(false);
+    for (uint32_t i = 0; i < st.capacity() && st.pending() != 0; ++i) {
         RecapPending& e = st.at(i);
         if (!e.in_use) continue;
         st.free_holds(e);
         e.floor = seq != 0 ? seq - 1 : 0;
-        if (reset && e.parked) {
-            recap_release(p, e.reply.slab);
-            st.clear_parked(e);
-            recap_post(p, {RecapCommand::Op::REQUEST, p.id(), e.symbol_id});
-        }
     }
 }
 
@@ -631,7 +681,7 @@ void Pipeline::apply_recaps(uint64_t now) noexcept {
     }
     for (Partition* pp : partitions_) {
         Partition& p = *pp;
-        if (p.recap == nullptr || p.recap->parked() == 0) continue;
+        if (p.recap == nullptr || p.recap->parked() == 0 || p.recap->awaiting_seq()) continue;
         for (uint32_t i = 0; i < p.recap->capacity() && p.recap->parked() != 0; ++i) {
             RecapPending& e = p.recap->at(i);
             if (!e.in_use || !e.parked) continue;
@@ -642,8 +692,15 @@ void Pipeline::apply_recaps(uint64_t now) noexcept {
 }
 
 void Pipeline::recap_reply(Partition& p, const RecapReply& r, uint64_t now) noexcept {
-    RecapPending* e = p.recap->find(r.symbol_id);
     const bool ok = r.status == RecapStatus::OK;
+    if (r.generation != p.recap->generation()) {
+        // INTENT: asked for before the stream changed (recap_restart); the
+        // renewed request's reply follows. Merging this one could hide a hole.
+        inc(p.recap_counters.recap_superseded);
+        if (ok) recap_release(p, r.slab);
+        return;
+    }
+    RecapPending* e = p.recap->find(r.symbol_id);
     if (e == nullptr) { // nobody waits any more (cancelled)
         if (ok) recap_release(p, r.slab);
         return;
@@ -667,6 +724,12 @@ void Pipeline::recap_reply(Partition& p, const RecapReply& r, uint64_t now) noex
 }
 
 void Pipeline::recap_consider(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept {
+    if (p.recap->awaiting_seq()) {
+        // The new stream's first sequence sets the floors; until then a reply
+        // cannot be compared with anything.
+        p.recap->set_parked(e, r);
+        return;
+    }
     if (r.as_of < e.floor) {
         // INTENT: messages between S and the floor reached neither the
         // snapshot nor the hold; merging would leave a hole.
@@ -779,7 +842,9 @@ void Pipeline::recap_emit(Partition& p, const RecapPending& e, ControlCode code,
     }
 }
 
-void Pipeline::recap_post(Partition& p, const RecapCommand& c) noexcept {
+void Pipeline::recap_post(Partition& p, const RecapCommand& cmd) noexcept {
+    RecapCommand c = cmd;
+    c.generation = p.recap->generation();
     if (recap_out_.empty() && recap_.requests.push(c)) return;
     if (recap_out_.size() < recap_out_cap_) recap_out_.push_back(c);
     else inc(p.recap_counters.recap_post_dropped);
