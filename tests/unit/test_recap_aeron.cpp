@@ -3,6 +3,7 @@
 #include "fake_transport.h"
 #include "subplane/core/clock.h"
 #include "subplane/pipeline/partition.h"
+#include "subplane/proto/subplane_proto_codec.h"
 #include "subplane/recap/aeron_recap.h"
 #include "subplane/recap/recap_manager.h"
 #include "subplane/symbol_table.h"
@@ -32,9 +33,10 @@ void put(std::vector<uint8_t>& b, uint64_t v, unsigned size) {
 }
 void header(std::vector<uint8_t>& b, uint16_t blk, uint16_t tid) { put(b, blk, 2); put(b, tid, 2); put(b, 7, 2); put(b, 2, 2); }
 
-// A minimal snapshot service: answers each request with RECAP_BEGIN(as_of =
-// last_seq_seen + 1), one trade for the requested instrument, RECAP_END, on an
-// Aeron response publication matched to the requester's image.
+// A minimal SPP snapshot service: answers the agent's Hello with its own, and
+// each RecapRequest with one frame of RecapBegin(as_of = LastSeqSeen + 1), a
+// RecapRecord carrying one trade for the requested instrument, and RecapEnd,
+// on an Aeron response publication matched to the requester's image.
 struct SnapServer {
     aeron_context_t* ctx = nullptr;
     aeron_t* client = nullptr;
@@ -43,9 +45,12 @@ struct SnapServer {
     std::atomic<int64_t> image_correlation{0};
     std::atomic<bool> stop{false};
     std::atomic<int> requests{0};
+    std::atomic<int> hellos{0};
     std::string response_control;
     std::thread th;
-    std::vector<RecapRequestWire> pending;
+    struct Pending { uint64_t id, instrument, last_seq; };
+    std::vector<Pending> pending;
+    bool hello_due = false;
 
     static void on_image(void* clientd, aeron_subscription_t*, aeron_image_t* image) {
         aeron_image_constants_t c{};
@@ -53,12 +58,27 @@ struct SnapServer {
     }
     static void on_fragment(void* clientd, const uint8_t* buf, size_t len, aeron_header_t*) {
         auto* self = static_cast<SnapServer*>(clientd);
-        if (len != sizeof(RecapRequestWire)) return;
-        RecapRequestWire w;
-        std::memcpy(&w, buf, sizeof(w));
-        if (w.magic != kRecapRequestMagic) return;
-        self->pending.push_back(w);
-        ++self->requests;
+        size_t at = 0;
+        while (at + 4 <= len) {
+            uint32_t n;
+            std::memcpy(&n, buf + at, 4);
+            at += 4;
+            if (n > len - at) return;
+            sp_proto::Header h;
+            if (sp_proto::read_header(buf + at, n, h) && h.schema_id == sp_proto::kSchemaId) {
+                if (h.template_id == sp_proto::HelloDecoder::kTemplateId) {
+                    ++self->hellos;
+                    self->hello_due = true;
+                } else if (h.template_id == sp_proto::RecapRequestDecoder::kTemplateId) {
+                    sp_proto::RecapRequestDecoder d;
+                    if (d.wrap(buf + at, n)) {
+                        self->pending.push_back({d.CorrelationId(), d.Instrument(), d.LastSeqSeen()});
+                        ++self->requests;
+                    }
+                }
+            }
+            at += n;
+        }
     }
     bool offer(const std::vector<uint8_t>& b) {
         for (int i = 0; i < 100000; ++i) {
@@ -67,14 +87,29 @@ struct SnapServer {
         }
         return false;
     }
-    void answer(const RecapRequestWire& w) {
-        std::vector<uint8_t> begin; header(begin, 16, 101); put(begin, w.request_id, 8); put(begin, w.last_seq_seen + 1, 8);
+    template <class Enc, class F> static void append(std::vector<uint8_t>& frame, F fill) {
+        uint8_t buf[512];
+        Enc e(buf, sizeof(buf));
+        fill(e);
+        const uint32_t n = static_cast<uint32_t>(e.finish());
+        put(frame, n, 4);
+        frame.insert(frame.end(), buf, buf + n);
+    }
+    void answer_hello() {
+        std::vector<uint8_t> f;
+        append<sp_proto::HelloEncoder>(f, [](auto& e) {
+            e.CorrelationId(1).PeerEpoch(5).ProtoVersion(1).MinProtoVersion(1).Role(sp_proto::Role::Snap).ServiceName("test-snap");
+        });
+        offer(f);
+    }
+    void answer(const Pending& w) {
         std::vector<uint8_t> trade; header(trade, 39, 1); put(trade, w.instrument, 8); put(trade, 1, 8); put(trade, 0, 8); put(trade, 0, 2);
         trade.insert(trade.end(), 39 - 26, 0);
-        std::vector<uint8_t> end; header(end, 8, 100); put(end, w.request_id, 8);
-        offer(begin);
-        offer(trade);
-        offer(end);
+        std::vector<uint8_t> f;
+        append<sp_proto::RecapBeginEncoder>(f, [&](auto& e) { e.CorrelationId(w.id).AsOf(w.last_seq + 1); });
+        append<sp_proto::RecapRecordEncoder>(f, [&](auto& e) { e.CorrelationId(w.id).Payload(trade.data(), trade.size()); });
+        append<sp_proto::RecapEndEncoder>(f, [&](auto& e) { e.CorrelationId(w.id).RecordCount(1); });
+        offer(f);
     }
     bool start(const std::string& dir, const std::string& request_channel, const std::string& control, std::string& err) {
         response_control = control;
@@ -104,6 +139,7 @@ struct SnapServer {
                 }
             }
             if (resp && aeron_exclusive_publication_is_connected(resp)) {
+                if (hello_due) { answer_hello(); hello_due = false; }
                 for (const auto& w : pending) answer(w);
                 pending.clear();
             }
@@ -144,7 +180,7 @@ struct Driver {
 // INTENT: small term buffers. Two publications at Aeron's 16 MB default need
 // about 100 MB of /dev/shm, more than a default Docker container has (64 MB);
 // CI runs in one.
-TEST_CASE("recap over Aeron: request out, reply back on a response channel, assembled by the manager") {
+TEST_CASE("recap over Aeron: Hello and an SPP request out, an SPP reply back on a response channel, assembled by the manager") {
     const std::string dir = "/dev/shm/subplane-recaptest-" + std::to_string(getpid());
     const int base = 21000 + static_cast<int>(getpid() % 20000);
     const std::string req_ep = "127.0.0.1:" + std::to_string(base);
@@ -165,8 +201,6 @@ decoder:
   fields: { symbol: SecurityID, sequence: SeqNum }
   messages:
     - { template: 1,   msg_type: TRADE }
-    - { template: 101, admin: RECAP_BEGIN, fields: { request_id: SeqNum, as_of: NewSeq } }
-    - { template: 100, admin: RECAP_END,   fields: { request_id: SeqNum } }
 recap:
   type: aeron
   aeron_dir: )" + dir + R"(
@@ -206,6 +240,7 @@ recap:
     mgr.stop();
     REQUIRE(got);
     CHECK(srv.requests.load() >= 1);
+    CHECK(srv.hellos.load() >= 1);
     CHECK(ok.symbol_id == sym);
     CHECK(ok.as_of == 901);
     REQUIRE(ok.messages == 1);

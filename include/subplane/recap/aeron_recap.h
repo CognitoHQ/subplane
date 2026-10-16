@@ -49,7 +49,7 @@ public:
     ~AeronRecap() override;
 
     bool open(std::string& err) override;
-    RecapSendStatus send(const RecapRequestWire& req) noexcept override;
+    RecapSendStatus send(const uint8_t* frame, uint32_t len) noexcept override;
     int poll(RecapFragmentSink& sink, int limit) noexcept override;
     void close() noexcept override;
     std::string describe() const override;

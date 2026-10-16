@@ -6,6 +6,9 @@
 //   recap:
 //     type: aeron
 //     ...component keys...
+//     reply: spp                           # spp (default): replies are SPP RecapBegin/RecapRecord/RecapEnd;
+//                                          # stream_markers: replies in the stream's own schema between
+//                                          # decoder-mapped RECAP_BEGIN / RECAP_END markers
 //     timeout_ms: 2000
 //     max_inflight: 64                     # outstanding requests per partition; more wait in FIFO order
 //     retry: { base_ms: 50, max_ms: 5000 } # exponential backoff with full jitter
@@ -22,8 +25,11 @@
 
 namespace subplane {
 
+enum class RecapReplyMode : uint8_t { SPP, STREAM_MARKERS };
+
 struct RecapConfig {
     std::string type;
+    RecapReplyMode reply = RecapReplyMode::SPP;
     uint32_t    timeout_ms = 2000;
     uint32_t    max_inflight = 64;
     uint32_t    retry_base_ms = 50;

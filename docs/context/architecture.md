@@ -332,6 +332,7 @@ recap:
   aeron_dir: ""                     # media driver directory; empty = Aeron default
   request:  { channel: "aeron:udp?endpoint=snap-host:40500", stream_id: 1101 }
   response: { channel: "aeron:udp?control-mode=response|control=snap-host:40501", stream_id: 1102 }
+  reply: spp                        # spp (default) | stream_markers; see "Reply contract"
   timeout_ms: 2000                  # per request
   max_inflight: 64                  # outstanding requests per partition; more wait in FIFO order
   retry: { base_ms: 50, max_ms: 5000 }   # exponential, jittered within [cap/2, cap]
@@ -341,47 +342,36 @@ recap:
   hold_bytes: 4194304               # preallocated arena for the live messages held for pending symbols
   hold_chunk_bytes: 256             # its allocation unit
 ```
-A partition can recap only if its decoder maps `RECAP_BEGIN` and `RECAP_END`, its symbol is an integer (the request names the instrument as a u64), it has a sequence (`framing.sequence`; the merge places a snapshot against live messages by sequence), and it is not `dbn`; otherwise startup fails with the reason.
+A partition can recap only if its symbol is an integer (the request names the instrument as a u64) and it has a sequence (`framing.sequence`; the merge places a snapshot against live messages by sequence). With `reply: stream_markers` its decoder must also map `RECAP_BEGIN` and `RECAP_END`, which rules out `dbn`. Otherwise startup fails with the reason.
 
-**The `aeron` component.** It adds a subscription on the response channel (an Aeron response channel, `control-mode=response` with `control=` the service's response endpoint), then a request publication carrying `response-correlation-id=<that subscription's registration id>`. The service answers on a response publication made with the requesting image's correlation id, so each agent receives only its own replies. The agent's request channel must not set `response-correlation-id` itself. Requests are 64 bytes, so `|term-length=65536` on the request channel (and on the service's response publication, sized to its largest reply) keeps `/dev/shm` use small; Aeron's 16 MB default term length costs about 48 MB per publication, which a container's 64 MB `/dev/shm` cannot hold twice.
+**The `aeron` component.** It adds a subscription on the response channel (an Aeron response channel, `control-mode=response` with `control=` the service's response endpoint), then a request publication carrying `response-correlation-id=<that subscription's registration id>`. The service answers on a response publication made with the requesting image's correlation id, so each agent receives only its own replies. The agent's request channel must not set `response-correlation-id` itself. Requests are small (a `RecapRequest` frame is 60 bytes), so `|term-length=65536` on the request channel (and on the service's response publication, sized to its largest reply) keeps `/dev/shm` use small; Aeron's 16 MB default term length costs about 48 MB per publication, which a container's 64 MB `/dev/shm` cannot hold twice.
 
 **The recap manager** (`recap/recap_manager.h`): one cold thread per agent, started after the control server when any partition has a recap block. Each pipeline group talks to it through three SPSC queues: requests (`REQUEST` or `CANCEL` for a symbol, produced only by the pipeline, which owns who waits), replies, and slab releases. Per partition it:
 - coalesces: one upstream request per symbol however many sessions ask (`recap_coalesced`);
-- numbers requests per agent epoch (`agent_id` = epoch) and fills `instrument`/`venue` from the symbol table's reverse lookup (or the raw id in passthrough mode) and `last_seq_seen` from the partition;
+- sends SPP `Hello` (`Role` agent, `PeerEpoch` = the agent's epoch, versions 1 to its own) as the first message whenever the component reports a connection, again after every reconnect, and keeps the service's `Hello` per connection. A service whose `MinProtoVersion` is above the agent's version gets `Status{Unsupported}` and no requests until it reconnects; those requests fail as `SEND_FAILED` and are retried;
+- numbers requests per agent epoch (the `CorrelationId`; `AgentEpoch` = epoch) and fills `Instrument`/`Venue` from the symbol table's reverse lookup (or the raw id in passthrough mode) and `LastSeqSeen` from the partition;
 - limits outstanding requests to `max_inflight`, the rest wait in FIFO order;
 - on a timeout, a rejection, an overflow or a failed send, reports the failure to the pipeline and retries after the backoff, for as long as a session waits (the pipeline sends `CANCEL` when the last waiter leaves; there is no attempt limit);
-- assembles a reply into a free slab: each response fragment is split with the partition's own framing, `RECAP_BEGIN` (known request id, with `as_of`) opens it, records are stored as a u32 little-endian length plus the message bytes, `RECAP_END` closes it and the slab goes to the pipeline until it is released. A reply larger than `reply_slab_bytes` is an overflow (logged, at most every 10 s); with no free slab the reply is skipped and times out.
+- assembles a reply into a free slab: the begin (a known request id, with S) opens it, each record is stored as a u32 little-endian length plus the message bytes, the end closes it and the slab goes to the pipeline until it is released. A reply larger than `reply_slab_bytes` is an overflow (logged, at most every 10 s); with no free slab the reply is skipped and times out.
 
-**Reply contract for a snapshot service.** A reply is `RECAP_BEGIN`, the records, `RECAP_END`, sent contiguously on the response stream (replies to different requests are not interleaved) and framed like the live stream. `RECAP_REJECT` (with the request id and an optional reason) replaces a reply. Messages outside a reply, unknown request ids and late replies are counted (`recap_stray`) and dropped.
+**Reply contract for a snapshot service.** A reply is a begin, the records, an end, sent contiguously on the response stream (replies to different requests are not interleaved); a reject replaces a reply. Messages outside a reply, unknown request ids and late replies are counted (`recap_stray`) and dropped. Two modes, set by `recap.reply`:
+- **`spp`** (default): the SPP messages `RecapBegin` (`AsOf` = S, `SourceEpoch`), `RecapRecord` (`Payload`: one stream message, the publisher's bytes, any encoding), `RecapEnd` (`RecordCount`), `RecapReject` (`Reason`), each with the request's `CorrelationId` and its u32 length prefix (`docs/protocol/subplane-protocol.md`). A `RecapEnd` whose `RecordCount` differs from the records received drops the reply (`recap_stray`), and the request times out and is retried. A non-Ok `Status` answering a request counts as a reject (`RecapReply.reason` = 0x100 + the code). Unknown or unexpected SPP messages are counted and, when they carry a `CorrelationId`, answered `Status{Unsupported}`; must-understand `Extension`s likewise, others are ignored. This mode works for every decoder, `dbn` included, because the agent never parses the records until it merges them.
+- **`stream_markers`**: for a firm bus whose snapshot service already answers in the bus's own schema. The reply is messages of the stream's schema, framed like the live stream, between decoder-mapped markers (below). The request is SPP in both modes.
 
 **Counters** (per recap partition, in `/metrics` under `recap` and in `/partitions` as `recap`): from the manager `recap_requests`, `recap_coalesced`, `recap_replies`, `recap_rejects`, `recap_timeouts`, `recap_overflows`, `recap_send_failed`, `recap_stray`, `recap_cancelled`, `recap_no_slab`, and the gauges `recap_inflight`, `recap_queued`; from the pipeline `recap_held` (live messages held), `recap_merged`, `recap_records` (snapshot records delivered), `recap_too_old`, `recap_hold_overflows`, `recap_post_dropped` (a request or release that found both the queue and the pipeline's preallocated backlog full; should stay 0).
 
-**Reply markers, in decoder config** (implemented). The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
+**Reply markers, in decoder config** (implemented; used by `reply: stream_markers`). The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
 ```yaml
 messages:
   - { template: 21, admin: RECAP_BEGIN,  fields: { request_id: RequestId, as_of: AsOfSeq, source_epoch: SourceEpoch } }
   - { template: 22, admin: RECAP_END,    fields: { request_id: RequestId } }
   - { template: 23, admin: RECAP_REJECT, fields: { request_id: RequestId, reason: Reason } }
 ```
-`request_id` is required on every marker and `as_of` (the sequence S the snapshot is consistent with) on `RECAP_BEGIN`; `source_epoch` and `reason` are optional. For `sbe_routing` each is a root-block integer field of that template; for `flatbuffers` each is `{path, type}` with an integer type, like a routing field. A marker that arrives on the live stream is counted in `recap_markers` and dropped: apps never see a publisher's markers, only the agent's own recap events. `dbn` has no marker records: Databento's record types are fixed, so a DBN partition cannot take a recap reply.
+`request_id` is required on every marker and `as_of` (the sequence S the snapshot is consistent with) on `RECAP_BEGIN`; `source_epoch` and `reason` are optional. For `sbe_routing` each is a root-block integer field of that template; for `flatbuffers` each is `{path, type}` with an integer type, like a routing field. A marker that arrives on the live stream is counted in `recap_markers` and dropped: apps never see a publisher's markers, only the agent's own recap events. `dbn` has no marker records: Databento's record types are fixed, so a DBN partition recaps with `reply: spp`.
 
 Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched. Only data records of the requested symbol are delivered, each through the waiting session's own filter; other records are skipped. Snapshot records do not update the last-value cache.
 
-**Upstream request** (implemented: `recap/recap_request.h`, `RecapRequestWire`). subplane's own format, 64 bytes, little-endian, independent of the bus schema; a recap component may translate it to a service's native protocol:
-
-| Offset | Field | Type | Meaning |
-|---|---|---|---|
-| 0 | `magic` | u32 | `SPRQ` |
-| 4 | `version` | u16 | 1 |
-| 6 | `flags` | u16 | 0 |
-| 8 | `request_id` | u64 | unique per agent epoch; echoed in the reply markers |
-| 16 | `agent_id` | u64 | the agent's epoch |
-| 24 | `instrument` | u64 | the symbol as on the wire (not the agent's `symbol_id`) |
-| 32 | `venue` | u16 | the venue as on the wire, 0 if unmapped |
-| 34 | reserved | 6 bytes | zero |
-| 40 | `last_seq_seen` | u64 | last sequence the agent saw on the partition, 0 if none |
-| 48 | `source_epoch_seen` | u64 | publisher identity the agent sees, 0 if unknown |
-| 56 | reserved | u64 | zero |
+**Upstream request** (implemented). The SPP message `RecapRequest` (template 10 of `schemas/subplane_proto.xml`, encoded with `include/subplane/proto/subplane_proto_codec.h`): `CorrelationId` (unique per agent epoch, echoed in the reply), `AgentEpoch`, `Instrument` (the symbol as on the wire, not the agent's `symbol_id`), `LastSeqSeen` (0 if none), `SourceEpochSeen` (0 if unknown; always 0 until publisher identity lands), `Venue` (as on the wire, 0 if unmapped), `Flags` (0). One frame per request, after the connection's `Hello`. It replaced the earlier 64-byte `SPRQ` request before any release.
 
 **Publisher identity** (planned). On Aeron, a new image session id means a publisher restart. Elsewhere the stream carries a publisher start time (`SourceEpoch`), mapped in decoder config. A reply whose identity differs from the live stream is discarded and requested again.
 
@@ -603,7 +593,7 @@ include/subplane/
   core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h spsc_queue.h
   registry/    component_registry.h
   transport/   transport.h udp_multicast.h tcp_stream.h aeron_transport.h
-  recap/       recap_request.h (publisher contract) recap_transport.h aeron_recap.h recap_config.h recap_manager.h
+  recap/       recap_transport.h aeron_recap.h recap_config.h recap_manager.h
   framing/     framing.h sbe_length.h
   decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h sbe_codec.h
   pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h recap_state.h

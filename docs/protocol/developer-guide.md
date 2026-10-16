@@ -94,7 +94,8 @@ sequenceDiagram
 - **Records are your stream's messages,** carried as opaque payloads. The agent delivers them to apps unchanged, flagged as snapshot.
 - **Replies are contiguous:** don't interleave two replies on one response stream.
 - **When to reject:** while your state for the instrument is unknown or stale, reject with `NotReady`. The agent retries with backoff.
-- **Agent side:** the merge is implemented. The agent sending `RecapRequest` in SPP is the next step (until then it uses the earlier 64-byte request).
+- **Check your counts:** the agent drops a reply whose `RecapEnd.RecordCount` differs from the records it received, and asks again.
+- **Agent side:** implemented. The agent sends `Hello` first on each connection, then one `RecapRequest` per instrument, and reads SPP replies (the partition's default, `recap.reply: spp`).
 
 ### 4. Handle republish (gateway, planned with feeds step 4)
 `Republish{Instrument or 0 for all}` asks the gateway to publish the instrument's state again on the live stream: definitions, then a book clear and full depth. Answer with `Status{Ok}`, or `Busy` when rate-limited. Every subscriber sees the result in band, which is how a snapshot service recovers without a private channel.

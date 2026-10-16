@@ -1,7 +1,7 @@
 #pragma once
 
-// In-memory recap component: records the requests the manager sends and
-// hands queued response fragments to the manager on poll().
+// In-memory recap component: records the frames the manager sends and hands
+// queued response fragments to the manager on poll().
 
 #include "subplane/recap/recap_transport.h"
 
@@ -13,9 +13,9 @@ namespace subplane::test {
 class FakeRecap final : public RecapTransport {
 public:
     bool open(std::string&) override { open_ = true; return true; }
-    RecapSendStatus send(const RecapRequestWire& req) noexcept override {
+    RecapSendStatus send(const uint8_t* frame, uint32_t len) noexcept override {
         if (send_status != RecapSendStatus::OK) return send_status;
-        sent.push_back(req);
+        sent.emplace_back(frame, frame + len);
         return RecapSendStatus::OK;
     }
     int poll(RecapFragmentSink& sink, int limit) noexcept override {
@@ -29,12 +29,13 @@ public:
     }
     void close() noexcept override { open_ = false; }
     std::string describe() const override { return "fake recap"; }
-    bool connected() const noexcept override { return open_; }
+    bool connected() const noexcept override { return open_ && link_up; }
 
     void push(std::vector<uint8_t> fragment) { fragments_.push_back(std::move(fragment)); }
 
-    std::vector<RecapRequestWire> sent;
+    std::vector<std::vector<uint8_t>> sent;   // one entry per frame
     RecapSendStatus send_status = RecapSendStatus::OK;
+    bool link_up = true;
 
 private:
     bool open_ = false;

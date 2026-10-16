@@ -8,6 +8,10 @@ bool RecapConfig::parse(const YAML::Node& node, RecapConfig& out, std::string& e
         if (!node.IsMap()) { err = "recap must be a map"; return false; }
         out.type = node["type"].as<std::string>("");
         if (out.type.empty()) { err = "recap.type is required"; return false; }
+        const std::string reply = node["reply"].as<std::string>("spp");
+        if (reply == "spp") out.reply = RecapReplyMode::SPP;
+        else if (reply == "stream_markers") out.reply = RecapReplyMode::STREAM_MARKERS;
+        else { err = "recap.reply must be spp or stream_markers, not '" + reply + "'"; return false; }
         out.timeout_ms = node["timeout_ms"].as<uint32_t>(out.timeout_ms);
         out.max_inflight = node["max_inflight"].as<uint32_t>(out.max_inflight);
         if (const auto r = node["retry"]) {

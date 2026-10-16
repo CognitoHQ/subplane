@@ -167,14 +167,17 @@ bool Partition::build_recap(std::unique_ptr<RecapTransport> recap_override, std:
     if (!cfg_.recap_node.IsDefined() || cfg_.recap_node.IsNull()) return true;
     const std::string pre = "partition " + cfg_.name + ": recap: ";
     if (!RecapConfig::parse(cfg_.recap_node, recap_cfg_, err)) { err = pre + err; return false; }
-    // INTENT: the reply comes back in the stream's own schema between markers
-    // the decoder must recognise, and the request names the instrument as a
-    // u64; a partition that cannot do both cannot recap.
+    // INTENT: the request names the instrument as a u64, so the symbol must
+    // be an integer. In `reply: stream_markers` mode the reply also comes back
+    // in the stream's own schema between markers the decoder must recognise;
+    // in `spp` mode records travel as opaque SPP payloads and any decoder can
+    // recap (DBN included).
+    const bool markers = recap_cfg_.reply == RecapReplyMode::STREAM_MARKERS;
     bool begin = false, end = false, str = false;
     switch (decoder_type_) {
         case DecoderType::DBN:
-            err = pre + "type dbn cannot recap (DBN has no recap marker records)";
-            return false;
+            if (markers) { err = pre + "type dbn cannot use reply: stream_markers (DBN has no recap marker records); use reply: spp"; return false; }
+            break;
         case DecoderType::FLATBUFFERS:
             begin = fb_decoder_.maps_marker(RecapMarker::BEGIN);
             end = fb_decoder_.maps_marker(RecapMarker::END);
@@ -186,7 +189,7 @@ bool Partition::build_recap(std::unique_ptr<RecapTransport> recap_override, std:
             str = sbe_decoder_.has_string_symbol();
             break;
     }
-    if (!begin || !end) { err = pre + "the decoder must map RECAP_BEGIN and RECAP_END (decoder.messages, admin: RECAP_BEGIN)"; return false; }
+    if (markers && (!begin || !end)) { err = pre + "reply: stream_markers needs the decoder to map RECAP_BEGIN and RECAP_END (decoder.messages, admin: RECAP_BEGIN)"; return false; }
     if (str) { err = pre + "needs an integer symbol field; the request names the instrument as a u64"; return false; }
     // INTENT: the merge places a snapshot "as of S" against live messages by
     // their sequence; without one there is no way to tell which held messages

@@ -69,9 +69,9 @@ bool AeronRecap::open(std::string& err) {
     return true;
 }
 
-RecapSendStatus AeronRecap::send(const RecapRequestWire& req) noexcept {
+RecapSendStatus AeronRecap::send(const uint8_t* frame, uint32_t len) noexcept {
     if (!pub_) return RecapSendStatus::FAILED;
-    const int64_t rc = aeron_exclusive_publication_offer(pub_, reinterpret_cast<const uint8_t*>(&req), sizeof(req), nullptr, nullptr);
+    const int64_t rc = aeron_exclusive_publication_offer(pub_, frame, len, nullptr, nullptr);
     if (rc >= 0) return RecapSendStatus::OK;
     switch (rc) {
         case AERON_PUBLICATION_NOT_CONNECTED: return RecapSendStatus::NOT_CONNECTED;

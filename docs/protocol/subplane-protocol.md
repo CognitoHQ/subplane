@@ -1,6 +1,6 @@
 # The subplane protocol (SPP)
 
-Version 1. Status: specified. The codec is implemented (`include/subplane/proto/subplane_proto_codec.h`). The agent's recap moves onto SPP next, and the gateway's `Hello` and `Republish` come with feeds step 4; until then, recap uses the earlier request format (see `docs/context/architecture.md`, "Recap").
+Version 1. Status: specified. Implemented: the codec (`include/subplane/proto/subplane_proto_codec.h`) and the agent's side of recap over Aeron (`Hello`, `RecapRequest`, the reply messages, `Status`; see `docs/context/architecture.md`, "Recap"). Planned: the gateway's `Hello` and `Republish` (feeds step 4), the TCP binding, and the app extension relay.
 
 SPP is how subplane processes talk to each other about control:
 
