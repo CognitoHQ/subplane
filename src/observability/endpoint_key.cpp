@@ -14,13 +14,16 @@ std::string lower(std::string_view s) {
 
 // Value of `key=` in an Aeron URI's parameters ("a=1|b=2"), empty if absent.
 std::string_view param(std::string_view params, std::string_view key) {
-    while (!params.empty()) {
-        const size_t bar = params.find('|');
-        const std::string_view kv = params.substr(0, bar);
-        const size_t eq = kv.find('=');
-        if (eq != std::string_view::npos && kv.substr(0, eq) == key) return kv.substr(eq + 1);
-        if (bar == std::string_view::npos) break;
-        params.remove_prefix(bar + 1);
+    // INTENT: index arithmetic rather than substr(0, npos) + find: GCC 11
+    // reports a false -Wstringop-overread on that pattern under -Werror.
+    size_t pos = 0;
+    while (pos < params.size()) {
+        size_t bar = pos;
+        while (bar < params.size() && params[bar] != '|') ++bar;
+        size_t eq = pos;
+        while (eq < bar && params[eq] != '=') ++eq;
+        if (eq < bar && params.substr(pos, eq - pos) == key) return params.substr(eq + 1, bar - eq - 1);
+        pos = bar + 1;
     }
     return {};
 }
