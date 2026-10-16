@@ -70,6 +70,7 @@ add_library(subplane_core STATIC
     src/pipeline/partition.cpp
     src/pipeline/lvc.cpp
     src/pipeline/pipeline.cpp
+    src/pipeline/recap_state.cpp
     src/pipeline/session_manager.cpp
     src/control/control_server.cpp
 )

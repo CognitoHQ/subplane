@@ -31,6 +31,9 @@ struct SessionSpec {
     std::vector<std::string> msg_types;    // TRADE, QUOTE, ...; empty = all data types
     bool        bus_admin = true;
     bool        agent_control = true;
+    // Ask for recap: each symbol starts with the snapshot service's state, then
+    // live data after it (architecture.md, "Recap"). Fixed at creation.
+    bool        recap = false;
 
     // Parses one entry of the `sessions:` sequence.
     static bool parse(const YAML::Node& node, SessionSpec& out, std::string& err);
@@ -45,6 +48,8 @@ struct Session {
     std::string name;
     std::string owner;
     uint64_t    partition_mask = 0;        // partitions this session is attached to
+    bool        recap = false;             // fixed at creation (SessionSpec::recap)
+    uint16_t    recap_slot = 0;            // pipeline thread: this session's waiter bit (RecapWaiters)
 
     // INTENT: the pipeline thread reads `filter` with acquire on every message
     // and never frees it; the cold side allocates a new table, posts SWAP_FILTER,

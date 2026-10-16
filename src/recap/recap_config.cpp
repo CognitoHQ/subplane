@@ -17,6 +17,9 @@ bool RecapConfig::parse(const YAML::Node& node, RecapConfig& out, std::string& e
         }
         out.reply_slabs = node["reply_slabs"].as<uint32_t>(out.reply_slabs);
         out.reply_slab_bytes = node["reply_slab_bytes"].as<uint32_t>(out.reply_slab_bytes);
+        out.max_pending = node["max_pending"].as<uint32_t>(out.max_pending);
+        out.hold_bytes = node["hold_bytes"].as<uint64_t>(out.hold_bytes);
+        out.hold_chunk_bytes = node["hold_chunk_bytes"].as<uint32_t>(out.hold_chunk_bytes);
     } catch (const YAML::Exception& e) {
         err = std::string("recap config: ") + e.what();
         return false;
@@ -26,6 +29,12 @@ bool RecapConfig::parse(const YAML::Node& node, RecapConfig& out, std::string& e
     if (out.retry_base_ms == 0 || out.retry_max_ms < out.retry_base_ms) { err = "recap.retry needs 0 < base_ms <= max_ms"; return false; }
     if (out.reply_slabs == 0 || out.reply_slabs > 1024) { err = "recap.reply_slabs must be 1..1024"; return false; }
     if (out.reply_slab_bytes < 4096 || out.reply_slab_bytes > (256u << 20)) { err = "recap.reply_slab_bytes must be 4096..268435456"; return false; }
+    if (out.max_pending == 0 || out.max_pending > (1u << 20)) { err = "recap.max_pending must be 1..1048576"; return false; }
+    if (out.hold_chunk_bytes < 64 || out.hold_chunk_bytes > 65536) { err = "recap.hold_chunk_bytes must be 64..65536"; return false; }
+    if (out.hold_bytes < out.hold_chunk_bytes || out.hold_bytes > (16ull << 30) ||
+        out.hold_bytes / out.hold_chunk_bytes >= 0xFFFFFFFFull) {
+        err = "recap.hold_bytes must be hold_chunk_bytes..16 GiB"; return false;
+    }
     return true;
 }
 

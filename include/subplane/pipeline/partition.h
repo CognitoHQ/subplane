@@ -25,6 +25,7 @@
 namespace subplane {
 
 struct Session;
+class RecapState;
 
 struct PartitionConfig {
     std::string name;
@@ -141,6 +142,9 @@ public:
     PartitionState    state = PartitionState::INIT;
     Session*          sessions[kMaxSessions] = {};
     uint32_t          n_sessions = 0;
+    // Pending recaps and held messages; set by the owning Pipeline when the
+    // partition has a recap block, nullptr otherwise.
+    RecapState*       recap = nullptr;
 
     // Hot. Returns false if full or already attached.
     bool attach(Session* s) noexcept;

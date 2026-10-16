@@ -434,6 +434,7 @@ bool ControlServer::to_spec(const CtlHeader& h, const uint8_t* body, bool check_
     out.all_symbols = r.all_symbols != 0;
     out.bus_admin = r.bus_admin != 0;
     out.agent_control = r.agent_control != 0;
+    out.recap = r.recap != 0;
     const uint8_t* syms = body + sizeof(CtlSessionReq);
     for (uint32_t i = 0; i < r.symbol_count; ++i) {
         CtlSymbolName sn {};

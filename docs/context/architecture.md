@@ -270,13 +270,13 @@ Payloads of AGENT_CONTROL records are packed little-endian PODs in `shm/control_
 | 0xA7 | TRANSPORT_DOWN | AGENT_CONTROL | `TransportStateEvent` {partition_id, reason, last_seq, changed_ns}, 24 bytes. Reasons are transport-neutral (INV-015): 1 source lost (the last Aeron image went away, a TCP peer closed, reset or refused), 2 local failure (Aeron driver or client timeout, socket error, a misframed TCP stream). Reported once per change: a transport already down reports nothing more. `last_seq` is the last sequence accepted before the change. |
 | 0xA8 | TRANSPORT_UP | AGENT_CONTROL | `TransportStateEvent`; reason 0, or 3 publisher restart: a new Aeron session replaced the previous one. A restart is reported even without a DOWN before it (over Aeron UDP the old image outlives its publisher by the image liveness timeout). It is written ahead of the records of the batch that brought the source back; on Aeron, when a poll sees a new image before the client has announced it, a plain UP comes first and the restart UP follows on the next poll, possibly after a few records. Over UDP multicast "up" is the first datagram, or the first after a socket error; a silent sender is `PARTITION_DEGRADED`, not a transport state. Both events go to every session of the partition that takes `agent_control`. `/partitions` shows the state (`unknown`, `up`, `down`) and the counts. |
 | 0xA9 | SYMBOL_STALE (planned) | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id, partition_id, reason: 1 gap, 2 transport down, 3 publisher restart, last_seq, changed_ns} |
-| 0xAA | RECAP_PENDING (planned) | AGENT_CONTROL | `RecapEvent` {request_id, symbol_id, partition_id, status, attempt, as_of_seq, record_count} |
-| 0xAB | RECAP_BEGIN (planned) | AGENT_CONTROL | `RecapEvent` |
-| 0xAC | RECAP_COMPLETE (planned) | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S |
-| 0xAD | RECAP_FAILED (planned) | AGENT_CONTROL | `RecapEvent`; `status`: 1 timeout, 2 rejected, 3 snapshot too old, 4 hold overflow, 5 gap while held, 6 publisher identity mismatch. The agent retries; the symbol stays stale. |
+| 0xAA | RECAP_PENDING | AGENT_CONTROL | `RecapEvent` {request_id u64, symbol_id u32, partition_id u16, status u8, reserved u8, attempt u32, record_count u32, as_of_seq u64}, 32 bytes. The symbol is waiting for a snapshot; `request_id` and `attempt` are 0. |
+| 0xAB | RECAP_BEGIN | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the records in the reply, `attempt` 1 for the first request and +1 per retry |
+| 0xAC | RECAP_COMPLETE | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the snapshot records written to this ring |
+| 0xAD | RECAP_FAILED | AGENT_CONTROL | `RecapEvent`; `status`: 1 timeout, 2 rejected, 3 snapshot too old, 4 hold overflow, 5 gap while held (planned), 6 publisher identity mismatch (planned), 7 request could not be sent, 8 reply larger than `reply_slab_bytes`. The agent asks again; the symbol stays pending. |
 | 0xFE | PAD | PAD | none |
 
-Bus admin delivery is partition-scoped (the session must accept the record's partition). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `PARTITION_DEGRADED` and `PARTITION_RECOVERED` go to the sessions attached to that partition. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern.
+Bus admin delivery is partition-scoped (the session must accept the record's partition). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `PARTITION_DEGRADED` and `PARTITION_RECOVERED` go to the sessions attached to that partition. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern; the four recap events only to the rings of the recap sessions waiting on that symbol.
 
 ## Filters
 
@@ -325,7 +325,7 @@ Export of the cache into shared memory for direct app reads is planned.
 
 Design: `docs/context/project-vision.md`, "Recovery: recap". Contract summary:
 
-**Declaring a snapshot service** (implemented: config, component and manager; the pipeline merge is planned). A partition gains an optional `recap:` block; the recap component is compiled in and selected by `type`, like a transport (`recap_components()` in `src/registry/builtin_components.cpp`):
+**Declaring a snapshot service** (implemented). A partition gains an optional `recap:` block; the recap component is compiled in and selected by `type`, like a transport (`recap_components()` in `src/registry/builtin_components.cpp`):
 ```yaml
 recap:
   type: aeron                       # v1; tcp for buses that are not Aeron later
@@ -337,9 +337,11 @@ recap:
   retry: { base_ms: 50, max_ms: 5000 }   # exponential, jittered within [cap/2, cap]
   reply_slabs: 8                    # preallocated reply buffers per partition
   reply_slab_bytes: 1048576         # the largest reply the agent accepts
-  hold_bytes: 4194304               # (planned, 3.4) preallocated hold arena per partition
+  max_pending: 4096                 # symbols pending at once on this partition
+  hold_bytes: 4194304               # preallocated arena for the live messages held for pending symbols
+  hold_chunk_bytes: 256             # its allocation unit
 ```
-A partition can recap only if its decoder maps `RECAP_BEGIN` and `RECAP_END`, its symbol is an integer (the request names the instrument as a u64), and it is not `dbn`; otherwise startup fails with the reason.
+A partition can recap only if its decoder maps `RECAP_BEGIN` and `RECAP_END`, its symbol is an integer (the request names the instrument as a u64), it has a sequence (`framing.sequence`; the merge places a snapshot against live messages by sequence), and it is not `dbn`; otherwise startup fails with the reason.
 
 **The `aeron` component.** It adds a subscription on the response channel (an Aeron response channel, `control-mode=response` with `control=` the service's response endpoint), then a request publication carrying `response-correlation-id=<that subscription's registration id>`. The service answers on a response publication made with the requesting image's correlation id, so each agent receives only its own replies. The agent's request channel must not set `response-correlation-id` itself. Requests are 64 bytes, so `|term-length=65536` on the request channel (and on the service's response publication, sized to its largest reply) keeps `/dev/shm` use small; Aeron's 16 MB default term length costs about 48 MB per publication, which a container's 64 MB `/dev/shm` cannot hold twice.
 
@@ -352,9 +354,9 @@ A partition can recap only if its decoder maps `RECAP_BEGIN` and `RECAP_END`, it
 
 **Reply contract for a snapshot service.** A reply is `RECAP_BEGIN`, the records, `RECAP_END`, sent contiguously on the response stream (replies to different requests are not interleaved) and framed like the live stream. `RECAP_REJECT` (with the request id and an optional reason) replaces a reply. Messages outside a reply, unknown request ids and late replies are counted (`recap_stray`) and dropped.
 
-**Counters** (per recap partition, in `/metrics` under `recap` and in `/partitions` as `recap`): `recap_requests`, `recap_coalesced`, `recap_replies`, `recap_rejects`, `recap_timeouts`, `recap_overflows`, `recap_send_failed`, `recap_stray`, `recap_cancelled`, `recap_no_slab`, and the gauges `recap_inflight`, `recap_queued`.
+**Counters** (per recap partition, in `/metrics` under `recap` and in `/partitions` as `recap`): from the manager `recap_requests`, `recap_coalesced`, `recap_replies`, `recap_rejects`, `recap_timeouts`, `recap_overflows`, `recap_send_failed`, `recap_stray`, `recap_cancelled`, `recap_no_slab`, and the gauges `recap_inflight`, `recap_queued`; from the pipeline `recap_held` (live messages held), `recap_merged`, `recap_records` (snapshot records delivered), `recap_too_old`, `recap_hold_overflows`, `recap_post_dropped` (a request or release that found both the queue and the pipeline's preallocated backlog full; should stay 0).
 
-**Reply markers, in decoder config** (implemented: parsed, validated at startup, and decoded; the merge that uses them is planned). The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
+**Reply markers, in decoder config** (implemented). The reply is ordinary messages of the stream's own schema between two markers, mapped like any admin message, with the fields the merge needs:
 ```yaml
 messages:
   - { template: 21, admin: RECAP_BEGIN,  fields: { request_id: RequestId, as_of: AsOfSeq, source_epoch: SourceEpoch } }
@@ -363,7 +365,7 @@ messages:
 ```
 `request_id` is required on every marker and `as_of` (the sequence S the snapshot is consistent with) on `RECAP_BEGIN`; `source_epoch` and `reason` are optional. For `sbe_routing` each is a root-block integer field of that template; for `flatbuffers` each is `{path, type}` with an integer type, like a routing field. A marker that arrives on the live stream is counted in `recap_markers` and dropped: apps never see a publisher's markers, only the agent's own recap events. `dbn` has no marker records: Databento's record types are fixed, so a DBN partition cannot take a recap reply.
 
-Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched (planned).
+Records between the markers are delivered with the snapshot-origin flag and `TickHeader::sequence` set to S; their payload is untouched. Only data records of the requested symbol are delivered, each through the waiting session's own filter; other records are skipped. Snapshot records do not update the last-value cache.
 
 **Upstream request** (implemented: `recap/recap_request.h`, `RecapRequestWire`). subplane's own format, 64 bytes, little-endian, independent of the bus schema; a recap component may translate it to a service's native protocol:
 
@@ -381,19 +383,21 @@ Records between the markers are delivered with the snapshot-origin flag and `Tic
 | 48 | `source_epoch_seen` | u64 | publisher identity the agent sees, 0 if unknown |
 | 56 | reserved | u64 | zero |
 
-**Publisher identity.** On Aeron, a new image session id means a publisher restart. Elsewhere the stream carries a publisher start time (`SourceEpoch`), mapped in decoder config. A reply whose identity differs from the live stream is discarded and requested again.
+**Publisher identity** (planned). On Aeron, a new image session id means a publisher restart. Elsewhere the stream carries a publisher start time (`SourceEpoch`), mapped in decoder config. A reply whose identity differs from the live stream is discarded and requested again.
 
-**Sessions.** YAML `recap: true` or the control channel `CtlSessionReq` byte that is padding today (planned `recap`; old clients send 0). A recap session may not be `all_symbols` in v1.
+**Sessions** (implemented). YAML `recap: true` on a session, or the control channel `CtlSessionReq.recap` byte (was padding; old clients send 0). It is fixed at creation: `SET_FILTER` keeps it, and a config reload that changes it is refused (destroy and recreate). A recap session needs a symbol list (not `all_symbols`, in v1) and `agent_control`. The distinct symbols of all recap sessions on a recap partition must fit in its `max_pending`; a session that would exceed it is refused. On a partition without a `recap:` block the flag does nothing.
 
-**Triggers.** A recap session starts or adds symbols; a sequence gap (partition-wide in v1, because the sequence is per stream); the transport goes down and comes back; the publisher restarts.
+**Triggers.** Implemented: a recap session starts, or adds symbols with `SET_FILTER`. Planned (3.4b): a sequence gap makes every symbol of every recap session on the partition pending (partition-wide in v1, because the sequence is per stream), with `SYMBOL_STALE`; a sequence reset or a publisher restart renews every pending request. A transport going down and coming back is not a trigger by itself: what was missed shows as a gap, and a new publisher as a restart.
 
-**Merge**, per (partition, symbol), on the pipeline thread with preallocated memory only (INV-002):
-1. Sessions waiting on the symbol get a pending bit; fan-out skips them for that symbol, and the message is appended to the symbol's hold list. Other sessions are unaffected.
-2. The cold-path recap manager sends one request per symbol per box (coalesced), with a per-partition rate limit, retries with jitter, and priority for symbols an app is waiting on. It hands the complete reply to the pipeline through a queue.
-3. On the reply: check the publisher identity and that the held messages reach back to S+1; write `RECAP_BEGIN`, the reply records, `RECAP_COMPLETE{S}`, then the held messages with sequence above S; clear the pending bits.
-4. Hold overflow, a gap while holding, a too-old snapshot, a rejection or a timeout write `RECAP_FAILED` and request again.
+**Merge**, per (partition, symbol), on the pipeline thread with preallocated memory only (INV-002; `pipeline/recap_state.h`). Implemented:
+1. **Pending.** The first recap session to wait on a symbol creates its pending entry with a **floor**, the partition's last sequence at that moment, and the pipeline posts one `REQUEST`; later waiters join the same entry. Each waiting session gets `RECAP_PENDING` and a waiter bit. When the last waiter leaves (filter change, session removed) the entry and its holds are freed and `CANCEL` is posted.
+2. **Hold.** For a pending symbol, fan-out skips the waiting sessions and appends the message once to the symbol's hold list (header and payload, in a chunked arena of `hold_bytes`); every other session gets it at once. With nothing pending the hot path costs one load and a branch. The sequence check and the last-value cache run before fan-out as always.
+3. **Reply.** A snapshot as of S merges when `floor <= S <= last sequence seen`: to each waiter, `RECAP_BEGIN`, the reply records, `RECAP_COMPLETE{S}`, then the held messages with sequence above S, each through that session's filter. The entry is freed and the slab released. A reply with S ahead of live is kept until live reaches S. A reply with S below the floor is `RECAP_FAILED{3 too old}` and requested again: the messages between S and the floor are in neither the snapshot nor the hold.
+4. **Failures raise the floor.** A hold overflow frees that symbol's holds and raises its floor to the message that did not fit (`RECAP_FAILED{4}`, once until a hold succeeds again). A sequence gap raises every pending floor to the sequence before the one received. When the partition (re)starts its sequence, holds are freed and floors move to the new stream; a reply kept from before a reset is dropped and requested again. An older reply then fails as too old, so these need no other path.
+5. Manager failures (timeout, rejection, a reply too large, a failed send) reach the waiters as `RECAP_FAILED` with the attempt number; the manager retries on its own for as long as anyone waits.
+Planned: the publisher identity check (status 6, with canonical v2's `SourceEpoch`) and a `RENEW` request so a reply already in flight from before a publisher restart is never merged (3.4b).
 
-**What a recapping session sees for symbol X:** `SYMBOL_STALE` (when a failure triggered it), `RECAP_PENDING`, `RECAP_BEGIN`, the snapshot records, `RECAP_COMPLETE{S}`, then live data in sequence order with no gap and no duplicate.
+**What a recapping session sees for symbol X:** `SYMBOL_STALE` (when a failure triggered it; planned), `RECAP_PENDING`, then `RECAP_BEGIN`, the snapshot records, `RECAP_COMPLETE{S}`, then live data in sequence order with no gap and no duplicate. Each failure on the way is a `RECAP_FAILED`. Sessions without the flag see none of this, and nothing they receive is delayed.
 
 **Canonical schema.** Version 2 (planned) adds `RecapBegin` (21), `RecapEnd` (22), `RecapReject` (23) and `SourceEpoch` on `Heartbeat`, so the feeds package's `spwsgw-snap` can serve canonical streams. A firm's own bus maps its own markers instead.
 
@@ -570,7 +574,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `recap`: the snapshot service for this partition; see "Recap" (config, component and manager implemented; the merge planned).
 
 `sessions[]` (reloadable)
-- `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `partitions` (names), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true).
+- `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `partitions` (names), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true), `recap` (default false; see "Recap").
 
 `fanout`
 - `ring_dir` (default `/dev/shm`). Only the `shm_ring` fan-out exists; there is no `type` key yet. `aeron_ipc` is planned.
@@ -602,7 +606,7 @@ include/subplane/
   recap/       recap_request.h (publisher contract) recap_transport.h aeron_recap.h recap_config.h recap_manager.h
   framing/     framing.h sbe_length.h
   decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h
-  pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h
+  pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h recap_state.h
   shm/         ring_layout.h control_events.h        (shared with apps)
   fanout/      ring_writer.h
   control/     control_proto.h control_server.h      (proto shared with apps)

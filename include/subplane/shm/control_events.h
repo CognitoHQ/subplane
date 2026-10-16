@@ -85,6 +85,34 @@ struct SymbolMappedEvent {
     char     name[24];    // not NUL-terminated if name_len == 24
 };
 
+// RECAP_PENDING / RECAP_BEGIN / RECAP_COMPLETE / RECAP_FAILED: the recap of
+// one symbol for a session that asked for recap. Written only to the rings of
+// the sessions waiting on that symbol. For one symbol a waiting session sees
+// PENDING, then on success BEGIN, the snapshot records (FLAG_SNAPSHOT_ORIGIN,
+// sequence = as_of_seq), COMPLETE, then live data above as_of_seq; each
+// failure is a FAILED and the agent asks again.
+enum class RecapEventStatus : uint8_t {
+    OK            = 0,
+    TIMEOUT       = 1,
+    REJECTED      = 2, // the snapshot service refused (RECAP_REJECT)
+    TOO_OLD       = 3, // the snapshot is older than the messages the agent holds
+    HOLD_OVERFLOW = 4, // the agent ran out of room for the live messages it holds
+    GAP_WHILE_HELD = 5, // (3.4b)
+    IDENTITY      = 6, // the snapshot came from another publisher instance (planned)
+    SEND_FAILED   = 7, // the request could not be sent upstream
+    REPLY_TOO_LARGE = 8, // the reply exceeds the partition's recap.reply_slab_bytes
+};
+struct RecapEvent {
+    uint64_t request_id;   // 0 on PENDING (no request yet)
+    uint32_t symbol_id;
+    uint16_t partition_id;
+    uint8_t  status;       // RecapEventStatus; 0 except on FAILED
+    uint8_t  reserved0;
+    uint32_t attempt;      // 1 for the first request, then +1 per retry; 0 on PENDING
+    uint32_t record_count; // BEGIN: records in the reply; COMPLETE: records written to this ring
+    uint64_t as_of_seq;    // S, on BEGIN and COMPLETE
+};
+
 #pragma pack(pop)
 
 static_assert(sizeof(GapEvent) == 32);
@@ -94,6 +122,7 @@ static_assert(sizeof(FilterReloadedEvent) == 8);
 static_assert(sizeof(AgentRestartedEvent) == 16);
 static_assert(sizeof(SessionClosingEvent) == 8);
 static_assert(sizeof(SymbolMappedEvent) == 32);
+static_assert(sizeof(RecapEvent) == 32);
 static_assert(std::is_trivially_copyable_v<GapEvent>);
 static_assert(std::is_trivially_copyable_v<SymbolMappedEvent>);
 

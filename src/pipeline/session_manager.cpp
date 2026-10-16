@@ -4,6 +4,7 @@
 #include "subplane/logging/log_registry.h"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace subplane {
 
@@ -180,6 +181,7 @@ bool SessionManager::create(const SessionSpec& spec, std::string& err) {
     uint64_t mask = 0;
     Pipeline* group = nullptr;
     if (!resolve(spec, fs, mask, group, err)) return false;
+    if (!check_recap_locked(spec, fs, mask, nullptr, err)) return false;
 
     Entry e;
     e.spec = spec;
@@ -191,6 +193,8 @@ bool SessionManager::create(const SessionSpec& spec, std::string& err) {
     s.name = spec.name;
     s.owner = spec.owner;
     s.partition_mask = mask;
+    s.recap = spec.recap;
+    if (spec.recap) e.recap_symbols = fs.symbol_ids;
     s.filter_owned = build_filter(fs, cfg_.max_symbols, e.generation, err);
     if (!s.filter_owned) return false;
     s.filter.store(s.filter_owned.get(), std::memory_order_release);
@@ -228,14 +232,19 @@ bool SessionManager::set_filter(const SessionSpec& spec, std::string& err) {
         err = "session " + spec.name + " not found";
         return false;
     }
+    // INTENT: recap is fixed at creation; SET_FILTER keeps it whatever the
+    // request says (its recap byte is defined for CREATE_SESSION only).
+    SessionSpec want = spec;
+    want.recap = e->spec.recap;
     FilterSpec fs;
     uint64_t mask = 0;
     Pipeline* group = nullptr;
-    if (!resolve(spec, fs, mask, group, err)) return false;
+    if (!resolve(want, fs, mask, group, err)) return false;
     if (mask != e->session->partition_mask) {
         err = "session " + spec.name + ": partitions cannot change after creation; destroy and recreate";
         return false;
     }
+    if (!check_recap_locked(want, fs, mask, e, err)) return false;
     const uint32_t gen = e->generation + 1;
     auto fresh = build_filter(fs, cfg_.max_symbols, gen, err);
     if (!fresh) return false;
@@ -252,7 +261,8 @@ bool SessionManager::set_filter(const SessionSpec& spec, std::string& err) {
     e->session->filter_owned = std::move(fresh);
     e->session->filter_retiring.reset();
     e->generation = gen;
-    SessionSpec keep = spec;
+    if (want.recap) e->recap_symbols = fs.symbol_ids;
+    SessionSpec keep = want;
     keep.owner = e->spec.owner;
     e->spec = keep;
     return true;
@@ -293,6 +303,33 @@ void SessionManager::destroy_all() {
     entries_.clear();
 }
 
+bool SessionManager::check_recap_locked(const SessionSpec& spec, const FilterSpec& fs, uint64_t mask, const Entry* self,
+                                        std::string& err) const {
+    if (!spec.recap) return true;
+    if (spec.all_symbols) {
+        err = "session " + spec.name + ": recap needs a symbol list, not all symbols";
+        return false;
+    }
+    if (!spec.agent_control) {
+        err = "session " + spec.name + ": recap needs agent control events (they mark where each snapshot starts and ends)";
+        return false;
+    }
+    for (const Partition* p : partitions_) {
+        if (!p->has_recap() || !((mask >> p->id()) & 1ull)) continue;
+        std::unordered_set<uint32_t> distinct(fs.symbol_ids.begin(), fs.symbol_ids.end());
+        for (const auto& e : entries_) {
+            if (&e == self || !e.session || !e.session->recap || !((e.session->partition_mask >> p->id()) & 1ull)) continue;
+            distinct.insert(e.recap_symbols.begin(), e.recap_symbols.end());
+        }
+        if (distinct.size() > p->recap_config().max_pending) {
+            err = "session " + spec.name + ": partition " + p->name() + " would have " + std::to_string(distinct.size()) +
+                  " recap symbols, more than its recap.max_pending (" + std::to_string(p->recap_config().max_pending) + ")";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool SessionManager::specs_differ(const SessionSpec& a, const SessionSpec& b) const {
     return a.partitions != b.partitions || a.symbols != b.symbols || a.all_symbols != b.all_symbols ||
            a.msg_types != b.msg_types || a.bus_admin != b.bus_admin || a.agent_control != b.agent_control;
@@ -320,13 +357,14 @@ bool SessionManager::reconcile_config(const std::vector<SessionSpec>& specs, std
     for (const auto& s : specs) {
         SessionSpec spec = s;
         spec.owner = "config";
-        bool exists = false, differs = false, client_owned = false;
+        bool exists = false, differs = false, client_owned = false, recap_changed = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (const Entry* e = find_locked(spec.name)) {
                 exists = true;
                 client_owned = e->spec.owner != "config";
                 differs = specs_differ(e->spec, spec);
+                recap_changed = e->spec.recap != spec.recap;
             }
         }
         std::string e2;
@@ -334,6 +372,9 @@ bool SessionManager::reconcile_config(const std::vector<SessionSpec>& specs, std
             if (!create(spec, e2)) { err += e2 + "; "; ok = false; }
         } else if (client_owned) {
             err += "session " + spec.name + " is client-owned; config entry ignored; ";
+            ok = false;
+        } else if (recap_changed) {
+            err += "session " + spec.name + ": recap cannot change after creation; destroy and recreate; ";
             ok = false;
         } else if (differs) {
             if (!set_filter(spec, e2)) { err += e2 + "; "; ok = false; }

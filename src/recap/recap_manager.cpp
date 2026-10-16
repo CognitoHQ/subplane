@@ -212,6 +212,7 @@ void RecapManager::fail(PState& ps, uint32_t symbol_id, RecapStatus st, uint64_t
         r.partition = ps.part->id();
         r.symbol_id = symbol_id;
         r.request_id = it->second.request_id;
+        r.attempt = it->second.attempt + 1;
         r.status = st;
         r.reason = reason;
         push_reply(ps, r);
@@ -318,6 +319,7 @@ void RecapManager::on_message(PState& ps, const uint8_t* msg, uint32_t len) noex
             r.slab = static_cast<uint16_t>(a.slab);
             r.symbol_id = sym;
             r.request_id = rid;
+            r.attempt = it->second.attempt + 1;
             r.status = RecapStatus::OK;
             r.as_of = a.as_of;
             r.has_source_epoch = a.has_source_epoch;

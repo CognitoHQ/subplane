@@ -11,6 +11,9 @@
 //     retry: { base_ms: 50, max_ms: 5000 } # exponential backoff with full jitter
 //     reply_slabs: 8                       # preallocated reply buffers per partition
 //     reply_slab_bytes: 1048576            # the largest reply the agent accepts
+//     max_pending: 4096                    # symbols pending at once (pipeline side); sessions are refused beyond it
+//     hold_bytes: 4194304                  # live messages held for pending symbols, per partition
+//     hold_chunk_bytes: 256                # allocation unit of the hold arena
 
 #include <cstdint>
 #include <string>
@@ -27,6 +30,9 @@ struct RecapConfig {
     uint32_t    retry_max_ms = 5000;
     uint32_t    reply_slabs = 8;
     uint32_t    reply_slab_bytes = 1u << 20;
+    uint32_t    max_pending = 4096;
+    uint64_t    hold_bytes = 4ull << 20;
+    uint32_t    hold_chunk_bytes = 256;
 
     static bool parse(const YAML::Node& node, RecapConfig& out, std::string& err);
 };

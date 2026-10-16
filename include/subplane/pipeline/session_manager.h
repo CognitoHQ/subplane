@@ -84,6 +84,7 @@ private:
         uint32_t    generation = 0;
         bool        client_connected = false;
         uint64_t    disconnect_ns = 0;
+        std::vector<uint32_t> recap_symbols; // filter symbol ids of a recap session
     };
 
     Entry* find_locked(const std::string& name);
@@ -92,6 +93,11 @@ private:
     std::string ring_path(const std::string& name) const;
     bool post_and_wait(Pipeline& g, const PipelineCommand& c, std::string& err);
     bool specs_differ(const SessionSpec& a, const SessionSpec& b) const;
+    // Recap sessions: a symbol list (not all symbols), agent control events on,
+    // and the distinct symbols of all recap sessions on each recap partition
+    // within its recap.max_pending, so the pipeline's pending table cannot fill.
+    bool check_recap_locked(const SessionSpec& spec, const FilterSpec& fs, uint64_t mask, const Entry* self,
+                            std::string& err) const;
 
     SessionManagerConfig cfg_;
     SymbolTable& symbols_;

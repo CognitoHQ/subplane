@@ -52,6 +52,10 @@ const char* code_name(const TickHeader& h) {
         case ControlCode::SYMBOL_MAPPED: return "SYMBOL_MAPPED";
         case ControlCode::TRANSPORT_DOWN: return "TRANSPORT_DOWN";
         case ControlCode::TRANSPORT_UP: return "TRANSPORT_UP";
+        case ControlCode::RECAP_PENDING: return "RECAP_PENDING";
+        case ControlCode::RECAP_BEGIN: return "RECAP_BEGIN";
+        case ControlCode::RECAP_COMPLETE: return "RECAP_COMPLETE";
+        case ControlCode::RECAP_FAILED: return "RECAP_FAILED";
         case ControlCode::PAD: return "PAD";
         default: return "CONTROL?";
     }
@@ -99,6 +103,20 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             static const char* const kReason[] = {"none", "source_lost", "local_failure", "publisher_restart"};
             std::printf(" partition=%u reason=%s last_seq=%llu", e.partition_id,
                         e.reason < 4 ? kReason[e.reason] : "?", static_cast<unsigned long long>(e.last_seq));
+            break;
+        }
+        case ControlCode::RECAP_PENDING:
+        case ControlCode::RECAP_BEGIN:
+        case ControlCode::RECAP_COMPLETE:
+        case ControlCode::RECAP_FAILED: {
+            if (len < sizeof(RecapEvent)) return;
+            RecapEvent e; std::memcpy(&e, p, sizeof(e));
+            static const char* const kStatus[] = {"ok", "timeout", "rejected", "too_old", "hold_overflow",
+                                                  "gap_while_held", "identity", "send_failed", "reply_too_large"};
+            std::printf(" partition=%u symbol=%u request=%llu attempt=%u records=%u as_of=%llu", e.partition_id, e.symbol_id,
+                        static_cast<unsigned long long>(e.request_id), e.attempt, e.record_count,
+                        static_cast<unsigned long long>(e.as_of_seq));
+            if (h.msg_type == static_cast<uint8_t>(ControlCode::RECAP_FAILED)) std::printf(" status=%s", e.status < 9 ? kStatus[e.status] : "?");
             break;
         }
         default: break;
@@ -153,6 +171,7 @@ int cmd_tail(int argc, char** argv) {
                         static_cast<unsigned long long>(h.sequence), h.partition_id, h.template_id,
                         v.payload_len, static_cast<unsigned long long>(h.ingest_ts));
             if (h.kind == static_cast<uint8_t>(Kind::AGENT_CONTROL)) print_control_detail(h, v.payload, v.payload_len);
+            if (h.flags & FLAG_SNAPSHOT_ORIGIN) std::printf(" snapshot");
             if (hex) {
                 std::printf(" hex=");
                 for (uint32_t i = 0; i < v.payload_len; ++i) std::printf("%02x", v.payload[i]);

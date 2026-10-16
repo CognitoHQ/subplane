@@ -8,7 +8,7 @@
 //
 // Threads: each pipeline group talks to the manager through one RecapChannel
 // (three SPSC queues). The pipeline is the only producer of requests because
-// it owns which sessions wait on a symbol (step 3.4); the manager is the only
+// it owns which sessions wait on a symbol; the manager is the only
 // producer of replies. Nothing here runs on the pipeline thread.
 //
 // Reply contract with a snapshot service: a reply is RECAP_BEGIN, the records,
@@ -52,6 +52,7 @@ struct RecapReply {
     uint16_t       slab = 0;
     uint32_t       symbol_id = 0;
     uint64_t       request_id = 0;
+    uint32_t       attempt = 0;        // 1 for the first request of this recap, +1 per retry
     RecapStatus    status = RecapStatus::OK;
     bool           has_source_epoch = false;
     uint64_t       as_of = 0;          // S: the sequence the snapshot is consistent with

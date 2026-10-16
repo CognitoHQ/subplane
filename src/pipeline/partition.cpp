@@ -188,6 +188,10 @@ bool Partition::build_recap(std::unique_ptr<RecapTransport> recap_override, std:
     }
     if (!begin || !end) { err = pre + "the decoder must map RECAP_BEGIN and RECAP_END (decoder.messages, admin: RECAP_BEGIN)"; return false; }
     if (str) { err = pre + "needs an integer symbol field; the request names the instrument as a u64"; return false; }
+    // INTENT: the merge places a snapshot "as of S" against live messages by
+    // their sequence; without one there is no way to tell which held messages
+    // the snapshot already contains.
+    if (framer_.seq_source() == SeqSource::NONE) { err = pre + "needs a sequence (framing.sequence) to merge snapshots with live data"; return false; }
     if (recap_override) {
         recap_transport_ = std::move(recap_override);
     } else {

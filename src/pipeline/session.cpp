@@ -82,6 +82,7 @@ bool SessionSpec::parse(const YAML::Node& node, SessionSpec& out, std::string& e
             out.bus_admin = node["deliver"]["bus_admin"].as<bool>(true);
             out.agent_control = node["deliver"]["agent_control"].as<bool>(true);
         }
+        out.recap = node["recap"].as<bool>(false);
     } catch (const YAML::Exception& e) {
         err = "session " + out.name + ": " + e.what();
         return false;

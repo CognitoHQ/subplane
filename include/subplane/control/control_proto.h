@@ -148,7 +148,7 @@ struct CtlSessionReq {
     uint8_t  all_symbols;
     uint8_t  bus_admin;
     uint8_t  agent_control;
-    uint8_t  pad;
+    uint8_t  recap;               // 1 = ask for recap (CREATE_SESSION); was padding, old clients send 0
     uint32_t symbol_count;
 };
 struct CtlSymbolName {

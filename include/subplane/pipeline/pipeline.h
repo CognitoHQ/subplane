@@ -9,6 +9,7 @@
 #include "subplane/core/spsc_queue.h"
 #include "subplane/pipeline/lvc.h"
 #include "subplane/pipeline/partition.h"
+#include "subplane/pipeline/recap_state.h"
 #include "subplane/pipeline/session.h"
 #include "subplane/pipeline/symbol_resolver.h"
 #include "subplane/recap/recap_manager.h"
@@ -17,6 +18,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -59,7 +61,7 @@ public:
     const LogHistogram& hist_recv_to_publish() const noexcept { return hist_recv_to_publish_; }
     uint64_t loops() const noexcept { return loops_.load(std::memory_order_relaxed); }
     uint64_t epoch() const noexcept { return epoch_; }
-    // Recap queues to and from the agent's RecapManager (consumed from step 3.4).
+    // Recap queues to and from the agent's RecapManager.
     RecapChannel& recap_channel() noexcept { return recap_; }
 
 private:
@@ -80,6 +82,22 @@ private:
     void heartbeat_rings(uint64_t now) noexcept;
     void publish_partition_state(Partition& p) noexcept;
 
+    // Recap (architecture.md, "Recap"). Pipeline thread only.
+    const RecapPending* recap_hold(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept;
+    void recap_track(Session& s, const FilterTable* before, const FilterTable* after, uint64_t now) noexcept;
+    void recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now) noexcept;
+    void recap_drop_waiter(Partition& p, RecapPending& e, Session& s) noexcept;
+    void recap_drop_session(Session& s) noexcept;
+    void recap_resync(Partition& p, uint64_t seq) noexcept;
+    void apply_recaps(uint64_t now) noexcept;
+    void recap_reply(Partition& p, const RecapReply& r, uint64_t now) noexcept;
+    void recap_consider(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept;
+    void recap_merge(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept;
+    void recap_emit(Partition& p, const RecapPending& e, ControlCode code, const RecapEvent& ev, uint64_t now) noexcept;
+    void recap_post(Partition& p, const RecapCommand& c) noexcept;
+    void recap_release(Partition& p, uint16_t slab) noexcept;
+    void recap_flush() noexcept;
+
     std::string   name_;
     uint64_t      epoch_;
     TableResolver resolver_;
@@ -93,6 +111,19 @@ private:
 
     SpscQueue<PipelineCommand, 1024> commands_;
     RecapChannel          recap_;
+    // INTENT: preallocated at add_partition (INV-002). Requests and releases
+    // the manager's queues cannot take yet wait here in order; dropping a
+    // CANCEL would leave the manager retrying for nobody, dropping a release
+    // would leak a reply slab.
+    std::vector<std::unique_ptr<RecapState>> recap_states_;
+    std::vector<RecapCommand> recap_out_;
+    std::vector<RecapRelease> release_out_;
+    size_t                recap_out_cap_ = 0;
+    size_t                release_out_cap_ = 0;
+    RecapWaiters          recap_slots_;                       // slots held by recap sessions
+    Session*              merge_waiters_[RecapWaiters::kSlots] = {};
+    uint32_t              merge_counts_[RecapWaiters::kSlots] = {};
+    Partition*            by_id_[64] = {};
     uint64_t              posted_ = 0;
     std::atomic<uint64_t> applied_{0};
 

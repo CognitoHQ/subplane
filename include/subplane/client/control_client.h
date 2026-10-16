@@ -92,6 +92,7 @@ struct SessionRequest {
     bool        all_symbols = true;
     bool        bus_admin = true;
     bool        agent_control = true;
+    bool        recap = false;        // CREATE_SESSION only: start each symbol from the snapshot service
     std::vector<std::string> symbols; // names or decimal instrument ids (<= 24 chars)
 };
 
@@ -339,6 +340,7 @@ private:
         q.all_symbols = r.all_symbols ? 1 : 0;
         q.bus_admin = r.bus_admin ? 1 : 0;
         q.agent_control = r.agent_control ? 1 : 0;
+        q.recap = r.recap ? 1 : 0;
         q.symbol_count = static_cast<uint32_t>(r.symbols.size());
         out.assign(sizeof(q) + r.symbols.size() * sizeof(CtlSymbolName), 0);
         std::memcpy(out.data(), &q, sizeof(q));
