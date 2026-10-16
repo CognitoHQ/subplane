@@ -89,6 +89,17 @@ public:
             ::close(fd); ::unlink(tmp.c_str());
             return false;
         }
+        // INTENT: reserve every page now. ftruncate on tmpfs only sets the
+        // size, and MAP_POPULATE gives up silently when the filesystem is
+        // full, so a ring larger than the free space in /dev/shm would open
+        // fine and then SIGBUS the pipeline thread the first time it touched
+        // an unbacked page (at the first wrap, or the reader slots at the end
+        // of the file). Failing here turns that into a clean startup error.
+        if (const int rc = ::posix_fallocate(fd, 0, static_cast<off_t>(total)); rc != 0) {
+            err = "reserve " + std::to_string(total) + " bytes for " + tmp + ": " + std::strerror(rc);
+            ::close(fd); ::unlink(tmp.c_str());
+            return false;
+        }
         // INTENT: MAP_POPULATE pre-faults every page now, on the cold path, so
         // the first lap of publish() does not take page faults (each one is a
         // multi-microsecond kernel entry on the hot path).

@@ -224,10 +224,11 @@ TEST_CASE("ring: 1 writer + 4 readers see identical gap-free sequences") {
     TempRing tr;
     RingWriter w;
     std::string err;
-    constexpr uint64_t kN = 200000;
+    constexpr uint64_t kN = 100000;
     constexpr uint32_t kMax = 200;
-    // Large enough to hold the whole run: no reader can be lapped.
-    REQUIRE(w.open(cfg(64ull << 20, kMax), tr.path, 9, err));
+    // Large enough to hold the whole run (100000 x 320 B): no reader can be
+    // lapped. 32 MiB, so it fits a CI container's 64 MiB /dev/shm.
+    REQUIRE(w.open(cfg(32ull << 20, kMax), tr.path, 9, err));
 
     constexpr int kReaders = 4;
     std::atomic<int> ready{0};
