@@ -56,6 +56,7 @@ bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
 
 struct Loader {
     std::map<std::string, TypeInfo, std::less<>> types;
+    std::vector<EnumDef> enums;
     std::string err;
 
     bool fail(const std::string& m) { err = m; return false; }
@@ -139,11 +140,29 @@ struct Loader {
                 if (!parse_composite(n, t)) return false;
             } else if (ln == "enum" || ln == "set") {
                 if (!resolve(n.attribute("encodingType").as_string(), t)) return false;
+                if (ln == "enum" && !parse_enum_values(n, name, t)) return false;
             } else {
                 continue; // tolerate unknown elements (e.g. documentation)
             }
             types[name] = std::move(t);
         }
+        return true;
+    }
+
+    bool parse_enum_values(const pugi::xml_node& n, const std::string& name, const TypeInfo& t) {
+        EnumDef e;
+        e.name = name;
+        e.encoding = t.prim;
+        for (auto v : n.children()) {
+            if (v.type() != pugi::node_element || local_name(v.name()) != "validValue") continue;
+            const std::string text = v.text().as_string();
+            unsigned long val = 0;
+            if (t.prim == SbePrim::CHAR_ARRAY && text.size() == 1) val = static_cast<unsigned char>(text[0]);
+            else if (!parse_uint(text.c_str(), 0xFFFFFFFFFFFFFFFFul, val))
+                return fail("enum '" + name + "': bad value '" + text + "'");
+            e.values.emplace_back(v.attribute("name").as_string(), val);
+        }
+        enums.push_back(std::move(e));
         return true;
     }
 
@@ -227,6 +246,10 @@ struct Loader {
                 f.elem_prim = t.composite ? SbePrim::OPAQUE : t.elem;
                 f.type_name = type;
                 if (std::string_view(c.attribute("presence").as_string()) == "constant") f.size = 0;
+                unsigned long fsv = 0;
+                if (c.attribute("sinceVersion") && !parse_uint(c.attribute("sinceVersion").value(), 65535, fsv))
+                    return fail("field '" + f.name + "' has bad sinceVersion");
+                f.since_version = static_cast<uint16_t>(fsv);
                 unsigned long off = cursor;
                 if (c.attribute("offset") && !parse_uint(c.attribute("offset").value(), 65535, off))
                     return fail("field '" + f.name + "' has bad offset");
@@ -316,6 +339,7 @@ bool SbeSchema::load_string(std::string_view xml, std::string& err) {
     for (auto n : root.children())
         if (n.type() == pugi::node_element && local_name(n.name()) == "types")
             if (!L.parse_types(n)) { err = L.err; return false; }
+    enums_ = L.enums;
 
     header_ = HeaderLayout{};
     if (!L.parse_header(root.attribute("headerType").as_string("messageHeader"), header_)) { err = L.err; return false; }
@@ -344,6 +368,11 @@ bool SbeSchema::load_string(std::string_view xml, std::string& err) {
 
 const MessageDef* SbeSchema::find_message(uint16_t template_id) const {
     for (const auto& m : messages_) if (m.template_id == template_id) return &m;
+    return nullptr;
+}
+
+const EnumDef* SbeSchema::find_enum(std::string_view name) const {
+    for (const auto& e : enums_) if (e.name == name) return &e;
     return nullptr;
 }
 

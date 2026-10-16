@@ -58,6 +58,7 @@ add_library(subplane_core STATIC
     src/decoder/dbn_decoder.cpp
     src/decoder/flatbuffers_decoder.cpp
     src/decoder/sbe_views.cpp
+    src/decoder/sbe_codec.cpp
     src/framing/sbe_length.cpp
     src/framing/framing.cpp
     src/transport/udp_multicast.cpp

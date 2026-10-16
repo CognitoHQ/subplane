@@ -15,6 +15,11 @@
 ^tools/schema
 ^include/subplane/recap/
 
+# The subplane protocol (SPP): schema, spec, generated codec
+^schemas/subplane_proto\.xml$
+^docs/protocol/
+^include/subplane/proto/
+
 # Config vocabulary: framing, decoders, partitions, sessions, transports, recap
 ^src/framing/
 ^include/subplane/framing/

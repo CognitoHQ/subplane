@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace subplane {
@@ -27,6 +28,14 @@ struct FieldDef {
     uint16_t    length = 1;      // element count for CHAR_ARRAY and scalar arrays
     SbePrim     elem_prim = SbePrim::U8; // element primitive: equals prim for scalars; the scalar type for an OPAQUE array of scalars
     std::string type_name;       // the XML `type` attribute (enum/set/type name or primitive); cold, for tooling
+    uint16_t    since_version = 0; // added in this schema version; absent when the message's acting version is older
+};
+
+// An <enum> and its valid values (cold, for tooling).
+struct EnumDef {
+    std::string name;
+    SbePrim     encoding = SbePrim::U8;
+    std::vector<std::pair<std::string, uint64_t>> values;
 };
 
 // Layout of the message header composite (derived from headerType).
@@ -84,6 +93,8 @@ public:
     bool                little_endian() const noexcept { return little_endian_; }
     const HeaderLayout& header() const noexcept { return header_; }
     const std::vector<MessageDef>& messages() const noexcept { return messages_; }
+    const std::vector<EnumDef>&    enums() const noexcept { return enums_; }
+    const EnumDef*    find_enum(std::string_view name) const;
 
     const MessageDef* find_message(uint16_t template_id) const;
     // Root-block fields only.
@@ -97,6 +108,7 @@ private:
     bool     little_endian_ = true;
     HeaderLayout header_;
     std::vector<MessageDef> messages_;
+    std::vector<EnumDef> enums_;
 };
 
 } // namespace subplane

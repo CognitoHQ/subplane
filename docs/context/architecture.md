@@ -605,19 +605,20 @@ include/subplane/
   transport/   transport.h udp_multicast.h tcp_stream.h aeron_transport.h
   recap/       recap_request.h (publisher contract) recap_transport.h aeron_recap.h recap_config.h recap_manager.h
   framing/     framing.h sbe_length.h
-  decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h
+  decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h sbe_codec.h
   pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h recap_state.h
   shm/         ring_layout.h control_events.h        (shared with apps)
   fanout/      ring_writer.h
   control/     control_proto.h control_server.h      (proto shared with apps)
   client/      shm_reader.h control_client.h         (the whole app SDK)
+  proto/       subplane_proto_codec.h                (SPP codec, generated from schemas/subplane_proto.xml, checked in)
   logging/ metrics/                                  (cold path)
   agent.h api_server.h config_manager.h symbol_table.h status_types.h types.h persistence_manager.h
 src/            mirrors include/; src/main.cpp builds the `subplaned` binary; src/registry/builtin_components.cpp holds the static tables
 src/transport/parked/   Kafka producer code kept for reference, not built
 tools/          subplane.cpp (CLI dispatcher) probe.cpp tail.cpp schema.cpp send.cpp replay.cpp dbn_sim.cpp aeron_pub.cpp soak.cpp commands.h (+ shared headers)
 examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runner.cpp (function-style runtime) views_app.cpp (canonical struct views) canonical_pub.cpp (sample publisher)
-schemas/        sample_md.xml (referenced by config.yaml) subplane_canonical.xml (the canonical flat schema) CMakeLists.txt (views generated at build time)
+schemas/        sample_md.xml (referenced by config.yaml) subplane_canonical.xml (the canonical flat schema) subplane_proto.xml (SPP, docs/protocol/) CMakeLists.txt (views generated at build time)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
 scripts/        ci-build-2204.sh deps-2204.sh fetch-cme-sample.sh
