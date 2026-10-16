@@ -43,6 +43,11 @@ for _ in $(seq 1 50); do [ -f "$RING" ] && break; sleep 0.1; done
 TR=$(http_post "$API" "/sessions/all/trace?on=1") || fail "POST trace"
 case "$TR" in *'"tracing":true'*) ;; *) fail "trace reply: $TR" ;; esac
 case "$(http_post "$API" "/sessions/nope/trace?on=1")" in *'no session nope'*) ;; *) fail "trace on a missing session" ;; esac
+# A request split across TCP segments is read whole (the server used to answer
+# the first segment and reset the connection).
+SPLIT=$( trap '' PIPE; exec 3<>"/dev/tcp/127.0.0.1/$API" || exit 1; printf 'POST /sessions/nope/tr' >&3; sleep 0.3
+         printf 'ace?on=1 HTTP/1.0\r\nContent-Length: 0\r\n\r\n' >&3; tr -d '\r' <&3 | sed '1,/^$/d' )
+case "$SPLIT" in *'no session nope'*) ;; *) fail "split request: '$SPLIT'" ;; esac
 SUBPLANE_APP_NAME=views-test "$APP" "$RING" --from-start --quiet --seconds 3 > "$TMP/app.log" 2>&1 & APP_PID=$!
 # /topology while views_app reads the ring: the agent finds it by its mapping
 # of the ring file and by the reader slot its SDK claimed (docs/context/observability.md).

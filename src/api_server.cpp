@@ -8,6 +8,8 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <sstream>
 #include <sys/socket.h>
@@ -110,13 +112,43 @@ void ApiServer::server_loop(const StringType&, uint16_t) {
 }
 
 void ApiServer::handle_connection(int client_socket) {
-    char buffer[16384];
-    ssize_t bytes_read = read(client_socket, buffer, sizeof(buffer) - 1);
-    if (bytes_read <= 0) {
+    // INTENT: TCP may deliver a request in several segments, so read until the
+    // end of the headers plus any Content-Length body, not one read(). With a
+    // single read the server parsed a truncated request, answered, and closed
+    // with unread bytes queued, which makes the kernel reset the connection:
+    // the client then lost the reply or failed to send the rest (seen in CI
+    // on POSTs). The timeout bounds a client that never finishes its request.
+    constexpr size_t kMaxRequest = 16384;
+    timeval tv{};
+    tv.tv_sec = 2;
+    ::setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    std::string raw;
+    char buffer[4096];
+    size_t need = 0; // total bytes once the headers are complete
+    while (raw.size() < kMaxRequest) {
+        const ssize_t n = ::read(client_socket, buffer, sizeof buffer);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break; // closed, timed out or failed: answer what arrived, if anything
+        raw.append(buffer, static_cast<size_t>(n));
+        if (need == 0) {
+            const size_t end = raw.find("\r\n\r\n");
+            if (end == std::string::npos) continue;
+            need = end + 4;
+            for (size_t p = raw.find('\n'); p != std::string::npos && p < end; p = raw.find('\n', p + 1)) {
+                if (raw.size() >= p + 16 && strncasecmp(raw.c_str() + p + 1, "content-length:", 15) == 0) {
+                    need += std::strtoul(raw.c_str() + p + 16, nullptr, 10);
+                    break;
+                }
+            }
+        }
+        if (raw.size() >= need) break;
+    }
+    if (raw.empty()) return;
+    if (raw.size() >= kMaxRequest && (need == 0 || raw.size() < need)) {
+        send_response(client_socket, error_response(413, "request too large"));
         return;
     }
-    buffer[bytes_read] = '\0';
-    HttpRequest request = parse_request(StringType(buffer, static_cast<size_t>(bytes_read)));
+    HttpRequest request = parse_request(raw);
     HttpResponse response = route_request(request);
     send_response(client_socket, response);
 }
