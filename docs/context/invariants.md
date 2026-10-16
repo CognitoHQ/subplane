@@ -142,12 +142,13 @@ The ring layout, the 64-byte record header, the control event payloads and the c
 - `core/message.h`, `shm/ring_layout.h`, `shm/control_events.h` and `control/control_proto.h` depend only on each other, the C++ standard library and libc. No agent-internal header is included from them.
 - A record is a fixed header tuple followed by the payload bytes. Everything an app needs to route or interpret a payload that lives outside the payload (packet header fields, prefixes, group-resident ids) is lifted into the header tuple or the declared extension tuple (planned); an app is never handed a parent block.
 - A second-language reader (planned: Python) is the acceptance test that the contract is real.
+- **The agent carries compatibility, apps never have to.** A new agent works with app binaries built against every earlier SDK of the same contract version. A feature that needs app-side code (reader slots, `IDENTIFY`) is opt-in: an older app simply does not use it, and gains it at its own next rebuild, never because the agent changed. New fields go where older readers ignore them (reserved or zero bytes, after the data region, new codes and ops that old clients never see); a reader detects their presence (a nonzero offset, a capability bit, an `UNSUPPORTED` reply) rather than assuming it.
 
-**Rationale**: the agent standardizes how an application box subscribes to a bus. A standard that lives only inside one SDK is a library, not a standard.
+**Rationale**: the agent standardizes how an application box subscribes to a bus. A standard that lives only inside one SDK is a library, not a standard. Agents are one per box and cheap to roll out; apps are many, owned by other teams, and rebuilt on their own schedule, so the cost of change falls on the agent.
 
 ---
 
-*Last updated: 2026-10-12*
+*Last updated: 2026-10-16*
 
 ---
 
