@@ -225,13 +225,27 @@ bool emit_cpp(const SbeSchema& s, const ViewsOptions& o, std::string& out, Views
         }
     }
     out += "// Struct form: returns a pointer into the payload, or nullptr. View form: returns an\n"
-           "// optional view. Both check length, template id and schema id first.\n"
+           "// optional view. Both check length, template id and schema id first, so a message\n"
+           "// from an older sender (a shorter block) is refused here; use read<T>() for those.\n"
            "template <class T>\ninline auto view(const uint8_t* payload, uint32_t len) noexcept {\n"
            "    if constexpr (T::kIsStruct) {\n"
            "        return detail::header_matches(payload, len, T::kSize, T::kTemplateId) ? reinterpret_cast<const T*>(payload) : nullptr;\n"
            "    } else {\n"
            "        return detail::header_matches(payload, len, T::kSize, T::kTemplateId) ? std::optional<T>(T(payload)) : std::nullopt;\n"
-           "    }\n}\n\n} // namespace " + o.ns + "\n";
+           "    }\n}\n\n"
+           "// Struct form only: a copy that also accepts older senders. The bytes the sender's\n"
+           "// blockLength covers are copied and the rest is zero, so a field added after the\n"
+           "// sender's version reads as 0. nullopt on a wrong template or schema, or a block\n"
+           "// longer than `len`.\n"
+           "template <class T>\ninline std::optional<T> read(const uint8_t* payload, uint32_t len) noexcept {\n"
+           "    static_assert(T::kIsStruct, \"read<T>() needs the struct form\");\n"
+           "    if (!detail::header_matches(payload, len, kHeaderSize, T::kTemplateId)) return std::nullopt;\n"
+           "    const size_t wire = kHeaderSize + detail::load_n(payload, " + std::to_string(h.block_length_off) + ", " + std::to_string(h.block_length_size) + ");\n"
+           "    if (wire > len) return std::nullopt;\n"
+           "    T out{};\n"
+           "    std::memcpy(&out, payload, wire < T::kSize ? wire : T::kSize);\n"
+           "    return out;\n"
+           "}\n\n} // namespace " + o.ns + "\n";
     return true;
 }
 
@@ -333,7 +347,12 @@ bool emit_numpy(const SbeSchema& s, const ViewsOptions& o, std::string& out, Vie
            "', payload, offset + " + std::to_string(s.header().template_id_off) + ")[0], struct.unpack_from('<" +
            std::string(s.header().schema_id_size == 2 ? "H" : s.header().schema_id_size == 1 ? "B" : "I") + "', payload, offset + " + std::to_string(s.header().schema_id_off) + ")[0]\n"
            "    cls = BY_TEMPLATE.get(template_id)\n"
-           "    if cls is None or schema_id != SCHEMA_ID or len(payload) - offset < cls.SIZE:\n        return None\n"
+           "    if cls is None or schema_id != SCHEMA_ID:\n        return None\n"
+           "    # An older sender's shorter block: the fields it does not have read as 0.\n"
+           "    wire = HEADER_SIZE + struct.unpack_from('<" + std::string(s.header().block_length_size == 2 ? "H" : s.header().block_length_size == 1 ? "B" : "I") +
+           "', payload, offset + " + std::to_string(s.header().block_length_off) + ")[0]\n"
+           "    if len(payload) - offset < wire:\n        return None\n"
+           "    if wire < cls.SIZE:\n        return cls.from_bytes(bytes(payload[offset:offset + wire]) + bytes(cls.SIZE - wire))\n"
            "    return cls.from_bytes(payload, offset)\n\n"
            "def parse(record, offset=0):\n"
            "    \"\"\"One ring record (RecordHeader + payload) -> (RecordHeader, message or None).\"\"\"\n"

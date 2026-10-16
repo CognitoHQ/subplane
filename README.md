@@ -291,6 +291,7 @@ build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 - `docs/context/landscape.md`: how subplane compares with agents, libraries and middleware.
 - `docs/protocol/developer-guide.md`: talking to subplane, for gateway and snapshot-service developers and for app developers, with diagrams.
 - `docs/protocol/subplane-protocol.md`: the subplane protocol (SPP), the normative spec.
+- `skills/subplane-schema-designer/`: a Claude Code skill for designing schemas and SPP extensions the subplane way. It is active in this repo through `.claude/skills/`; elsewhere, copy the directory to `~/.claude/skills/`. It relies on `subplane schema --lint`.
 
 Everything in the docs is implemented unless marked "(planned)".
 

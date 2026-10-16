@@ -101,6 +101,23 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
     CHECK(view<Quote>(buf, b.size()) == nullptr);
     CHECK(view<Trade>(buf, 71) == nullptr);
 
+    // An older sender: the same Trade with a 56-byte block (no Aggressor and
+    // what follows). view<> refuses it; read<> copies the block and zero-fills.
+    uint8_t old[8 + 56];
+    std::memcpy(old, buf, sizeof old);
+    const uint16_t short_block = 56;
+    std::memcpy(old, &short_block, 2);
+    CHECK(view<Trade>(old, sizeof old) == nullptr);
+    const auto rt = read<Trade>(old, sizeof old);
+    REQUIRE(rt.has_value());
+    CHECK(rt->TradeId == 99);
+    CHECK(rt->Aggressor == 0);
+    CHECK_FALSE(read<Trade>(old, sizeof old - 1).has_value()); // block longer than the bytes
+    CHECK_FALSE(read<Quote>(old, sizeof old).has_value());
+    const auto full = read<Trade>(buf, b.size());
+    REQUIRE(full.has_value());
+    CHECK(full->Aggressor == 2);
+
     const MessageDef& snap = *s.find_message(4);
     b.begin(snap, buf, sizeof buf);
     REQUIRE(sptool::set_u64(s, buf, snap, "InstrumentId", 7));

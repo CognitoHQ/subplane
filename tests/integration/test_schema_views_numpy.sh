@@ -37,6 +37,11 @@ bs = c.BookSnapshot.from_bytes(snap)
 assert len(snap) == 368 and bs.InstrumentId == 7 and bs.Depth == 10 and bs.BidPx == tuple(range(100, 110)) and bs.AskPx[9] == 209, bs
 tr = c.Trade.from_bytes(struct.pack(c.Trade.FORMAT, 64, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 0, 0, 65432100000000, 250000000, 99, 2))
 assert tr.Price == 65432100000000 and tr.Aggressor == 2 and c.message_from_bytes(snap) == bs
+old = bytearray(struct.pack(c.Trade.FORMAT, 64, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 0, 0, 65432100000000, 250000000, 99, 2))[:8 + 56]
+old[0:2] = (56).to_bytes(2, 'little')                      # an older sender's 56-byte block: no Aggressor
+ot = c.message_from_bytes(bytes(old))
+assert ot is not None and ot.TradeId == 99 and ot.Aggressor == 0, ot
+assert c.message_from_bytes(bytes(old[:-1])) is None       # block longer than the bytes
 print("dataclass views ok")
 # NumPy, when present.
 try:

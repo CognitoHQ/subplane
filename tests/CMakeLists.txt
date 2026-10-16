@@ -15,7 +15,7 @@ subplane_unit_test(test_core_types unit/test_filter_table.cpp unit/test_seqlock.
 subplane_unit_test(test_ring unit/test_ring.cpp)
 # M3 SBE schema, length walker, routing decoder
 subplane_unit_test(test_sbe unit/test_sbe_schema.cpp unit/test_sbe_length.cpp unit/test_sbe_decoder.cpp)
-subplane_unit_test(test_spp_codec unit/test_spp_codec.cpp)
+subplane_unit_test(test_spp_codec unit/test_spp_codec.cpp unit/test_sbe_lint.cpp)
 # M4 transport + registry
 subplane_unit_test(test_transport unit/test_transport.cpp)
 subplane_unit_test(test_framing unit/test_framing.cpp)
