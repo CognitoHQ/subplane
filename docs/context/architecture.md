@@ -204,18 +204,33 @@ Per partition, `expected_seq` (0 = unknown). The first sequence seen seeds it; n
 
 ## Ring and record format
 
-Every record is two parts: a fixed header tuple that the agent fills from wherever the discriminators live (message root block today; packet header and message prefix fields, plus a per-partition extension tuple, are planned under roadmap item 1), then the payload bytes exactly as received. Apps never need a parent block to interpret a payload. Header-only shared definitions live in `shm/ring_layout.h` (app-facing ABI; changing it bumps `RING_LAYOUT_VERSION`). One file per session: `<fanout.ring_dir>/subplane.<agent>.<session>.ring`, created as `.tmp`, sized, mapped, filled, marked ACTIVE, then atomically renamed. Layout is `[RingHeader: 4096 B][data region: capacity B]`. Capacity is a power of two, at least 64 KiB; `max_payload` is at most `capacity / 4`. Pages are pre-faulted at creation (`MAP_POPULATE`).
+Every record is two parts: a fixed header tuple that the agent fills from wherever the discriminators live (message root block today; packet header and message prefix fields, plus a per-partition extension tuple, are planned under roadmap item 1), then the payload bytes exactly as received. Apps never need a parent block to interpret a payload. Header-only shared definitions live in `shm/ring_layout.h` (app-facing ABI; changing it bumps `RING_LAYOUT_VERSION`). One file per session: `<fanout.ring_dir>/subplane.<agent>.<session>.ring`, created as `.tmp`, sized, mapped, filled, marked ACTIVE, then atomically renamed. Layout is `[RingHeader: 4096 B][data region: capacity B][reader slots: 64 × 512 B]`. The file mode is `agent.ring_mode` (default `0644`). Capacity is a power of two, at least 64 KiB; `max_payload` is at most `capacity / 4`. Pages are pre-faulted at creation (`MAP_POPULATE`).
 
 **Header page** (one cache line per independently written field group):
 
 | Offset | Field | Notes |
 |---|---|---|
 | 0 | `magic` (u64), `layout_version` (u32 @8), `record_version` (u32 @12), `epoch` (u64 @16), `capacity` (u64 @24), `max_payload` (u32 @32), `writer_pid` (u32 @36), `session_name[32]` (@40) | Immutable after creation. Spills into line 1. `magic` is `"SPRING01"`. |
+| 72 | `readers_offset` (u64), `reader_slots` (u32 @80), `reader_slot_bytes` (u32 @84) | Immutable. Where the reader slots are; `readers_offset` 0 means a ring without slots. |
 | 128 | `head` (atomic u64) | Next write position, absolute bytes, never masked. |
 | 192 | `heartbeat_ns` (atomic u64) | Writer liveness, CLOCK_REALTIME ns. |
 | 256 | `state` (atomic u32) | 0 INIT, 1 ACTIVE, 2 CLOSED. |
 | 320 | `records_written`, `bytes_written` (@328), `control_records` (@336) | Relaxed statistics. |
+| 384 | `reader_flags` (atomic u32), `reader_sample_every` (atomic u32 @388) | Agent to every reader: `READER_FLAG_TRACE_LATENCY` (bit 0), and trace 1 record in N (0 or 1 = every record). |
 
+**Reader slots.** The slot section follows the data region, so the data offset never moved and readers built before slots existed still work (they ignore the tail). Each app's `ShmReader` claims one 512-byte slot on `open()` (CAS on `owner_pid`), maps only the slot pages read-write, and releases the slot on `close()`. Every slot line has one writer:
+
+| Offset | Written by | Contents |
+|---|---|---|
+| 0 | agent | `flags` (u32), `sample_every` (u32 @4): this reader only, OR'ed with the header's |
+| 64 | app | `owner_pid` (u32; 0 free, `0xFFFFFFFF` being reclaimed), `identity_ready` (u32 @68), `start_time` (u64 @72, `/proc` field 22), `uid` (@80), `sdk_version` (@84), `capabilities` (@88; bit 0 traces latency), `name[32]` (@96, `SUBPLANE_APP_NAME`) |
+| 128 | app | `read_pos` (u64), `heartbeat_ns` (@136), `overruns` (@144), `records` (@152), `active_flags` (u32 @160), about every 64 polls |
+| 192 | app | read latency, `now - ingest_ts` of traced records: 38 power-of-two buckets (`[2^m, 2^(m+1))` ns, the last one open-ended), `lat_sum_ns` (@496), `lat_count` (@504) |
+
+- **Cost to the reader:** one branch and one increment per `poll()`. Every 64th poll it reads the clock and writes its line. With tracing on, it reads the clock once per sampled record.
+- **No slot is not an error:** a ring without slots, a full table, or no write permission on the file leaves reading unchanged; `slot_status()` says why. `ReaderOptions::report = false` opts out.
+- **Reclaim:** the agent's control thread frees, once a second, a slot whose owner is both dead (no such pid, or the pid now has another start time) and silent for 30 s. Silence alone is a reader that stopped polling, and a missing pid alone may be a reader in another pid namespace. A reader whose slot was reclaimed sees another `owner_pid` and stops writing (`SlotStatus::Lost`).
+- **Different uids:** claiming a slot opens the file read-write. A reader of another uid needs `agent.ring_mode: "0660"` (or `0664`) and a shared group. Read-only data is then enforced by the SDK's mappings, not by the file mode.
 **Records.** A record is a 64-byte `TickHeader` plus payload, padded up to a multiple of 64 bytes (`record_bytes(len)`). Position in the data region is `pos & (capacity - 1)`. A record never straddles the end: if it would, the writer first emits a **PAD** record (`kind=PAD`, `msg_type=0xFE`) covering the remaining bytes, with `payload_len = skipped - 64`, then writes the record at offset 0.
 
 **Publication.** Single writer, any number of read-only readers. Writer: plain-store header fields (except `seq_tag`) and payload; `seq_tag.store(pos, release)`; `head.store(pos + record_bytes, release)`. Reader: `h = head.load(acquire)`; `pos == h` is empty; otherwise check the window, then `seq_tag == pos` (else lapped), read, then re-check `head`. `publish` returns false (and the session counts `publish_failed`) if the payload exceeds `max_payload` or the ring is not ACTIVE; it never waits.
@@ -529,14 +544,15 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 | `GET /health` | `{"status":"ok"}` |
 | `GET /status` | name, version, uptime, epoch, partitions, sessions |
 | `GET /partitions` | per partition: name, id, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts |
-| `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation |
+| `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation, ring-wide `reader_flags`, and `readers` (slot, pid, name, lag bytes, records, overruns, heartbeat, tracing) |
+| `POST /sessions/<name>/trace?on=1\|0[&pid=N][&sample=N]` | latency tracing for the session's readers: every reader, or the slots of one pid; trace 1 record in `sample` |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |
 | `GET /topology` | what the agent consumes (one `data` entry per partition, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it), each by canonical endpoint key: `docs/context/observability.md` |
 | `GET /metrics` | Prometheus text exposition (`docs/context/observability.md`: every partition, transport, recap, group and session counter, state gauges, the `recv_to_publish` histogram, `subplane_service_info`); `?format=json` for the JSON form |
 | `POST /reload` | re-reads the config file and reconciles the `sessions` section |
 
-Anything else is 404 with a JSON error body. There is no per-session detail path.
+Anything else is 404 with a JSON error body. There is no per-session detail path; `/sessions/<name>/trace` is the only per-session action.
 
 ## Observability
 
@@ -556,6 +572,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `name` (default `subplane`): used in ring file names, the default control socket path and logs.
 - `version`: informational.
 - `max_symbols` (default 65536): size of the symbol table, filter bitsets and last-value cache.
+- `ring_mode` (default `"0644"`, octal): ring file mode. Readers of another uid need group write (`"0660"`) to claim a reader slot; without it they read but do not report.
 - `thread_groups[]`: `name`, `cpu` (pin core, -1 = unpinned), `partitions` (names). Omitted means one group `g0` with every partition. Each partition must be in exactly one group.
 
 `partitions[]` (one activation each; order defines the partition id, at most 64)

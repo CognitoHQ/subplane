@@ -4,9 +4,11 @@
 //
 // INTENT: concrete, header-only, no virtuals. publish() is on the pipeline hot
 // path: no heap, no mutex, no syscalls, never waits for readers. Readers map
-// the file PROT_READ, so a slow or dead reader can never stall the writer; it
-// simply gets lapped and detects that itself. Exactly ONE thread may call the
-// non-const methods of a given RingWriter.
+// the header and data PROT_READ, so a slow or dead reader can never stall the
+// writer; it simply gets lapped and detects that itself. Exactly ONE thread may
+// call the non-const methods of a given RingWriter, except the reader-slot
+// accessors at the end, which are cold and any-thread (they touch only the
+// slot section and the header's reader_flags line, never what publish() uses).
 
 #include "subplane/core/message.h"
 #include "subplane/shm/control_events.h"
@@ -32,6 +34,11 @@ struct RingConfig {
     uint32_t    max_payload    = 0; // <= capacity_bytes / 4
     std::string session_name;       // <= 31 chars
     bool        huge_pages     = false;
+    // File mode, applied with fchmod (umask does not narrow it). Readers open
+    // the file read-write to claim a reader slot, so a reader of another uid
+    // needs group write (0660 / 0664 with a shared group); without it the
+    // reader still reads, it only cannot report (ring_layout.h).
+    uint32_t    mode           = 0644;
 };
 
 class RingWriter {
@@ -66,8 +73,17 @@ public:
         ::unlink(tmp.c_str());
         const int fd = ::open(tmp.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0644);
         if (fd < 0) { err = "open " + tmp + ": " + std::strerror(errno); return false; }
+        if (::fchmod(fd, static_cast<mode_t>(cfg.mode)) != 0) {
+            err = "fchmod " + tmp + ": " + std::strerror(errno);
+            ::close(fd); ::unlink(tmp.c_str());
+            return false;
+        }
 
-        const uint64_t total = RING_HEADER_BYTES + cfg.capacity_bytes;
+        // INTENT: the slot section goes after the data region, not between
+        // header and data, so data stays at RING_HEADER_BYTES and readers
+        // built before slots existed keep working (they ignore the tail).
+        const uint64_t readers_off = RING_HEADER_BYTES + cfg.capacity_bytes;
+        const uint64_t total = readers_off + READER_SECTION_BYTES;
         if (::ftruncate(fd, static_cast<off_t>(total)) != 0) {
             err = "ftruncate " + tmp + ": " + std::strerror(errno);
             ::close(fd); ::unlink(tmp.c_str());
@@ -98,6 +114,12 @@ public:
         h->writer_pid     = static_cast<uint32_t>(::getpid());
         std::memcpy(h->session_name, cfg.session_name.data(), cfg.session_name.size());
         h->session_name[cfg.session_name.size()] = '\0';
+        h->readers_offset    = readers_off;
+        h->reader_slots      = READER_SLOTS;
+        h->reader_slot_bytes = static_cast<uint32_t>(READER_SLOT_BYTES);
+        h->reader_flags.store(0, std::memory_order_relaxed);
+        h->reader_sample_every.store(0, std::memory_order_relaxed);
+        for (uint32_t i = 0; i < READER_SLOTS; ++i) new (static_cast<uint8_t*>(p) + readers_off + i * READER_SLOT_BYTES) ReaderSlot{};
         h->head.store(0, std::memory_order_relaxed);
         h->heartbeat_ns.store(0, std::memory_order_relaxed);
         h->records_written.store(0, std::memory_order_relaxed);
@@ -121,6 +143,7 @@ public:
         map_bytes_   = total;
         hdr_         = h;
         data_        = base_ + RING_HEADER_BYTES;
+        slots_       = reinterpret_cast<ReaderSlot*>(base_ + readers_off);
         capacity_    = cfg.capacity_bytes;
         mask_        = cfg.capacity_bytes - 1;
         max_payload_ = cfg.max_payload;
@@ -201,6 +224,17 @@ public:
     uint64_t capacity() const noexcept { return capacity_; }
     uint32_t max_payload() const noexcept { return max_payload_; }
 
+    // Cold, any thread: the reader slots (READER_SLOTS of them), null when not open.
+    ReaderSlot* reader_slots() const noexcept { return slots_; }
+    // Cold, any thread: flags and trace sampling for every reader of this ring.
+    void set_reader_flags(uint32_t flags, uint32_t sample_every) noexcept {
+        if (hdr_ == nullptr) return;
+        hdr_->reader_sample_every.store(sample_every, std::memory_order_relaxed);
+        hdr_->reader_flags.store(flags, std::memory_order_relaxed);
+    }
+    uint32_t reader_flags() const noexcept { return hdr_ ? hdr_->reader_flags.load(std::memory_order_relaxed) : 0; }
+    uint32_t reader_sample_every() const noexcept { return hdr_ ? hdr_->reader_sample_every.load(std::memory_order_relaxed) : 0; }
+
     // Cold. The agent decides when a ring file goes away; existing mappings
     // stay readable after unlink.
     static bool unlink_ring(const std::string& path) { return ::unlink(path.c_str()) == 0; }
@@ -256,6 +290,7 @@ private:
         base_ = nullptr;
         hdr_  = nullptr;
         data_ = nullptr;
+        slots_ = nullptr;
         fd_   = -1;
     }
 
@@ -272,6 +307,7 @@ private:
     uint64_t    controls_    = 0;
 
     uint8_t*    base_        = nullptr;
+    ReaderSlot* slots_       = nullptr;
     uint64_t    map_bytes_   = 0;
     int         fd_          = -1;
     std::string path_;

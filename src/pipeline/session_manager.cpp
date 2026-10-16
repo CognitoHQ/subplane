@@ -2,8 +2,11 @@
 
 #include "subplane/core/clock.h"
 #include "subplane/logging/log_registry.h"
+#include "subplane/observability/proc_scan.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <csignal>
 #include <unordered_set>
 
 namespace subplane {
@@ -203,6 +206,7 @@ bool SessionManager::create(const SessionSpec& spec, std::string& err) {
     rc.capacity_bytes = spec.ring_capacity_bytes;
     rc.max_payload = spec.max_payload;
     rc.session_name = spec.name;
+    rc.mode = cfg_.ring_mode;
     const std::string path = ring_path(spec.name);
     RingWriter::unlink_ring(path); // stale ring from a previous incarnation
     if (!s.ring.open(rc, path, cfg_.epoch, err)) {
@@ -420,6 +424,43 @@ std::vector<SessionStatus> SessionManager::status() const {
         for (const Partition* p : partitions_) {
             if ((e.session->partition_mask >> p->id()) & 1ull) s.partitions.push_back(p->name());
         }
+        s.reader_flags = e.session->ring.reader_flags();
+        s.reader_sample_every = e.session->ring.reader_sample_every();
+        if (const ReaderSlot* slots = e.session->ring.reader_slots()) {
+            for (uint32_t i = 0; i < READER_SLOTS; ++i) {
+                const ReaderSlot& rs = slots[i];
+                const uint32_t pid = rs.owner_pid.load(std::memory_order_acquire);
+                if (pid == READER_SLOT_FREE || pid == READER_SLOT_RECLAIMING || pid > 0x7FFFFFFFu) continue;
+                ReaderReport r;
+                r.slot = i;
+                r.pid = static_cast<int32_t>(pid);
+                // INTENT: acquire pairs with the reader's release store of 1
+                // after it wrote its identity; before that the fields may be
+                // half-written, so only the pid is reported.
+                r.identity_ready = rs.identity_ready.load(std::memory_order_acquire) == 1;
+                if (r.identity_ready) {
+                    r.start_time = rs.start_time;
+                    r.uid = rs.uid;
+                    r.sdk_version = rs.sdk_version;
+                    r.capabilities = rs.capabilities;
+                    // Untrusted bytes: stop at NUL or the field's end, keep printable ASCII only.
+                    for (size_t k = 0; k < sizeof rs.name && rs.name[k] != '\0'; ++k) {
+                        const char ch = rs.name[k];
+                        r.name += (ch >= 0x20 && ch < 0x7F) ? ch : '?';
+                    }
+                }
+                r.flags_requested = s.reader_flags | rs.flags.load(std::memory_order_relaxed);
+                r.flags_active = rs.active_flags.load(std::memory_order_relaxed);
+                r.read_pos = rs.read_pos.load(std::memory_order_relaxed);
+                r.heartbeat_ns = rs.heartbeat_ns.load(std::memory_order_relaxed);
+                r.overruns = rs.overruns.load(std::memory_order_relaxed);
+                r.records = rs.records.load(std::memory_order_relaxed);
+                for (uint32_t b = 0; b < READER_LAT_BUCKETS; ++b) r.lat_buckets[b] = rs.lat_buckets[b].load(std::memory_order_relaxed);
+                r.lat_sum_ns = rs.lat_sum_ns.load(std::memory_order_relaxed);
+                r.lat_count = rs.lat_count.load(std::memory_order_relaxed);
+                s.readers.push_back(std::move(r));
+            }
+        }
         out.push_back(std::move(s));
     }
     return out;
@@ -462,6 +503,80 @@ void SessionManager::service_linger(uint64_t now_ns_) {
         destroy(n, 1, err);
         LogRegistry::instance().info("SESSION", "LINGER_EXPIRED", n);
     }
+}
+
+uint32_t SessionManager::service_readers(uint64_t now_ns_) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (last_reader_service_ns_ != 0 && now_ns_ - last_reader_service_ns_ < 1'000'000'000ull) return 0;
+    last_reader_service_ns_ = now_ns_;
+    uint32_t freed = 0;
+    for (auto& e : entries_) {
+        ReaderSlot* slots = e.session->ring.reader_slots();
+        if (slots == nullptr) continue;
+        for (uint32_t i = 0; i < READER_SLOTS; ++i) {
+            ReaderSlot& rs = slots[i];
+            uint32_t pid = rs.owner_pid.load(std::memory_order_acquire);
+            if (pid == READER_SLOT_FREE || pid == READER_SLOT_RECLAIMING) continue;
+            // INTENT: both conditions. Silence alone is a reader that stopped
+            // polling; a missing pid alone may be a reader in another pid
+            // namespace (a container), whose pid means nothing here. Freeing
+            // a live reader's slot would let a second reader write into it.
+            const uint64_t hb = rs.heartbeat_ns.load(std::memory_order_relaxed);
+            if (hb != 0 && (now_ns_ < hb || now_ns_ - hb < cfg_.reader_stale_ns)) continue;
+            bool dead = pid > 0x7FFFFFFFu;
+            if (!dead) {
+                dead = ::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH;
+                if (!dead && rs.identity_ready.load(std::memory_order_acquire) == 1 && rs.start_time != 0) {
+                    observability::Mapper id;
+                    if (observability::read_identity("/proc", static_cast<int32_t>(pid), id) && id.start_time != rs.start_time) dead = true;
+                }
+            }
+            if (!dead) continue;
+            if (!rs.owner_pid.compare_exchange_strong(pid, READER_SLOT_RECLAIMING, std::memory_order_acq_rel)) continue;
+            rs.flags.store(0, std::memory_order_relaxed);
+            rs.sample_every.store(0, std::memory_order_relaxed);
+            rs.identity_ready.store(0, std::memory_order_relaxed);
+            rs.read_pos.store(0, std::memory_order_relaxed);
+            rs.heartbeat_ns.store(0, std::memory_order_relaxed);
+            rs.active_flags.store(0, std::memory_order_relaxed);
+            // INTENT: release: the next claimer's CAS (acq_rel) sees the slot reset.
+            rs.owner_pid.store(READER_SLOT_FREE, std::memory_order_release);
+            ++freed;
+            LogRegistry::instance().info("SESSION", "READER_SLOT_RECLAIMED",
+                                         e.session->name + " slot=" + std::to_string(i) + " pid=" + std::to_string(pid));
+        }
+    }
+    return freed;
+}
+
+bool SessionManager::set_reader_trace(const std::string& session, bool on, int32_t pid, uint32_t sample_every,
+                                      uint32_t& matched, std::string& err) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    matched = 0;
+    Entry* e = find_locked(session);
+    if (e == nullptr) { err = "no session " + session; return false; }
+    RingWriter& ring = e->session->ring;
+    if (pid == 0) {
+        ring.set_reader_flags(on ? (ring.reader_flags() | READER_FLAG_TRACE_LATENCY) : (ring.reader_flags() & ~READER_FLAG_TRACE_LATENCY),
+                              sample_every);
+        if (ReaderSlot* slots = ring.reader_slots()) {
+            for (uint32_t i = 0; i < READER_SLOTS; ++i) {
+                const uint32_t o = slots[i].owner_pid.load(std::memory_order_acquire);
+                if (o != READER_SLOT_FREE && o != READER_SLOT_RECLAIMING) ++matched;
+            }
+        }
+        return true;
+    }
+    ReaderSlot* slots = ring.reader_slots();
+    for (uint32_t i = 0; slots != nullptr && i < READER_SLOTS; ++i) {
+        if (slots[i].owner_pid.load(std::memory_order_acquire) != static_cast<uint32_t>(pid)) continue;
+        slots[i].sample_every.store(sample_every, std::memory_order_relaxed);
+        const uint32_t f = slots[i].flags.load(std::memory_order_relaxed);
+        slots[i].flags.store(on ? (f | READER_FLAG_TRACE_LATENCY) : (f & ~READER_FLAG_TRACE_LATENCY), std::memory_order_relaxed);
+        ++matched;
+    }
+    if (matched == 0) { err = "pid " + std::to_string(pid) + " holds no reader slot on session " + session; return false; }
+    return true;
 }
 
 bool SessionManager::snapshot(const std::string& name, uint64_t& ring_head_at_snapshot, const SnapshotFn& fn) const {

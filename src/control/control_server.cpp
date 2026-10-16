@@ -196,6 +196,7 @@ void ControlServer::run() {
             // INTENT: SessionManager compares these against the timestamps we
             // pass to client_disconnected(); both use now_ns().
             sessions_.service_linger(now_ns());
+            sessions_.service_readers(now_ns());
             next_service = now_mono_ns() + kServiceIntervalNs;
         }
         if (rc <= 0) continue;

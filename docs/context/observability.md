@@ -76,12 +76,32 @@ Label names must match `[a-zA-Z_][a-zA-Z0-9_]*` and must not start with `__`; ot
 | `subplane_topology_edge` | gauge | direction, role, key, partition or session | 1 when the edge is up |
 | `subplane_topology_scan_unreadable` | gauge | | processes the consumer scan could not read |
 | `subplane_recap_connected` | gauge | partition | 1 while the recap component is connected to its service |
+| `subplane_app_lag_bytes` | gauge | session, app, pid | ring bytes the app has not read (head minus its reader's position) |
+| `subplane_app_heartbeat_age_seconds` | gauge | session, app, pid | seconds since the app's reader last reported |
+| `subplane_app_records_total`, `subplane_app_overruns_total` | counter | session, app, pid | records the reader returned; times it was lapped |
+| `subplane_app_tracing` | gauge | session, app, pid | 1 while the reader traces read latency |
+| `subplane_app_read_latency_seconds` | histogram | session, app, pid | `ingest_ts` to the app's read, traced records only; same box, same clock, so no clock sync is needed. Values from about 137 s up count in `+Inf` only |
+| `subplane_reader_slots_used` | gauge | | reader slots claimed, all sessions |
 
 **Useful queries:**
 - message rate per partition: `rate(subplane_partition_messages_total[1m])`;
 - p99 latency: `histogram_quantile(0.99, rate(subplane_recv_to_publish_seconds_bucket[5m]))`;
 - a silent feed: `subplane_partition_last_receive_age_seconds > 5`;
-- a ring that cannot keep up: `rate(subplane_session_publish_failed_total[1m]) > 0`.
+- a ring that cannot keep up: `rate(subplane_session_publish_failed_total[1m]) > 0`;
+- an app falling behind: `subplane_app_lag_bytes > 0.5 * on(session) group_left subplane_session_ring_capacity_bytes`;
+- an app that stopped reading: `subplane_app_heartbeat_age_seconds > 5`;
+- app read latency p99, while tracing: `histogram_quantile(0.99, rate(subplane_app_read_latency_seconds_bucket[5m]))`.
+
+### Reader slots
+Each app's reader reports through a slot in its ring file (architecture.md, "Reader slots"), with no app code: the SDK claims the slot on `open()` and writes its read position, heartbeat and overruns about every 64 polls. `SUBPLANE_APP_NAME` names it.
+
+**Latency tracing** is off by default and switched by the operator:
+- `POST /sessions/<name>/trace?on=1`: every reader of the session;
+- `&pid=N`: one process's readers only;
+- `&sample=N`: trace 1 record in N;
+- `?on=0` switches it off.
+
+A reader applies the change within about 64 polls; its `tracing` field and `subplane_app_tracing` confirm it. Readers built before slots existed, readers without write permission on the ring file (see `agent.ring_mode`), and a 65th reader on one ring read normally but do not report.
 
 ## The gateway's metrics (implemented)
 
@@ -130,7 +150,9 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
     { "key": "shm-ring://box1/dev/shm/subplane.prod-box1.mm.ring", "role": "data", "state": "up",
       "local": { "session": "mm", "owner": "config", "partitions": ["binance"] },
       "consumers": [ { "pid": 777, "start_time": 6619238, "uid": 1000, "comm": "mm_engine", "name": "market-maker",
-                       "unit": "mm-engine.service", "via": ["control", "mapping"] } ] } ],
+                       "unit": "mm-engine.service", "via": ["control", "mapping", "slot"],
+                       "reader": { "slot": 0, "lag_bytes": 0, "heartbeat_age_seconds": 0.004, "records": 81234, "overruns": 0,
+                                   "tracing": false, "trace_requested": false, "sdk_version": 1, "capabilities": 1 } } ] } ],
   "scan": { "processes": 690, "unreadable": 12 } }
 ```
 
@@ -147,19 +169,20 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 - **`publisher`:** what the transport knows about the current source. For Aeron this is the newest image's session id; a new id means a new publisher instance.
 
 ### Consumers
-An app needs no code to appear in `consumers`. The agent finds it in two ways:
+An app needs no code to appear in `consumers`. The agent finds it in three ways:
 - **`control`:** the app's connection created or attached to the session on the control socket. The agent knows its pid and uid (`SO_PEERCRED`) and, if the app sent `IDENTIFY`, its name.
   - The SDK sends `IDENTIFY` on connect when `SUBPLANE_APP_NAME` is set.
   - `ControlClient::identify(name)` does the same in code.
+- **`slot`:** the app's reader claimed a reader slot in the ring (Metrics, "Reader slots"). The entry then carries a `reader` object: `slot`, `lag_bytes`, `heartbeat_age_seconds`, `records`, `overruns`, `tracing`, `trace_requested`, `sdk_version`, `capabilities`. A slot names its process even when the `/proc` scan cannot read it.
 - **`mapping`:** the process maps the session's ring file, according to a scan of `/proc/<pid>/maps`. This catches apps that only read the ring.
   - The scan is cached for 2 s.
   - It cannot read other users' processes unless the agent runs as root or with `CAP_SYS_PTRACE`. Those processes are counted in `scan.unreadable`.
   - An agent in its own container sees only its pid namespace.
 
 **Matching and naming:**
-- A process found both ways is one entry, with `"via": ["control", "mapping"]`.
+- A process found several ways is one entry, for example `"via": ["control", "mapping", "slot"]`.
 - A process is identified by (`pid`, `start_time`), so a reused pid is not mistaken for the old process.
-- `name` is the `IDENTIFY` name if one was sent, else the systemd unit or container scope (`unit`, from `/proc/<pid>/cgroup`), else `comm`.
+- `name` is the `IDENTIFY` name if one was sent, else the slot's name (`SUBPLANE_APP_NAME`), else the systemd unit or container scope (`unit`, from `/proc/<pid>/cgroup`), else `comm`.
 - A process still mapping a ring that an agent restart unlinked has `"stale_ring": true` and is not counted in `subplane_session_consumers`.
 
 ### The gateway's topology
@@ -197,4 +220,3 @@ Example alert, a session nobody reads: `subplane_session_consumers == 0`.
 - **Collector:** `subplane topo fetch | render | impact | serve`.
   - It joins documents into a flow graph and renders it as Mermaid, dot or a Grafana node graph.
   - It answers "if X fails, what loses data and what loses only recovery".
-- **The ring's shared reader section (PR C):** apps report their lag, heartbeat and read latency there.

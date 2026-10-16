@@ -64,6 +64,7 @@ private:
     HttpResponse handle_health(const HttpRequest& request);
     HttpResponse handle_status(const HttpRequest& request);
     HttpResponse handle_metrics(const HttpRequest& request);
+    HttpResponse handle_trace(const HttpRequest& request, const StringType& path);
     HttpResponse handle_topology(const HttpRequest& request);
     HttpResponse handle_partitions(const HttpRequest& request);
     HttpResponse handle_sessions(const HttpRequest& request);

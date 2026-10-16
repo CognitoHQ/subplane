@@ -18,6 +18,7 @@
 #include "subplane/control/control_server.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <unordered_map>
 #include <unordered_set>
@@ -287,6 +288,17 @@ bool Agent::start() {
     smc.epoch = epoch_;
     smc.max_symbols = max_symbols_;
     {
+        // Octal, as chmod takes it: "0660" lets a shared group claim reader slots.
+        const std::string mode = config_manager_->get_value<std::string>("agent.ring_mode", "0644");
+        char* end = nullptr;
+        const unsigned long m = std::strtoul(mode.c_str(), &end, 8);
+        if (mode.empty() || *end != '\0' || m > 0777 || (m & 0400) == 0) {
+            std::cerr << "agent.ring_mode: want an octal file mode with owner read, like 0644 or 0660; got '" << mode << "'" << std::endl;
+            return false;
+        }
+        smc.ring_mode = static_cast<uint32_t>(m);
+    }
+    {
         int linger_ms = config_manager_->get_value<int>("control.linger_ms", 5000);
         if (linger_ms < 0) linger_ms = 0;
         smc.linger_ns = static_cast<uint64_t>(linger_ms) * static_cast<uint64_t>(1'000'000);
@@ -498,10 +510,74 @@ Agent::ConsumerScan Agent::consumers(const std::vector<SessionStatus>& sessions)
             }
         }
     }
+    // INTENT: a reader slot names its process even when the /proc scan could
+    // not read it (another uid): the slot is the reader's own report.
+    for (const auto& s : sessions) {
+        for (const auto& rd : s.readers) {
+            bool merged = false;
+            for (auto& c : out.consumers) {
+                if (c.session == s.name && c.pid == rd.pid && !c.stale) {
+                    c.slot = true;
+                    if (c.name.empty()) c.name = rd.name;
+                    if (c.start_time == 0) c.start_time = rd.start_time;
+                    merged = true;
+                }
+            }
+            if (merged) continue;
+            Consumer c;
+            observability::Mapper id;
+            if (observability::read_identity("/proc", rd.pid, id) && id.start_time == rd.start_time) { c.comm = id.comm; c.unit = id.unit; }
+            c.session = s.name;
+            c.pid = rd.pid;
+            c.start_time = rd.start_time;
+            c.uid = rd.uid;
+            c.name = rd.name;
+            c.slot = true;
+            out.consumers.push_back(std::move(c));
+        }
+    }
     scan_cache_ = out;
     scan_at_ns_ = now;
     return out;
 }
+
+bool Agent::set_reader_trace(const std::string& session, bool on, int32_t pid, uint32_t sample_every, uint32_t& matched,
+                             std::string& err) {
+    if (!sessions_) { err = "agent not started"; return false; }
+    if (!sessions_->set_reader_trace(session, on, pid, sample_every, matched, err)) return false;
+    LogRegistry::instance().info("SESSION", on ? "READER_TRACE_ON" : "READER_TRACE_OFF",
+                                 session + (pid ? " pid=" + std::to_string(pid) : std::string(" all")) + " slots=" + std::to_string(matched));
+    return true;
+}
+
+namespace {
+// Reader-slot latency as a LogHistogram snapshot, for PromWriter::histogram_ns:
+// slot bucket m is [2^m, 2^(m+1)) ns, exactly LogHistogram major m (its first
+// sub-bucket, 4m). The slot's overflow bucket goes to the last bucket, so it
+// counts in +Inf only.
+LogHistogram::Snapshot reader_latency(const ReaderReport& r) {
+    LogHistogram::Snapshot s;
+    for (uint32_t m = 0; m + 1 < READER_LAT_BUCKETS; ++m) s.buckets[4 * m] = r.lat_buckets[m];
+    s.buckets[LogHistogram::kBuckets - 1] = r.lat_buckets[READER_LAT_BUCKETS - 1];
+    s.sum = r.lat_sum_ns;
+    s.count = r.lat_count;
+    return s;
+}
+
+std::string reader_json(const ReaderReport& r, uint64_t ring_head, uint64_t now) {
+    std::string o = "{\"slot\":" + std::to_string(r.slot);
+    o += ",\"lag_bytes\":" + std::to_string(ring_head >= r.read_pos ? ring_head - r.read_pos : 0);
+    const double age = r.heartbeat_ns == 0 || r.heartbeat_ns > now ? 0.0 : static_cast<double>(now - r.heartbeat_ns) / 1e9;
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.3f", age);
+    o += ",\"heartbeat_age_seconds\":" + std::string(buf);
+    o += ",\"records\":" + std::to_string(r.records) + ",\"overruns\":" + std::to_string(r.overruns);
+    o += ",\"tracing\":" + std::string((r.flags_active & READER_FLAG_TRACE_LATENCY) ? "true" : "false");
+    o += ",\"trace_requested\":" + std::string((r.flags_requested & READER_FLAG_TRACE_LATENCY) ? "true" : "false");
+    o += ",\"sdk_version\":" + std::to_string(r.sdk_version) + ",\"capabilities\":" + std::to_string(r.capabilities) + "}";
+    return o;
+}
+} // namespace
 
 std::string Agent::render_topology() const {
     const AgentStatus st = get_status();
@@ -553,7 +629,12 @@ std::string Agent::render_topology() const {
             o += ",\"via\":[";
             o += c.control ? "\"control\"" : "";
             o += c.mapping ? (c.control ? ",\"mapping\"" : "\"mapping\"") : "";
-            o += "]}";
+            o += c.slot ? ((c.control || c.mapping) ? ",\"slot\"" : "\"slot\"") : "";
+            o += "]";
+            for (const auto& r : s.readers) {
+                if (r.pid == c.pid && !c.stale) { o += ",\"reader\":" + reader_json(r, s.ring_head, now_ns()); break; }
+            }
+            o += "}";
         }
         o += "]}";
     }
@@ -686,7 +767,29 @@ std::string Agent::render_metrics(const std::string& format) const {
         double n = 0;
         for (const auto& c : scan.consumers) n += c.session == s.name && !c.stale ? 1 : 0;
         w.gauge("subplane_session_consumers", "Processes reading the session's ring (control clients and ring mappers)", {{"session", s.name}}, n);
+        for (const auto& r : s.readers) {
+            std::string app = r.name;
+            for (const auto& c : scan.consumers) {
+                if (c.session == s.name && c.pid == r.pid && !c.stale) { app = c.name.empty() ? (c.unit.empty() ? c.comm : c.unit) : c.name; break; }
+            }
+            const PromWriter::Labels rl = {{"session", s.name}, {"app", app}, {"pid", std::to_string(r.pid)}};
+            w.gauge("subplane_app_lag_bytes", "Ring bytes the app has not read yet (head minus its read position)", rl,
+                    static_cast<double>(s.ring_head >= r.read_pos ? s.ring_head - r.read_pos : 0));
+            w.gauge("subplane_app_heartbeat_age_seconds", "Seconds since the app's reader last reported", rl, age_s(r.heartbeat_ns));
+            w.counter("subplane_app_records_total", "Records the app's reader returned", rl, r.records);
+            w.counter("subplane_app_overruns_total", "Times the app's reader was lapped by the writer", rl, r.overruns);
+            w.gauge("subplane_app_tracing", "1 while the app's reader traces read latency", rl, (r.flags_active & READER_FLAG_TRACE_LATENCY) ? 1 : 0);
+            if (r.lat_count != 0) {
+                w.histogram_ns("subplane_app_read_latency_seconds", "Record ingest (ingest_ts) to the app's read, traced records only", rl,
+                               reader_latency(r));
+            }
+        }
     }
+    w.gauge("subplane_reader_slots_used", "Reader slots claimed, all sessions", {}, [&] {
+        double n = 0;
+        for (const auto& s : st.sessions) n += static_cast<double>(s.readers.size());
+        return n;
+    }());
     w.gauge("subplane_topology_scan_unreadable", "Processes whose memory maps the consumer scan could not read", {}, scan.unreadable);
     return w.str();
 }

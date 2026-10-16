@@ -24,6 +24,28 @@ struct PartitionStatus {
     std::string recap_json;     // recap counters as JSON; empty without a recap block
 };
 
+// One reader's slot as the agent last read it (shm/ring_layout.h). Cold copy;
+// the contents come from the app and are reported, never acted on.
+struct ReaderReport {
+    uint32_t    slot = 0;
+    int32_t     pid = 0;
+    uint64_t    start_time = 0;
+    uint32_t    uid = 0;
+    std::string name;                 // SUBPLANE_APP_NAME, may be empty
+    bool        identity_ready = false;
+    uint32_t    sdk_version = 0;
+    uint32_t    capabilities = 0;
+    uint32_t    flags_requested = 0;  // ring-wide | per-slot flags the agent set
+    uint32_t    flags_active = 0;     // what the reader applies
+    uint64_t    read_pos = 0;
+    uint64_t    heartbeat_ns = 0;
+    uint64_t    overruns = 0;
+    uint64_t    records = 0;
+    uint64_t    lat_buckets[38] = {}; // READER_LAT_BUCKETS
+    uint64_t    lat_sum_ns = 0;
+    uint64_t    lat_count = 0;
+};
+
 struct SessionStatus {
     std::string name;
     uint32_t    id = 0;
@@ -39,6 +61,9 @@ struct SessionStatus {
     uint64_t    ring_capacity = 0;
     uint64_t    heartbeat_ns = 0;       // the writer's last ring heartbeat (CLOCK_REALTIME), 0 if none
     std::vector<std::string> partitions; // names of the partitions it is attached to
+    std::vector<ReaderReport> readers;   // claimed reader slots
+    uint32_t    reader_flags = 0;        // ring-wide flags (READER_FLAG_*)
+    uint32_t    reader_sample_every = 0;
 };
 
 struct AgentStatus {

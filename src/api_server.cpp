@@ -184,6 +184,7 @@ HttpResponse ApiServer::route_request(const HttpRequest& request) {
     if (path == "/reload")     return handle_reload(request);
     if (path == "/symbols")    return handle_symbols(request);
     if (path.rfind("/lvc/", 0) == 0) return handle_lvc(request);
+    if (path.rfind("/sessions/", 0) == 0 && path.size() > 16 && path.compare(path.size() - 6, 6, "/trace") == 0) return handle_trace(request, path);
     return error_response(404, "Not Found: " + request.path);
 }
 
@@ -242,6 +243,29 @@ HttpResponse ApiServer::handle_sessions(const HttpRequest&) {
     }
     HttpResponse r;
     r.body = serialize_sessions(agent_->get_status().sessions);
+    return r;
+}
+
+// POST /sessions/<name>/trace?on=1|0[&pid=N][&sample=N]: latency tracing for a
+// session's readers, all of them or one process's.
+HttpResponse ApiServer::handle_trace(const HttpRequest& request, const StringType& path) {
+    if (request.method != "POST") return error_response(405, "Method not allowed");
+    if (!agent_) return error_response(500, "agent not available");
+    const std::string session = path.substr(10, path.size() - 16);
+    auto q = [&](const char* k) { auto it = request.query_params.find(k); return it == request.query_params.end() ? std::string() : it->second; };
+    const std::string on = q("on");
+    if (on != "0" && on != "1") return error_response(400, "want on=1 or on=0");
+    const unsigned long pid = std::strtoul(q("pid").c_str(), nullptr, 10);
+    const unsigned long sample = std::strtoul(q("sample").c_str(), nullptr, 10);
+    if (pid > 0x7FFFFFFFul || sample > 1000000ul) return error_response(400, "pid or sample out of range");
+    uint32_t matched = 0;
+    std::string err;
+    if (!agent_->set_reader_trace(session, on == "1", static_cast<int32_t>(pid), static_cast<uint32_t>(sample), matched, err)) {
+        return error_response(404, err);
+    }
+    HttpResponse r;
+    r.body = "{\"session\":\"" + json_escape(session) + "\",\"tracing\":" + (on == "1" ? "true" : "false") +
+             ",\"pid\":" + std::to_string(pid) + ",\"slots\":" + std::to_string(matched) + "}";
     return r;
 }
 
@@ -392,7 +416,16 @@ StringType ApiServer::serialize_sessions(const std::vector<SessionStatus>& sessi
         j << "{\"name\":\"" << json_escape(s.name) << "\",\"id\":" << s.id
           << ",\"owner\":\"" << s.owner << "\",\"ring_path\":\"" << json_escape(s.ring_path)
           << "\",\"epoch\":" << s.epoch << ",\"published\":" << s.published
-          << ",\"filtered\":" << s.filtered << ",\"filter_generation\":" << s.filter_generation << "}";
+          << ",\"filtered\":" << s.filtered << ",\"filter_generation\":" << s.filter_generation
+          << ",\"reader_flags\":" << s.reader_flags << ",\"readers\":[";
+        for (size_t k = 0; k < s.readers.size(); ++k) {
+            const auto& r = s.readers[k];
+            j << (k ? "," : "") << "{\"slot\":" << r.slot << ",\"pid\":" << r.pid << ",\"name\":\"" << json_escape(r.name)
+              << "\",\"lag_bytes\":" << (s.ring_head >= r.read_pos ? s.ring_head - r.read_pos : 0) << ",\"records\":" << r.records
+              << ",\"overruns\":" << r.overruns << ",\"heartbeat_ns\":" << r.heartbeat_ns
+              << ",\"tracing\":" << ((r.flags_active & 1u) ? "true" : "false") << "}";
+        }
+        j << "]}";
     }
     j << "]";
     return j.str();

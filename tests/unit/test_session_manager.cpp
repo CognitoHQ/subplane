@@ -6,6 +6,7 @@
 #include "subplane/pipeline/session_manager.h"
 
 #include <cstring>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -87,6 +88,7 @@ struct H {
         c.epoch = 77;
         c.max_symbols = 256;
         c.linger_ns = 50'000'000;
+        c.reader_stale_ns = 1'000'000; // 1 ms: reclaim tests do not wait
         sm = std::make_unique<SessionManager>(c, symbols, lvc, std::vector<Partition*>{&part}, std::vector<Pipeline*>{&pipe});
     }
     SessionSpec spec(const char* name, std::vector<std::string> types, std::string owner = "config") {
@@ -259,4 +261,62 @@ TEST_CASE("SessionManager: venue:id is rejected on a global-scope partition") {
     s.symbols = {"9:42"};
     CHECK_FALSE(h.sm->create(s, err));
     CHECK(err.find("venue-scoped") != std::string::npos);
+}
+
+TEST_CASE("SessionManager: reader slots in status, the trace switch, and reclaiming a dead reader's slot") {
+    H h;
+    std::string err;
+    REQUIRE_MESSAGE(h.sm->create(h.spec("a", {"TRADE"}), err), err);
+    SessionAttachInfo info;
+    REQUIRE(h.sm->attach_info("a", info));
+    ShmReader rd;
+    ReaderOptions o;
+    o.name = "unit";
+    REQUIRE(rd.open(info.ring_path, nullptr, o));
+    REQUIRE(rd.slot_status() == SlotStatus::Claimed);
+
+    auto readers = [&] { return h.sm->status().at(0).readers; };
+    REQUIRE(readers().size() == 1);
+    CHECK(readers()[0].pid == ::getpid());
+    CHECK(readers()[0].name == "unit");
+    CHECK(readers()[0].identity_ready);
+
+    uint32_t matched = 0;
+    REQUIRE_MESSAGE(h.sm->set_reader_trace("a", true, ::getpid(), 4, matched, err), err);
+    CHECK(matched == 1);
+    CHECK(readers()[0].flags_requested == READER_FLAG_TRACE_LATENCY);
+    CHECK(h.sm->status().at(0).reader_flags == 0); // per-slot, not ring-wide
+    CHECK_FALSE(h.sm->set_reader_trace("a", true, 999999, 0, matched, err)); // holds no slot
+    CHECK_FALSE(h.sm->set_reader_trace("nope", true, 0, 0, matched, err));
+    REQUIRE(h.sm->set_reader_trace("a", true, 0, 0, matched, err));
+    CHECK(h.sm->status().at(0).reader_flags == READER_FLAG_TRACE_LATENCY);
+    REQUIRE(h.sm->set_reader_trace("a", false, 0, 0, matched, err));
+    CHECK(h.sm->status().at(0).reader_flags == 0);
+
+    // A reader that dies without closing: its slot is freed once it is both
+    // dead and silent. A live reader with a stale heartbeat keeps its slot.
+    int pipefd[2];
+    REQUIRE(::pipe(pipefd) == 0);
+    const pid_t child = ::fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        ShmReader c;
+        const bool ok = c.open(info.ring_path) && c.slot_status() == SlotStatus::Claimed;
+        const char b = ok ? 'y' : 'n';
+        [[maybe_unused]] ssize_t w = ::write(pipefd[1], &b, 1);
+        ::_exit(0); // no close(): the slot stays claimed
+    }
+    char b = 0;
+    REQUIRE(::read(pipefd[0], &b, 1) == 1);
+    REQUIRE(b == 'y');
+    REQUIRE(::waitpid(child, nullptr, 0) == child);
+    REQUIRE(readers().size() == 2);
+    usleep(5000); // both heartbeats are now older than reader_stale_ns
+    CHECK(h.sm->service_readers(now_ns()) == 1);
+    REQUIRE(readers().size() == 1);
+    CHECK(readers()[0].pid == ::getpid());
+    CHECK(h.sm->service_readers(now_ns()) == 0); // rate-limited to once a second
+    CHECK(h.sm->service_readers(now_ns() + 2'000'000'000ull) == 0); // we are alive: kept
+    rd.close();
+    CHECK(readers().empty());
 }

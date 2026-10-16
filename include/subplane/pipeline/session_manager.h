@@ -29,6 +29,8 @@ struct SessionManagerConfig {
     uint32_t    max_symbols = 65536;
     uint64_t    linger_ns = 5'000'000'000ull;  // client sessions survive this long after disconnect
     uint64_t    ack_timeout_ns = 2'000'000'000ull;
+    uint32_t    ring_mode = 0644;                  // agent.ring_mode: 0660 lets a shared group claim reader slots
+    uint64_t    reader_stale_ns = 30'000'000'000ull; // a dead reader's slot is reclaimed after this long without a heartbeat
 };
 
 struct SessionAttachInfo {
@@ -68,6 +70,17 @@ public:
     void client_reattached(const std::string& name);
     void service_linger(uint64_t now_ns);
 
+    // Reader slots, cold. Frees the slots of readers that are dead (pid gone,
+    // or reused with another start time) and silent for reader_stale_ns.
+    // Rate-limited to once a second; returns the slots freed.
+    uint32_t service_readers(uint64_t now_ns);
+    // Latency tracing for a session's readers: every reader (pid 0, the
+    // ring-wide flag) or the slots of one pid. `sample_every` 0 keeps 1 in 1.
+    // Returns false with err when the session does not exist, or when `pid`
+    // holds none of its slots; `matched` is the number of slots changed.
+    bool set_reader_trace(const std::string& session, bool on, int32_t pid, uint32_t sample_every, uint32_t& matched,
+                          std::string& err);
+
     // Last-value snapshot for a session: every (symbol, msg_type) its filter accepts.
     // Returns the ring head observed before iterating so the client can seek to it.
     using SnapshotFn = std::function<void(const TickHeader&, const uint8_t*, uint32_t)>;
@@ -105,6 +118,7 @@ private:
     std::vector<Partition*> partitions_;
     std::vector<Pipeline*> groups_;
     mutable std::mutex mutex_;
+    uint64_t last_reader_service_ns_ = 0;
     std::vector<Entry> entries_;
     uint32_t next_id_ = 1;
 };

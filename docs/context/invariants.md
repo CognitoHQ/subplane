@@ -93,9 +93,9 @@ Gap, degraded, recovered, filter-reloaded, restart, session-closing, symbol-mapp
 
 ---
 
-## INV-011: Readers map rings read-only and cannot influence the writer
+## INV-011: Readers map header and data read-only and cannot influence the writer
 
-Ring files are mapped `PROT_READ` by readers. Readers hold no locks, write no shared state, and exert no back-pressure. The writer never waits for or learns about readers. All ring atomics are lock-free types so loads from a read-only mapping are plain loads.
+Readers map a ring's header and data region `PROT_READ`. They may write only their own reader slot, a separate mapping of the slot section after the data region. Readers hold no locks and exert no back-pressure. The writer's hot path never reads slots and never waits for or learns about readers. Only the agent's cold side reads slots, to report them, and it treats their contents as untrusted. All ring atomics are lock-free types, so loads from a read-only mapping are plain loads.
 
 **Rationale**: a hung or buggy app must be physically unable to stall or corrupt the feed for the others.
 

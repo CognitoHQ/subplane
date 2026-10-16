@@ -58,6 +58,11 @@ public:
     // Interned symbols [from_id, from_id+max). Safe from any thread.
     std::vector<std::pair<uint32_t, std::string>> symbols(uint32_t from_id, uint32_t max) const;
 
+    // Latency tracing for a session's readers (all of them, or one pid's
+    // slots); docs/context/observability.md, "Reader slots". Any thread.
+    bool set_reader_trace(const std::string& session, bool on, int32_t pid, uint32_t sample_every, uint32_t& matched,
+                          std::string& err);
+
     // Writer incarnation, set at start(). 0 before start.
     uint64_t epoch() const { return epoch_; }
 
@@ -79,7 +84,7 @@ private:
         uint64_t    start_time = 0;
         uint32_t    uid = 0;
         std::string comm, name, unit;
-        bool        control = false, mapping = false;
+        bool        control = false, mapping = false, slot = false;
         bool        stale = false;      // maps an unlinked ring from an earlier agent run
     };
     struct ConsumerScan {
