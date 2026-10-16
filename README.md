@@ -289,6 +289,8 @@ build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 - `docs/context/architecture.md`: data flow, ring and record format, control channel, configuration reference, source layout, tools.
 - `docs/context/invariants.md`: the non-negotiable engineering rules.
 - `docs/context/landscape.md`: how subplane compares with agents, libraries and middleware.
+- `docs/protocol/developer-guide.md`: talking to subplane, for gateway and snapshot-service developers and for app developers, with diagrams.
+- `docs/protocol/subplane-protocol.md`: the subplane protocol (SPP), the normative spec.
 
 Everything in the docs is implemented unless marked "(planned)".
 
