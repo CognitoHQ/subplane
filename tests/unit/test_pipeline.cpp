@@ -439,6 +439,38 @@ TEST_CASE("pipeline: transport down and up reach the partition's sessions in ord
     CHECK(h.part.transport().state_change_count() == 0);
 }
 
+TEST_CASE("pipeline: after a publisher restart the next sequence is a fresh start, even just below the old one") {
+    Harness h;
+    FilterSpec spec;
+    spec.all_symbols = true;
+    spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
+    spec.partition_ids = {0};
+    auto s = h.make_session(spec, 1);
+    ShmReader rd;
+    REQUIRE(rd.open(h.ring_path));
+    h.add(s.get());
+    Enc e{h.schema()};
+    h.fake->push(packet({e.msg(1, {{"SecurityID", 9}, {"SeqNum", 2000}})}), now_ns());
+    h.pipe.run_once();
+    drain(rd);
+
+    // The new publisher starts at 1500, within dup_window below 2000: not duplicates, not a reset.
+    h.fake->up(TransportReason::PUBLISHER_RESTART);
+    h.fake->push(packet({e.msg(1, {{"SecurityID", 9}, {"SeqNum", 1500}})}), now_ns());
+    h.fake->push(packet({e.msg(1, {{"SecurityID", 9}, {"SeqNum", 1501}})}), now_ns());
+    h.pipe.run_once();
+    std::vector<uint64_t> seqs;
+    for (const auto& r : drain(rd)) {
+        if (r.hdr.kind == static_cast<uint8_t>(Kind::DATA)) seqs.push_back(r.hdr.sequence);
+        else CHECK(r.hdr.msg_type == static_cast<uint8_t>(ControlCode::TRANSPORT_UP)); // no GAP_DETECTED
+    }
+    CHECK(seqs == std::vector<uint64_t>{1500, 1501});
+    const auto c = h.part.counters.snapshot();
+    CHECK(c.dups == 0);
+    CHECK(c.seq_resets == 0);
+    CHECK(c.gaps == 0);
+}
+
 TEST_CASE("pipeline: a session without agent_control does not see transport events") {
     Harness h;
     FilterSpec spec;

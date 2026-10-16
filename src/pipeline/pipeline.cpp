@@ -364,14 +364,18 @@ void Pipeline::apply_transport_changes(Partition& p, Transport& t) noexcept {
         emit_control(p, up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, &ev, sizeof(ev), now);
         // INTENT: a new publisher instance is a new stream: its sequences say
         // nothing about the old one's, so the next sequence is accepted as a
-        // fresh start (as after BUS_SEQ_RESET) and the floors wait for it. A
-        // transport going down and up with the same publisher is no trigger:
-        // anything missed shows as a gap. Only on recap partitions, where the
-        // floors need the new stream's first sequence.
-        if (up && c.reason == TransportReason::PUBLISHER_RESTART && p.recap != nullptr) {
-            recap_restart(p, SymbolStaleReason::PUBLISHER_RESTART, now);
-            p.recap->set_awaiting_seq(true);
+        // fresh start (as after BUS_SEQ_RESET), on every partition. Comparing
+        // them would report a misleading reset, or drop up to dup_window of
+        // the new publisher's messages as duplicates when it starts just
+        // below the old one. On a recap partition the floors wait for that
+        // first sequence. A transport going down and up with the same
+        // publisher is no trigger: anything missed shows as a gap.
+        if (up && c.reason == TransportReason::PUBLISHER_RESTART) {
             p.expected_seq = 0;
+            if (p.recap != nullptr) {
+                recap_restart(p, SymbolStaleReason::PUBLISHER_RESTART, now);
+                p.recap->set_awaiting_seq(true);
+            }
         }
     }
     t.clear_state_changes();
