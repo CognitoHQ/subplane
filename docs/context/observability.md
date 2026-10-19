@@ -126,6 +126,8 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 | `subplane_gateway_instruments` | gauge | venue | instruments configured |
 | `subplane_gateway_instrument_state` | gauge | venue, state | instruments by SourceState: `ok`, `stale` (lost since it was ok), `unknown` (not yet ok) |
 | `subplane_gateway_republish_requests_total` | counter | venue, result | Republish requests: `queued`, `not_found` (no such instrument or venue) |
+| `subplane_gateway_control_<counter>_total` | counter | venue | with `--control-channel`: `frames`, `malformed`, `hellos`, `republish`, `unsupported` (answered `Status{Unsupported}`), `replies`, `reply_dropped` |
+| `subplane_gateway_control_peers` | gauge | venue | requesters connected to the control input |
 | `subplane_gateway_frame_to_offer_seconds` | histogram | venue | frame entry to the end of its last offer (frames that published) |
 | `subplane_gateway_recv_to_offer_seconds` | histogram | venue | frame receive (`RecvTs`, `CLOCK_REALTIME`) to the end of its last offer; the agent's `recv_to_publish` starts from the same clock |
 | `subplane_topology_edge` | gauge | direction, role, key, venue | 1 when the edge is up |
@@ -192,6 +194,7 @@ An app needs no code to appear in `consumers`. The agent finds it in three ways:
 - **Upstream `data`:** the pack's WebSocket URL, as a URL key. `state` is `up` while connected. On `--replay`, the recording, as `file://<path>`, always `up`.
 - **Upstream `recap`:** each distinct REST book-snapshot endpoint, live only. It is the exchange's recovery path: losing it loses book resyncs, not the live stream. A REST endpoint has no connection to watch, so it is reported `up`; failures show in `snapshot_requests` against `snapshots_applied`.
 - **Downstream `data`:** the Aeron publication, keyed as the agent keys its upstream (the driver directory resolves the same way). `state` is `up` while a subscriber is connected. An Aeron publication knows only whether someone subscribes, not who; the collector finds who by joining on the key. `--out stdout` and `--out null` have no downstream edge.
+- **Upstream `recap`, control:** with `--control-channel`, the SPP request stream (Republish). `state` is `up` while a requester is connected.
 - **Downstream `recap`:** the SourceState stream (`--state-stream`, SPP), keyed the same way. Losing it loses recovery, not data. `state` is `up` while a subscriber is connected.
 - `local` names the `venue`, `venue_id` and number of `instruments`.
 
