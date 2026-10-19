@@ -59,6 +59,19 @@
       <validValue name="UnknownInstrument">2</validValue>
       <validValue name="Busy">3</validValue>
     </enum>
+    <enum name="SourceStateCode" encodingType="uint8">
+      <validValue name="Unknown">0</validValue>
+      <validValue name="Stale">1</validValue>
+      <validValue name="Ok">2</validValue>
+    </enum>
+    <enum name="SourceReason" encodingType="uint8">
+      <validValue name="None">0</validValue>
+      <validValue name="Startup">1</validValue>
+      <validValue name="Gap">2</validValue>
+      <validValue name="Disconnect">3</validValue>
+      <validValue name="Resync">4</validValue>
+      <validValue name="Republish">5</validValue>
+    </enum>
   </types>
 
   <sbe:message name="Hello" id="1" blockLength="56"
@@ -127,6 +140,18 @@
     <field name="Instrument"    id="2" type="uint64" offset="8" description="0 = every instrument"/>
     <field name="Venue"         id="3" type="uint16" offset="16"/>
     <field name="Flags"         id="4" type="uint16" offset="18" description="0; reserved"/>
+  </sbe:message>
+
+  <sbe:message name="SourceState" id="30" blockLength="40"
+               description="Publisher to its subscribers, one-to-many on the publisher's state stream: whether an instrument's in-band state can be trusted, as of a data-stream sequence">
+    <field name="CorrelationId" id="1" type="uint64" offset="0"  description="the Republish being answered, 0 if unsolicited"/>
+    <field name="SourceEpoch"   id="2" type="uint64" offset="8"  description="the publisher's process start, ns since the Unix epoch; a new value means the data stream's sequence restarted"/>
+    <field name="Instrument"    id="3" type="uint64" offset="16" description="the instrument as on the wire; 0 = the whole source (the periodic beat)"/>
+    <field name="Sequence"      id="4" type="uint64" offset="24" description="last data-stream sequence published before this state took effect; apply it once the data stream has reached it"/>
+    <field name="Venue"         id="5" type="uint16" offset="32" description="the venue as on the wire, 0 if unmapped"/>
+    <field name="State"         id="6" type="SourceStateCode" offset="34"/>
+    <field name="Reason"        id="7" type="SourceReason"    offset="35"/>
+    <field name="Flags"         id="8" type="uint16" offset="36" description="0; reserved"/>
   </sbe:message>
 
   <sbe:message name="Extension" id="900" blockLength="16"

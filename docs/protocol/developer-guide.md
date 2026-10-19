@@ -29,6 +29,7 @@ flowchart LR
     APP1 & APP2 <-. "control socket:<br/>sessions, filters, recap flag" .-> AG
     AG <-. "SPP: RecapRequest, reply<br/>(Aeron response channel)" .-> SNAP
     SNAP -. "SPP: Republish (planned)" .-> GW
+    GW -. "SPP: SourceState, state stream (planned)" .-> SNAP
     APP2 -. "SPP Extension, relayed (planned)" .-> AG
 ```
 
@@ -41,6 +42,7 @@ flowchart LR
 | App to agent | agent control protocol | Unix socket | the app |
 | Agent to snapshot service | SPP | Aeron response channel (TCP planned) | the agent, when a session needs state |
 | Snapshot service to gateway | SPP | Aeron (planned with feeds step 4) | the snapshot service, after losing state |
+| Gateway to snapshot services | SPP `SourceState` | its own Aeron stream (planned with feeds step 4) | the gateway, on every change and once a second |
 | App to service, through the agent | SPP `Extension` | control socket, then Aeron or TCP (planned) | the app |
 
 ## For gateway and snapshot-service developers
@@ -98,6 +100,13 @@ sequenceDiagram
 ### 4. Handle republish (gateway, planned with feeds step 4)
 `Republish{Instrument or 0 for all}` asks the gateway to publish the instrument's state again on the live stream: definitions, then a book clear and full depth. Answer with `Status{Ok}`, or `Busy` when rate-limited. Every subscriber sees the result in band, which is how a snapshot service recovers without a private channel.
 
+Say when your state can be trusted with `SourceState` on a state stream of your own (a separate Aeron stream, never the data stream):
+- `Stale` when you lose your upstream for an instrument (a gap, a disconnect), stamped with the last data `Sequence` you sent before it;
+- `Ok` once you have republished the instrument whole in band (a book clear, then every level), stamped with the `Sequence` of the last message of that burst;
+- a beat with `Instrument` 0 every second, carrying your `SourceEpoch`.
+
+Your data stream stays pure market data in your schema. A snapshot service applies each state once its copy of the data stream reaches that `Sequence`, and answers recaps only for instruments that are `Ok`.
+
 ### 5. Add an extension (planned)
 Pick an id (0x8000 and up for your own deployment; ask for one below 0x8000 in `extensions.md` if it is general). Advertise it in your `Hello`, and handle `Extension{ExtensionId, ExtType, Body}`. The body is yours; give it its own small SBE schema.
 
@@ -113,6 +122,7 @@ Apps never see SPP or Aeron: they read a ring and use the agent's control socket
 | `Status` (2) | anyone | |
 | `RecapRequest` (10) | agent | `RecapBegin`, `RecapRecord`…, `RecapEnd`, or `RecapReject` |
 | `Republish` (20) | snapshot service, operator | `Status` |
+| `SourceState` (30) | gateway, on its state stream | nothing (one-to-many) |
 | `Extension` (900) | app (through the agent), service | `Extension` or `Status`, if reply-expected |
 
 | Ring event | Code | Means |

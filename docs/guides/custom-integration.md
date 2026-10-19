@@ -91,7 +91,7 @@ To generate typed views (C++, NumPy, q) for apps: `subplane schema --schema your
 
 ## 4. Answer subplane's control messages
 
-A **snapshot service** gives the agent current state for late joiners, so apps start from a snapshot instead of asking your publisher. A **service** can also answer questions apps send through the agent (planned). Both speak the subplane protocol (SPP), an SBE schema of its own. The walk-through with diagrams is `docs/protocol/developer-guide.md`; the normative spec is `docs/protocol/subplane-protocol.md`.
+A **snapshot service** gives the agent current state for late joiners, so apps start from a snapshot instead of asking your publisher. A **service** can also answer questions apps send through the agent (planned). Both speak the subplane protocol (SPP), an SBE schema of its own. A publisher that recovers from its own upstream (a gateway resyncing an exchange) says when its data can be trusted with SPP `SourceState` on a state stream of its own; its data stream stays pure market data in its schema. The walk-through with diagrams is `docs/protocol/developer-guide.md`; the normative spec is `docs/protocol/subplane-protocol.md`.
 
 ## 5. Extend the agent
 

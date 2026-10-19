@@ -140,6 +140,29 @@ TEST_CASE("spp codec: recap reply messages, and a record payload carried byte fo
     CHECK(h.template_id == sp_proto::RecapRecordDecoder::kTemplateId);
 }
 
+TEST_CASE("spp codec: SourceState round trip; Unknown and None are the zero values") {
+    uint8_t buf[64];
+    sp_proto::SourceStateEncoder e(buf, sizeof(buf));
+    e.SourceEpoch(1'700'000'000'000'000'000ull).Instrument(42).Sequence(9001).Venue(3)
+        .State(sp_proto::SourceStateCode::Ok).Reason(sp_proto::SourceReason::Resync);
+    const size_t n = e.finish();
+    REQUIRE(n == 8 + 40);
+    sp_proto::SourceStateDecoder d;
+    REQUIRE(d.wrap(buf, n));
+    CHECK(d.CorrelationId() == 0);
+    CHECK(d.SourceEpoch() == 1'700'000'000'000'000'000ull);
+    CHECK(d.Instrument() == 42);
+    CHECK(d.Sequence() == 9001);
+    CHECK(d.Venue() == 3);
+    CHECK(d.State() == sp_proto::SourceStateCode::Ok);
+    CHECK(d.Reason() == sp_proto::SourceReason::Resync);
+
+    sp_proto::SourceStateEncoder z(buf, sizeof(buf));
+    REQUIRE(d.wrap(buf, z.finish()));
+    CHECK(d.State() == sp_proto::SourceStateCode::Unknown);
+    CHECK(d.Reason() == sp_proto::SourceReason::None);
+}
+
 TEST_CASE("spp codec: an older sender's shorter block reads as absent; a newer sender's longer block is skipped") {
     uint8_t buf[128];
     sp_proto::RecapRequestEncoder e(buf, sizeof(buf));

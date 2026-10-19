@@ -1,6 +1,6 @@
 # The subplane protocol (SPP)
 
-Version 1. Status: specified. Implemented: the codec (`include/subplane/proto/subplane_proto_codec.h`) and the agent's side of recap over Aeron (`Hello`, `RecapRequest`, the reply messages, `Status`; see `docs/context/architecture.md`, "Recap"). Planned: the gateway's `Hello` and `Republish` (feeds step 4), the TCP binding, and the app extension relay.
+Version 1. Status: specified. Implemented: the codec (`include/subplane/proto/subplane_proto_codec.h`) and the agent's side of recap over Aeron (`Hello`, `RecapRequest`, the reply messages, `Status`; see `docs/context/architecture.md`, "Recap"). Planned: the gateway's `Hello`, `Republish` and `SourceState` (feeds step 4), the TCP binding, and the app extension relay.
 
 SPP is how subplane processes talk to each other about control:
 
@@ -8,6 +8,7 @@ SPP is how subplane processes talk to each other about control:
 |---|---|---|
 | agent | snapshot service (`<service>-snap`) | recap requests and replies |
 | snapshot service | gateway | republish requests |
+| gateway | its subscribers (snapshot services) | source state, on the gateway's state stream |
 | app, through the agent | a declared service | extensions (planned) |
 
 Live market data is never SPP. It stays on the bus, in the bus's own schema. SPP does not assume any transport: section 4 says how it rides on each one.
@@ -38,9 +39,21 @@ Live market data is never SPP. It stays on the bus, in the bus's own schema. SPP
 | 13 | `RecapEnd` | snap to agent | Closes a reply, with the number of records sent |
 | 14 | `RecapReject` | snap to agent | Replaces a reply. `Reason`: Other, NotReady, UnknownInstrument, Busy. |
 | 20 | `Republish` | snap (or operator) to gateway | Publish `Instrument` (0 means every instrument) again, on the live stream. Answered by `Status`. The data itself appears in band. |
+| 30 | `SourceState` | publisher to its subscribers, one-to-many | Whether the instrument's in-band state can be trusted: `State` Unknown, Stale or Ok, with `Reason` (Startup, Gap, Disconnect, Resync, Republish), as of data-stream `Sequence`, from publisher `SourceEpoch`. `Instrument` 0 is the whole source (the beat). |
 | 900 | `Extension` | either way | An envelope for an extension: `ExtensionId`, `ExtType`, `Flags` (bit 0 must-understand, bit 1 reply expected), and an opaque `Body` |
 
 **A recap reply** is `RecapBegin`, then zero or more `RecapRecord`, then `RecapEnd`, all with the request's `CorrelationId`. It is sent contiguously: replies to different requests are not interleaved. A service that cannot answer sends a single `RecapReject` instead. S must be in the same sequence space as the live stream. Records carry the stream's bytes untouched, so recap works for any stream encoding (SBE, FlatBuffers, DBN), and apps receive the publisher's bytes unchanged.
+
+**Source state** is how a publisher that recovers from its own upstream (a gateway resyncing an exchange book) says so without putting control into its market data. Its subscribers are snapshot services; the agent does not consume it today.
+- **Separate stream.** A publisher sends `SourceState` on a state stream of its own, never on its data stream: a data stream carries one schema, the publisher's.
+- **Ordered by sequence.** `Sequence` is the last data-stream sequence the publisher sent before the state took effect. A subscriber applies the state once it has applied the data stream up to `Sequence`, so the two streams need no common ordering.
+- **What the states mean, per instrument:**
+  - `Stale`: the publisher lost its upstream for this instrument (a gap, a disconnect). Its in-band state after `Sequence` is not trustworthy until the next `Ok`.
+  - `Ok`: the publisher has republished the instrument's whole state in band, ending at `Sequence`; from there the in-band state is complete.
+  - `Unknown`: the publisher has not yet published the instrument's state (start-up).
+- **When it is sent:** on every change; for every instrument after `Republish` (with the `Republish`'s `CorrelationId` on its `Ok`); and at least once a second as a beat with `Instrument` 0, whose `State` is Ok while the publisher is connected upstream and Stale otherwise. The beat carries `SourceEpoch`, so a late subscriber learns it without asking.
+- **A new `SourceEpoch`** means the publisher restarted and its data-stream sequence started again; a subscriber treats every instrument as Unknown.
+- **The in-band side is market data.** What makes the state whole again (for a book: a clear, then every level) travels in the data stream in the publisher's own schema. SPP never carries it.
 
 ## 3. Evolution
 1. **Append only.**
@@ -62,6 +75,7 @@ Every binding frames each SPP message with a **u32 little-endian length** (the m
   - One offer is one frame: one or more length-prefixed messages.
   - Request and reply use Aeron response channels. The requester subscribes to a response channel (`control-mode=response`), then publishes requests with `response-correlation-id` set to that subscription's registration id. The service replies on a response publication created with the requesting image's correlation id, so each requester receives only its own replies.
   - The service sizes its terms (`term-length`) to its largest reply.
+  - A state stream is an ordinary publication, one frame per offer, with no response channel. Subscribers should be untethered, so a slow one cannot hold the publisher back; one that falls behind sees a gap and asks for `Republish`.
 - **TCP.** A byte stream of length-prefixed messages. Each side sends `Hello` first. A peer that sends anything before `Hello` is treated as version 1 with no extensions. Specified now; implemented with the TCP recap component and the relay (planned).
 - **Agent control socket** (apps to agent, `SOCK_SEQPACKET`). Extensions travel inside the agent control ops `RELAY` / `RELAY_REPLY` (planned), one SPP message per datagram after the control header.
 
@@ -75,7 +89,7 @@ Every binding frames each SPP message with a **u32 little-endian length** (the m
   - A sender uses a new message or extension only with a peer whose `Hello` advertised it.
   - Fields appended to an existing message may always be sent, because older readers skip them.
 - **State is per peer, never per process.** One agent talks to several gateways and snapshot services at different versions at once, and keeps each one's last `Hello`.
-- **One-to-many live streams** have no handshake. Canonical schema version 2 (planned) carries the publisher's `SourceEpoch` and SPP version in its `Heartbeat`, so every subscriber, late joiners included, learns them from the stream it already reads.
+- **One-to-many streams** (a state stream) have no handshake. Every SPP header carries the sender's version, and the `SourceState` beat carries `SourceEpoch`, so every subscriber, late joiners included, learns both from the stream itself. Live data streams carry neither: they stay in the publisher's schema.
 
 ## 6. Deployment and upgrade
 The intended order is **agents first, then gateways together with their snapshot services (one release), then apps last**. To make that safe:

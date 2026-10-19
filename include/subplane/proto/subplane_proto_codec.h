@@ -38,6 +38,19 @@ enum class RejectReason : uint16_t {
     UnknownInstrument = 2,
     Busy = 3,
 };
+enum class SourceStateCode : uint8_t {
+    Unknown = 0,
+    Stale = 1,
+    Ok = 2,
+};
+enum class SourceReason : uint8_t {
+    None = 0,
+    Startup = 1,
+    Gap = 2,
+    Disconnect = 3,
+    Resync = 4,
+    Republish = 5,
+};
 
 namespace detail {
 template <class T> inline T load(const uint8_t* p) noexcept { T v; std::memcpy(&v, p, sizeof(T)); return v; }
@@ -879,6 +892,97 @@ public:
     uint64_t Instrument() const noexcept { return 16u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 8) : uint64_t{}; }
     uint16_t Venue() const noexcept { return 18u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 16) : uint16_t{}; }
     uint16_t Flags() const noexcept { return 20u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 18) : uint16_t{}; }
+
+private:
+    const uint8_t* p_ = nullptr;
+    size_t   size_ = 0;
+    uint16_t version_ = 0;
+    uint16_t block_ = 0;
+};
+
+// ---- SourceState (template 30) ----
+
+class SourceStateEncoder {
+public:
+    static constexpr uint16_t kTemplateId = 30;
+    static constexpr uint16_t kBlockLength = 40;
+
+    // Writes the header and a zeroed root block. Set root fields in any order,
+    // then groups and data in schema order, then call finish().
+    SourceStateEncoder(uint8_t* buf, size_t cap) noexcept : buf_(buf), cap_(cap) {
+        if (cap < kHeaderSize + kBlockLength) { ok_ = false; return; }
+        std::memset(buf, 0, kHeaderSize + kBlockLength);
+        detail::store<uint16_t>(buf + 0, kBlockLength);
+        detail::store<uint16_t>(buf + 2, kTemplateId);
+        detail::store<uint16_t>(buf + 4, kSchemaId);
+        detail::store<uint16_t>(buf + 6, kSchemaVersion);
+        pos_ = kHeaderSize + kBlockLength;
+    }
+
+    SourceStateEncoder& CorrelationId(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 0, static_cast<uint64_t>(v)); return *this; }
+    SourceStateEncoder& SourceEpoch(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 8, static_cast<uint64_t>(v)); return *this; }
+    SourceStateEncoder& Instrument(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 16, static_cast<uint64_t>(v)); return *this; }
+    SourceStateEncoder& Sequence(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 24, static_cast<uint64_t>(v)); return *this; }
+    SourceStateEncoder& Venue(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 32, static_cast<uint16_t>(v)); return *this; }
+    SourceStateEncoder& State(::sp_proto::SourceStateCode v) noexcept { if (ok_) detail::store<uint8_t>(buf_ + kHeaderSize + 34, static_cast<uint8_t>(v)); return *this; }
+    SourceStateEncoder& Reason(::sp_proto::SourceReason v) noexcept { if (ok_) detail::store<uint8_t>(buf_ + kHeaderSize + 35, static_cast<uint8_t>(v)); return *this; }
+    SourceStateEncoder& Flags(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 36, static_cast<uint16_t>(v)); return *this; }
+
+    // Writes every group and data element not yet written, empty. Returns the
+    // message length, or 0 when the buffer was too small or a call was out of order.
+    size_t finish() noexcept { advance(0); return ok_ ? pos_ : 0; }
+    bool ok() const noexcept { return ok_; }
+
+private:
+    // INTENT: SBE requires every group and data element on the wire, in
+    // schema order. Elements before `to` that were not written go out empty;
+    // going back to an earlier element fails the message.
+    void advance(size_t to) noexcept {
+        if (stage_ > to) { ok_ = false; return; }
+        while (ok_ && stage_ < to) {
+            ++stage_;
+        }
+    }
+
+    uint8_t* buf_;
+    size_t   cap_;
+    size_t   pos_ = 0;
+    size_t   stage_ = 0;
+    bool     ok_ = true;
+};
+
+class SourceStateDecoder {
+public:
+    static constexpr uint16_t kTemplateId = 30;
+
+    // INTENT: every length is checked against `len` here, once; the getters
+    // then read only inside the checked bounds. Input comes off the wire.
+    bool wrap(const uint8_t* p, size_t len) noexcept {
+        p_ = nullptr;
+        Header h;
+        if (!read_header(p, len, h) || h.schema_id != kSchemaId || h.template_id != kTemplateId) return false;
+        size_t pos = kHeaderSize + h.block_length;
+        if (pos > len) return false;
+        version_ = h.version;
+        block_ = h.block_length;
+        p_ = p;
+        size_ = pos;
+        return true;
+    }
+
+    // Bytes the known elements occupy (a newer sender may append more).
+    size_t size() const noexcept { return size_; }
+    uint16_t version() const noexcept { return version_; }
+    uint16_t block_length() const noexcept { return block_; }
+
+    uint64_t CorrelationId() const noexcept { return 8u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 0) : uint64_t{}; }
+    uint64_t SourceEpoch() const noexcept { return 16u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 8) : uint64_t{}; }
+    uint64_t Instrument() const noexcept { return 24u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 16) : uint64_t{}; }
+    uint64_t Sequence() const noexcept { return 32u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 24) : uint64_t{}; }
+    uint16_t Venue() const noexcept { return 34u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 32) : uint16_t{}; }
+    ::sp_proto::SourceStateCode State() const noexcept { return 35u <= block_ ? static_cast<::sp_proto::SourceStateCode>(detail::load<uint8_t>(p_ + kHeaderSize + 34)) : ::sp_proto::SourceStateCode{}; }
+    ::sp_proto::SourceReason Reason() const noexcept { return 36u <= block_ ? static_cast<::sp_proto::SourceReason>(detail::load<uint8_t>(p_ + kHeaderSize + 35)) : ::sp_proto::SourceReason{}; }
+    uint16_t Flags() const noexcept { return 38u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 36) : uint16_t{}; }
 
 private:
     const uint8_t* p_ = nullptr;
