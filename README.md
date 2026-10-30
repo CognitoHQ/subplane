@@ -238,12 +238,11 @@ flowchart LR
 
 ## Quick start
 
-Needs a C++20 compiler (GCC 11 or newer), CMake 3.30+, pkg-config, yaml-cpp (`libyaml-cpp-dev` on Ubuntu) and git: the Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java). `-DSUBPLANE_WITH_AERON=OFF` drops the fetch and the `aeron` transport, and then CMake 3.20 is enough. Ubuntu 22.04's CMake is too old for Aeron; `scripts/deps-2204.sh` installs one from Kitware.
+Needs Docker: `scripts/dev.sh` builds and runs everything in the toolchain image (`docker/Dockerfile`: Ubuntu 26.04, GCC 16, C++26; INV-007), built on first use. On an Ubuntu 26.04 host, `sudo scripts/deps-2604.sh` installs the same toolchain and the commands below work without the image. The Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java); `-DSUBPLANE_WITH_AERON=OFF` drops the fetch and the `aeron` transport.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-(cd build && ctest --output-on-failure)
+scripts/dev.sh test       # build ./build and run ctest, in the image
+scripts/dev.sh shell      # the binaries need 26.04's glibc: run the rest inside it
 
 # Local demo config: unicast instead of multicast, so no network setup is needed.
 sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/ft.yaml

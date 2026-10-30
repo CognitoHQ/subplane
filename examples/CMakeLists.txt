@@ -1,4 +1,8 @@
 # Example apps. They depend only on the client headers (plus core/clock.h), not on subplane_core.
+# INTENT: apps compile the client headers and generated views with their own toolchains, so the
+# examples build as C++20 while the agent is C++26 (INV-007). Raising this lets C++23/26 leak into
+# the app SDK unnoticed.
+set(CMAKE_CXX_STANDARD 20)
 add_executable(shm_demo_app shm_demo_app.cpp)
 target_include_directories(shm_demo_app PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(shm_demo_app PRIVATE subplane_warnings Threads::Threads)

@@ -61,11 +61,13 @@ Every record delivered to a session has a non-zero `ingest_ts`, set at packet re
 
 ---
 
-## INV-007: C++20 maximum standard
+## INV-007: One toolchain: C++26, GCC 16, Ubuntu 26.04; the app SDK stays C++20
 
-Do not use C++23 or later features. The project targets GCC 11 on Ubuntu 22.04. All code must compile cleanly with `-std=c++20` and `-Werror`, and CI builds and tests in an `ubuntu:22.04` container with GCC 11 (`scripts/ci-build-2204.sh`, `.github/workflows/ci.yml`) because the dev host's newer compiler hides the gap.
+The agent and tools compile with `-std=c++26` and `-Werror` under GCC 16 on Ubuntu 26.04, in one pinned image (`docker/Dockerfile`, run by `scripts/dev.sh`); CI runs `scripts/deps-2604.sh` on the same pinned base. CMake refuses GCC older than 16. The host compiler is never used.
 
-**Rationale**: Ubuntu 22.04 ships GCC 11. C++23 features cause silent compilation failures or require non-standard compiler flags.
+The app SDK (`include/subplane/client/`, `control/control_proto.h`, `shm/`, `core/message.h`, the generated views) is compiled by apps with their own toolchains, so it must stay C++20: the example apps build as C++20 and fail the build if it does not.
+
+**Rationale**: one compiler everywhere, so a local build proves what CI checks (with GCC 11 in CI and a newer host compiler, it did not). C++26 for `std::inplace_vector` and `std::simd`. GCC 16 is Ubuntu 26.04's `g++-16`, a snapshot of GCC 16 before 16.1 whose libstdc++ is 26.04's own runtime; GCC marks C++26 experimental, so its ABI may change between GCC releases, which only matters across a shared-library boundary, and the agent has none in C++.
 
 ---
 

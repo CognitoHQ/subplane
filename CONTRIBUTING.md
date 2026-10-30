@@ -21,9 +21,10 @@ subplane is infrastructure: correctness and stability over velocity. Read
 
 ## Workflow
 
-1. Build and test: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && (cd build && ctest --output-on-failure)`.
-2. The target toolchain is GCC 11 on Ubuntu 22.04 with `-Werror`;
-   `scripts/ci-build-2204.sh` runs it in a container and CI runs it on every push.
+1. Build and test: `scripts/dev.sh test` (Docker). It builds `./build` inside the toolchain image.
+2. The toolchain is GCC 16 on Ubuntu 26.04 with `-std=c++26` and `-Werror` (INV-007), in
+   `docker/Dockerfile`; CI runs `scripts/deps-2604.sh` on the same pinned base on every push.
+   CMake refuses an older GCC, so a host build fails early instead of differing quietly.
 3. Real-packet check: `scripts/fetch-cme-sample.sh` then `ctest -R cme_probe`.
 4. One logical change per commit; explain the why in the message body.
 5. Open a pull request against `main`. CI must be green.

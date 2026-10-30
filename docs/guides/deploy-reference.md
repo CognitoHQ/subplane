@@ -8,7 +8,7 @@ Use this when you want subplane running with a known-good configuration and no d
 | B. Crypto exchanges | a box with internet access | live trades, quotes and books from Binance, Coinbase, Kraken, OKX or Bitstamp, in one canonical SBE schema, for every app on the box |
 | C. Your firm's SBE bus | a multicast SBE bus and its schema XML | the bus routed to your apps, filtered per app |
 
-**All recipes need:** Ubuntu 22.04 or newer, GCC 11+, CMake 3.30+, `libyaml-cpp-dev`. Build once:
+**All recipes need:** Ubuntu 26.04 with GCC 16 (`sudo scripts/deps-2604.sh` installs it), or Docker on any Linux host, where `scripts/dev.sh` builds and runs in the toolchain image. Build once:
 
 ```bash
 git clone <subplane repo> && cd subplane

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <chrono>
+#include <mutex>
 
 namespace subplane {
 

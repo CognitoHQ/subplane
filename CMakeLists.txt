@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(subplane VERSION 2.0.0 LANGUAGES C CXX)
 
-# INV-007: C++20, GCC 11 on Ubuntu 22.04 is the target toolchain.
-set(CMAKE_CXX_STANDARD 20)
+# INV-007: C++26 with GCC 16 on Ubuntu 26.04 (docker/Dockerfile, scripts/dev.sh); the app SDK stays C++20.
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+    message(FATAL_ERROR "subplane needs GCC 16 (INV-007), found ${CMAKE_CXX_COMPILER_VERSION}: build with scripts/dev.sh")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)

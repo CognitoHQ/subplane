@@ -16,7 +16,7 @@ Operators may still say "plugin" for an activation. In code, a "partition" is on
 
 ## Deployment
 
-One `subplaned` process (the agent binary) per application box, next to the apps it serves. It joins the multicast group once; apps do not. It runs as an ordinary Linux process (C++20, GCC 11 target, Ubuntu 22.04). Apps and agent share `/dev/shm` (ring files) and a Unix socket path (control channel). Nothing leaves the box except the bus subscription.
+One `subplaned` process (the agent binary) per application box, next to the apps it serves. It joins the multicast group once; apps do not. It runs as an ordinary Linux process (C++26, GCC 16, Ubuntu 26.04; INV-007). Apps and agent share `/dev/shm` (ring files) and a Unix socket path (control channel). Nothing leaves the box except the bus subscription.
 
 ```
 bus (UDP multicast) -> [ partition thread group ] -> ring per session (/dev/shm) -> apps
@@ -636,7 +636,8 @@ examples/       shm_demo_app.cpp (resident app and short-lived worker) rule_runn
 schemas/        sample_md.xml (referenced by config.yaml) subplane_canonical.xml (the canonical flat schema) subplane_proto.xml (SPP, docs/protocol/) CMakeLists.txt (views generated at build time)
 tests/          unit/ integration/ data/ fixtures/flatbuffers/ (real flatc output; README explains regeneration)
 third_party/    pugixml, doctest (vendored)
-scripts/        ci-build-2204.sh deps-2204.sh fetch-cme-sample.sh
+scripts/        dev.sh (build, test, run in the toolchain image) deps-2604.sh fetch-cme-sample.sh merge-pr.sh
+docker/         Dockerfile (the toolchain image: Ubuntu 26.04, GCC 16)
 cmake/          aeron.cmake (FetchContent of the pinned Aeron tag)
 ```
 
@@ -661,13 +662,11 @@ One CLI binary, `subplane <command>`, built by default (`SUBPLANE_BUILD_TOOLS`, 
 ## Build and test
 
 ```
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-cd build && ctest --output-on-failure
+scripts/dev.sh test       # in the toolchain image: cmake -S . -B build, build, ctest
 ```
 
-Dependencies: a C++20 compiler, CMake 3.20+ (3.30+ with Aeron), pkg-config, yaml-cpp, pthreads, git and network access for the Aeron fetch. pugixml and doctest are vendored. Aeron (C client + C media driver, pinned tag in `cmake/aeron.cmake`, no Java) is fetched and built at configure time; `-DSUBPLANE_WITH_AERON=OFF` builds the agent without the `aeron` transport and without the fetch, and `-DFETCHCONTENT_SOURCE_DIR_AERON=<checkout>` builds from a local or vendored tree. `libuuid` (`uuid-dev`) is optional for the driver. Flags: `-O2`, and `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on first-party code. Options: `SUBPLANE_BUILD_TESTS`, `SUBPLANE_BUILD_TOOLS`, `SUBPLANE_WERROR`, `SUBPLANE_WITH_AERON`, `SUBPLANE_AERON_TAG`.
+Dependencies (all in the image, `scripts/deps-2604.sh`): GCC 16 (CMake refuses older), CMake 3.20+ (3.30+ with Aeron), pkg-config, yaml-cpp, pthreads, git and network access for the Aeron fetch. pugixml and doctest are vendored. Aeron (C client + C media driver, pinned tag in `cmake/aeron.cmake`, no Java) is fetched and built at configure time; `-DSUBPLANE_WITH_AERON=OFF` builds the agent without the `aeron` transport and without the fetch, and `-DFETCHCONTENT_SOURCE_DIR_AERON=<checkout>` builds from a local or vendored tree. `libuuid` (`uuid-dev`) is optional for the driver. Flags: `-O2`, and `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on first-party code. Options: `SUBPLANE_BUILD_TESTS`, `SUBPLANE_BUILD_TOOLS`, `SUBPLANE_WERROR`, `SUBPLANE_WITH_AERON`, `SUBPLANE_AERON_TAG`.
 
 ctest targets: `test_core`, `test_core_types`, `test_ring`, `test_sbe`, `test_transport`, `test_framing`, `test_pipeline`, `test_session_manager`, `test_control` (doctest unit tests), and `sender_probe` (sender to probe over unicast loopback for two framings), `ring_soak_short` (2 s, 2 readers), `replay_bench` (in-process bench smoke test), `dbn_sim`, `flatbuffers_replay`, `test_canonical`, `canonical_views_app`, `canonical_pub`, `schema_views_numpy`, `cme_probe` (skipped without the sample), and `aeron_ipc` / `aeron_udp` (present when built with Aeron).
 
-`scripts/ci-build-2204.sh` builds and tests inside an `ubuntu:22.04` container with GCC 11 (the INV-007 toolchain; the dev host has a newer GCC); `scripts/deps-2204.sh` installs the packages, with CMake from Kitware's apt repository because jammy's 3.22 is below Aeron's minimum. `.github/workflows/ci.yml` runs the same two scripts on push and pull request.
+`scripts/dev.sh` builds `docker/Dockerfile` (Ubuntu 26.04 pinned by digest, `scripts/deps-2604.sh`) under a tag hashed from those two files, and runs every build, test and tool in it as the calling user, with `--network host` and `--shm-size=2g`; `dev.sh bench` adds `SYS_NICE` and drops seccomp for pinned SCHED_FIFO runs. `.github/workflows/ci.yml` runs `deps-2604.sh` on the same pinned base on push and pull request. The examples build as C++20, which holds the app SDK there (INV-007). `schema_views_numpy` needs `python3-numpy`, which the image has.

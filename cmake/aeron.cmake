@@ -2,8 +2,8 @@
 #
 # Pinned tag, fetched at configure time; no Java, no archive, no tests, no samples.
 # Offline or vendored builds point FETCHCONTENT_SOURCE_DIR_AERON at a checkout.
-# Aeron's own CMake needs >= 3.30 (Ubuntu 22.04 apt ships 3.22: scripts/ci-build-2204.sh
-# installs CMake from Kitware). SUBPLANE_WITH_AERON=OFF builds exactly the pre-Aeron agent.
+# Aeron's own CMake needs >= 3.30 (Ubuntu 26.04 ships 4.2). SUBPLANE_WITH_AERON=OFF builds
+# exactly the pre-Aeron agent.
 include(FetchContent)
 
 set(SUBPLANE_AERON_TAG "1.53.3" CACHE STRING "Aeron git tag to build against")

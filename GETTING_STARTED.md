@@ -7,13 +7,10 @@ All commands run from the repository root. Run each long-lived process in its ow
 ## 1. Build
 
 ```bash
-sudo apt-get install -y g++ cmake pkg-config libyaml-cpp-dev   # Ubuntu 22.04
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-cd build && ctest --output-on-failure && cd ..
+scripts/dev.sh test        # builds ./build in the toolchain image, then runs ctest
 ```
 
-pugixml and doctest are vendored. To reproduce the GCC 11 CI build in a container, run `scripts/ci-build-2204.sh` (needs Docker).
+The build runs in Docker, in the toolchain image (`docker/Dockerfile`: Ubuntu 26.04, GCC 16), built on first use. The binaries need Ubuntu 26.04's glibc and libstdc++, so run them through `scripts/dev.sh run <cmd>` on an older host. On an Ubuntu 26.04 host, `sudo scripts/deps-2604.sh` installs the same toolchain and plain `cmake` works. pugixml and doctest are vendored.
 
 ## 2. Make a local config
 
