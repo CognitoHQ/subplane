@@ -146,6 +146,12 @@ void RecapManager::handle_command(PState& ps, const RecapCommand& c) noexcept {
         }
         Entry e;
         e.generation = c.generation;
+        // INTENT: the gather window. Coalescing alone only joins requests that
+        // overlap one in flight, and a recap on a fast link completes in less
+        // than the few milliseconds between sessions created together (a
+        // reload, apps restarting with the agent): each would send its own and
+        // the snapshot service would build the same book again for each.
+        e.due_ns = ps.now + static_cast<uint64_t>(ps.cfg.coalesce_ms) * 1'000'000ull;
         ps.entries.emplace(c.symbol_id, e);
         ps.fifo.push_back(c.symbol_id);
         return;
@@ -172,6 +178,7 @@ void RecapManager::renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t gene
     e.generation = generation;
     e.attempt = 0;
     e.state = Entry::State::QUEUED;
+    e.due_ns = 0;
     ps.fifo.push_front(symbol_id); // ahead of first requests: a renewed symbol has waited already
 }
 
@@ -193,6 +200,10 @@ void RecapManager::send_ready(PState& ps) noexcept {
         const uint32_t sym = ps.fifo.front();
         auto it = ps.entries.find(sym);
         if (it == ps.entries.end() || it->second.state != Entry::State::QUEUED) { ps.fifo.pop_front(); continue; }
+        // First requests join the back in arrival order, so when the front is
+        // still gathering so is everything behind it. A retry queued behind it
+        // waits at most coalesce_ms longer; a renew goes to the front, due now.
+        if (it->second.due_ns > ps.now) break;
 
         const uint64_t rid = next_request_id_;
         uint64_t instrument = 0;

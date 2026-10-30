@@ -11,6 +11,8 @@
 //                                          # decoder-mapped RECAP_BEGIN / RECAP_END markers
 //     timeout_ms: 2000
 //     max_inflight: 64                     # outstanding requests per partition; more wait in FIFO order
+//     coalesce_ms: 20                      # a symbol's first request waits this long, so sessions asking
+//                                          # together share one request; 0 sends at once
 //     retry: { base_ms: 50, max_ms: 5000 } # exponential backoff with full jitter
 //     reply_slabs: 8                       # preallocated reply buffers per partition
 //     reply_slab_bytes: 1048576            # the largest reply the agent accepts
@@ -32,6 +34,7 @@ struct RecapConfig {
     RecapReplyMode reply = RecapReplyMode::SPP;
     uint32_t    timeout_ms = 2000;
     uint32_t    max_inflight = 64;
+    uint32_t    coalesce_ms = 20;
     uint32_t    retry_base_ms = 50;
     uint32_t    retry_max_ms = 5000;
     uint32_t    reply_slabs = 8;

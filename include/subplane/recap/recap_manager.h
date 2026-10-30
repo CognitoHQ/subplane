@@ -113,7 +113,7 @@ private:
         uint32_t attempt = 0;
         uint32_t generation = 0;
         uint64_t request_id = 0;
-        uint64_t due_ns = 0;     // INFLIGHT: timeout; BACKOFF: next try
+        uint64_t due_ns = 0;     // QUEUED: not sent before (coalesce_ms); INFLIGHT: timeout; BACKOFF: next try
     };
     struct Assembly {
         bool     active = false;     // between BEGIN and END

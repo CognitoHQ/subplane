@@ -14,6 +14,7 @@ bool RecapConfig::parse(const YAML::Node& node, RecapConfig& out, std::string& e
         else { err = "recap.reply must be spp or stream_markers, not '" + reply + "'"; return false; }
         out.timeout_ms = node["timeout_ms"].as<uint32_t>(out.timeout_ms);
         out.max_inflight = node["max_inflight"].as<uint32_t>(out.max_inflight);
+        out.coalesce_ms = node["coalesce_ms"].as<uint32_t>(out.coalesce_ms);
         if (const auto r = node["retry"]) {
             if (!r.IsMap()) { err = "recap.retry must be {base_ms, max_ms}"; return false; }
             out.retry_base_ms = r["base_ms"].as<uint32_t>(out.retry_base_ms);
@@ -30,6 +31,7 @@ bool RecapConfig::parse(const YAML::Node& node, RecapConfig& out, std::string& e
     }
     if (out.timeout_ms == 0) { err = "recap.timeout_ms must be > 0"; return false; }
     if (out.max_inflight == 0 || out.max_inflight > 4096) { err = "recap.max_inflight must be 1..4096"; return false; }
+    if (out.coalesce_ms > 10000) { err = "recap.coalesce_ms must be 0..10000"; return false; }
     if (out.retry_base_ms == 0 || out.retry_max_ms < out.retry_base_ms) { err = "recap.retry needs 0 < base_ms <= max_ms"; return false; }
     if (out.reply_slabs == 0 || out.reply_slabs > 1024) { err = "recap.reply_slabs must be 1..1024"; return false; }
     if (out.reply_slab_bytes < 4096 || out.reply_slab_bytes > (256u << 20)) { err = "recap.reply_slab_bytes must be 4096..268435456"; return false; }

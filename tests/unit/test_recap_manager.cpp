@@ -49,6 +49,7 @@ recap:
   timeout_ms: 100
   max_inflight: )" + std::to_string(max_inflight) + R"(
   retry: { base_ms: 10, max_ms: 40 }
+  coalesce_ms: 0
   reply_slabs: 2
   reply_slab_bytes: 4096
 )" + extra_recap;
@@ -266,6 +267,39 @@ TEST_CASE("recap manager: Hello first, then one RecapRequest per symbol however 
     REQUIRE(requests(*r.recap).size() == 2);
     CHECK(requests(*r.recap)[1].id > id);
     CHECK(sent_messages(*r.recap).size() == 3);
+}
+
+TEST_CASE("recap manager: coalesce_ms gathers the sessions that ask within it into one request") {
+    std::string y = partition_yaml();
+    y.replace(y.find("coalesce_ms: 0"), 14, "coalesce_ms: 50");
+    Rig r(y);
+    const uint32_t a = r.symbols.intern_u64(1), b = r.symbols.intern_u64(2);
+    r.request(a);
+    r.step();
+    CHECK(requests(*r.recap).empty());   // gathering
+    r.request(a);
+    r.step(30);
+    r.request(b);                        // its own window, from when the manager sees it
+    r.request(a);
+    r.step();
+    r.step(19);
+    CHECK(requests(*r.recap).empty());
+    r.step(1);                           // a: 50 ms since its first request
+    auto rq = requests(*r.recap);
+    REQUIRE(rq.size() == 1);
+    CHECK(rq[0].instrument == 1);
+    CHECK(r.c().recap_coalesced == 2);
+    r.step(29);
+    CHECK(requests(*r.recap).size() == 1);
+    r.step(1);                           // b: 50 ms since its first request
+    rq = requests(*r.recap);
+    REQUIRE(rq.size() == 2);
+    CHECK(rq[1].instrument == 2);
+    CHECK(r.c().recap_requests == 2);
+    // A renew does not gather: the symbol has waited already.
+    r.request(a, 1);
+    r.step();
+    CHECK(requests(*r.recap).size() == 3);
 }
 
 TEST_CASE("recap manager: records are opaque payloads; a source epoch comes through") {
@@ -683,6 +717,10 @@ TEST_CASE("recap config: what a partition needs before it can recap") {
     y.replace(y.find("reply_slabs: 2"), 14, "reply_slabs: 0");
     CHECK_FALSE(build(y, err));
     CHECK_MESSAGE(err.find("reply_slabs") != std::string::npos, err);
+    y = partition_yaml();
+    y.replace(y.find("coalesce_ms: 0"), 14, "coalesce_ms: 10001");
+    CHECK_FALSE(build(y, err));
+    CHECK_MESSAGE(err.find("recap.coalesce_ms must be 0..10000") != std::string::npos, err);
     // dbn recaps over spp only.
     CHECK_FALSE(build(R"(
 name: d
