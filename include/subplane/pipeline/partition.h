@@ -16,6 +16,7 @@
 #include "subplane/transport/transport.h"
 
 #include <cstdint>
+#include <inplace_vector>
 #include <memory>
 #include <string>
 #include <vector>
@@ -142,8 +143,10 @@ public:
     uint64_t          last_seq = 0;
     uint64_t          last_rx_ns = 0;
     PartitionState    state = PartitionState::INIT;
-    Session*          sessions[kMaxSessions] = {};
-    uint32_t          n_sessions = 0;
+    // INTENT: fixed capacity, no heap (INV-002). Fanout iterates it for every
+    // message; attach/detach use only the non-throwing members (try_push_back,
+    // pop_back), so a full partition refuses a session instead of throwing.
+    std::inplace_vector<Session*, kMaxSessions> sessions;
     // Pending recaps and held messages; set by the owning Pipeline when the
     // partition has a recap block, nullptr otherwise.
     RecapState*       recap = nullptr;

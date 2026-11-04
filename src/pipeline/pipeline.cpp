@@ -3,6 +3,7 @@
 #include "subplane/core/clock.h"
 #include "subplane/shm/control_events.h"
 
+#include <algorithm>
 #include <cstring>
 #include <pthread.h>
 #include <sched.h>
@@ -309,8 +310,8 @@ void Pipeline::publish_data(Partition& p, const TickHeader& h, const uint8_t* by
     // other session still gets it now (recap never delays a live session).
     const RecapPending* pending = nullptr;
     if (p.recap != nullptr && p.recap->pending() != 0) [[unlikely]] pending = recap_hold(p, h, bytes, len);
-    for (uint32_t i = 0; i < p.n_sessions; ++i) {
-        Session& s = *p.sessions[i];
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
         if (pending != nullptr && s.recap && pending->waiters.test(s.recap_slot)) continue;
         const FilterTable* f = s.filter.load(std::memory_order_acquire);
         if (f == nullptr || !f->accept(h)) {
@@ -323,8 +324,8 @@ void Pipeline::publish_data(Partition& p, const TickHeader& h, const uint8_t* by
 }
 
 void Pipeline::publish_admin(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept {
-    for (uint32_t i = 0; i < p.n_sessions; ++i) {
-        Session& s = *p.sessions[i];
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
         const FilterTable* f = s.filter.load(std::memory_order_acquire);
         if (f == nullptr || !f->accept(h)) continue;
         if (s.ring.publish(h, bytes, len)) inc(s.counters.published);
@@ -333,8 +334,8 @@ void Pipeline::publish_admin(Partition& p, const TickHeader& h, const uint8_t* b
 }
 
 void Pipeline::emit_control(Partition& p, ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept {
-    for (uint32_t i = 0; i < p.n_sessions; ++i) {
-        Session& s = *p.sessions[i];
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
         const FilterTable* f = s.filter.load(std::memory_order_acquire);
         if (f == nullptr || !f->agent_control) continue;
         if (!s.ring.publish_control(code, p.id(), now, body, len)) inc(s.counters.publish_failed);
@@ -342,8 +343,8 @@ void Pipeline::emit_control(Partition& p, ControlCode code, const void* body, ui
 }
 
 void Pipeline::emit_control_all(ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept {
-    for (uint32_t i = 0; i < n_sessions_; ++i) {
-        Session& s = *sessions_[i];
+    for (Session* sp : sessions_) {
+        Session& s = *sp;
         const FilterTable* f = s.filter.load(std::memory_order_acquire);
         if (f == nullptr || !f->agent_control) continue;
         if (!s.ring.publish_control(code, 0, now, body, len)) inc(s.counters.publish_failed);
@@ -428,9 +429,8 @@ void Pipeline::apply_commands(uint64_t now) noexcept {
                         added |= p->attach(&s);
                     }
                 }
-                bool known = false;
-                for (uint32_t i = 0; i < n_sessions_; ++i) known |= sessions_[i] == &s;
-                if (!known && n_sessions_ < Partition::kMaxSessions) sessions_[n_sessions_++] = &s;
+                const bool known = std::ranges::contains(sessions_, &s);
+                if (!known) sessions_.try_push_back(&s);   // full: as before, no group-wide events
                 if (s.recap && !known) {
                     // INTENT: a slot per recap session, not its array index:
                     // Partition::detach reorders sessions[]. There are as many
@@ -460,12 +460,9 @@ void Pipeline::apply_commands(uint64_t now) noexcept {
                 Session& s = *c.session;
                 if (s.recap) recap_drop_session(s);
                 for (Partition* p : partitions_) p->detach(&s);
-                for (uint32_t i = 0; i < n_sessions_; ++i) {
-                    if (sessions_[i] == &s) {
-                        sessions_[i] = sessions_[n_sessions_ - 1];
-                        sessions_[--n_sessions_] = nullptr;
-                        break;
-                    }
+                if (const auto it = std::ranges::find(sessions_, &s); it != sessions_.end()) {
+                    *it = sessions_.back();
+                    sessions_.pop_back();
                 }
                 SessionClosingEvent ev{};
                 ev.session_id = s.id;
@@ -502,7 +499,7 @@ void Pipeline::apply_commands(uint64_t now) noexcept {
 void Pipeline::heartbeat_rings(uint64_t now) noexcept {
     if (now - last_heartbeat_ns_ < kRingHeartbeatNs) return;
     last_heartbeat_ns_ = now;
-    for (uint32_t i = 0; i < n_sessions_; ++i) sessions_[i]->ring.heartbeat(now);
+    for (Session* sp : sessions_) sp->ring.heartbeat(now);
 }
 
 // ---------------------------------------------------------------------------
@@ -643,8 +640,8 @@ void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t no
     ev.reason = static_cast<uint16_t>(reason);
     ev.last_seq = p.last_seq;
     ev.changed_ns = now;
-    for (uint32_t i = 0; i < p.n_sessions; ++i) {
-        Session& s = *p.sessions[i];
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
         if (!s.recap) continue;
         const FilterTable* f = s.filter.load(std::memory_order_acquire);
         if (f == nullptr) continue;
@@ -763,11 +760,13 @@ void Pipeline::recap_consider(Partition& p, RecapPending& e, const RecapReply& r
 
 void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept {
     const uint64_t S = r.as_of;
-    uint32_t n = 0;
-    for (uint32_t i = 0; i < p.n_sessions; ++i) {
-        Session* s = p.sessions[i];
+    // INTENT: unchecked is safe: the waiters are a subset of p.sessions, whose
+    // capacity is at most merge_waiters_'s (static_assert below).
+    static_assert(Partition::kMaxSessions <= RecapWaiters::kSlots);
+    merge_waiters_.clear();
+    for (Session* s : p.sessions) {
         if (s->recap && e.waiters.test(s->recap_slot)) {
-            merge_waiters_[n++] = s;
+            merge_waiters_.unchecked_push_back(s);
             merge_counts_[s->recap_slot] = 0;
         }
     }
@@ -778,10 +777,8 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
     ev.attempt = r.attempt;
     ev.record_count = r.messages;
     ev.as_of_seq = S;
-    for (uint32_t k = 0; k < n; ++k) {
-        if (!merge_waiters_[k]->ring.publish_control(ControlCode::RECAP_BEGIN, p.id(), now, &ev, sizeof(ev))) {
-            inc(merge_waiters_[k]->counters.publish_failed);
-        }
+    for (Session* s : merge_waiters_) {
+        if (!s->ring.publish_control(ControlCode::RECAP_BEGIN, p.id(), now, &ev, sizeof(ev))) inc(s->counters.publish_failed);
     }
 
     // INTENT: the reply records are delivered as snapshot-origin data at
@@ -809,24 +806,24 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
         h.sequence = S;
         h.flags |= FLAG_SNAPSHOT_ORIGIN;
         inc(p.recap_counters.recap_records);
-        for (uint32_t k = 0; k < n; ++k) {
-            Session& s = *merge_waiters_[k];
+        for (Session* sp : merge_waiters_) {
+            Session& s = *sp;
             const FilterTable* f = s.filter.load(std::memory_order_acquire);
             if (f == nullptr || !f->accept(h)) continue;
             if (s.ring.publish(h, msg, len)) { inc(s.counters.published); ++merge_counts_[s.recap_slot]; }
             else inc(s.counters.publish_failed);
         }
     }
-    for (uint32_t k = 0; k < n; ++k) {
-        Session& s = *merge_waiters_[k];
+    for (Session* sp : merge_waiters_) {
+        Session& s = *sp;
         ev.record_count = merge_counts_[s.recap_slot];
         if (!s.ring.publish_control(ControlCode::RECAP_COMPLETE, p.id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
     }
     // Then the held live messages the snapshot does not contain, in order.
     p.recap->for_each_held(e, [&](const TickHeader& h, const uint8_t* payload, uint32_t len) {
         if (h.sequence <= S) return;
-        for (uint32_t k = 0; k < n; ++k) {
-            Session& s = *merge_waiters_[k];
+        for (Session* sp : merge_waiters_) {
+            Session& s = *sp;
             const FilterTable* f = s.filter.load(std::memory_order_acquire);
             if (f == nullptr || !f->accept(h)) { inc(s.counters.filtered); continue; }
             if (s.ring.publish(h, payload, len)) inc(s.counters.published);
@@ -839,8 +836,8 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
 }
 
 void Pipeline::recap_emit(Partition& p, const RecapPending& e, ControlCode code, const RecapEvent& ev, uint64_t now) noexcept {
-    for (uint32_t i = 0; i < p.n_sessions; ++i) {
-        Session& s = *p.sessions[i];
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
         if (!s.recap || !e.waiters.test(s.recap_slot)) continue;
         if (!s.ring.publish_control(code, p.id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
     }

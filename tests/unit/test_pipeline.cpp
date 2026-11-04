@@ -137,6 +137,27 @@ std::vector<Rec> drain(ShmReader& rd) {
 
 } // namespace
 
+TEST_CASE("partition: attach refuses duplicates and the 257th session; detach reorders but keeps the rest") {
+    Partition part;
+    // attach/detach only store the pointers, so distinct addresses are enough.
+    std::vector<Session*> s(Partition::kMaxSessions + 1);
+    for (size_t i = 0; i < s.size(); ++i) s[i] = reinterpret_cast<Session*>(alignof(Session) * (i + 1));
+    for (size_t i = 0; i < Partition::kMaxSessions; ++i) REQUIRE(part.attach(s[i]));
+    CHECK_FALSE(part.attach(s[0]));
+    CHECK_FALSE(part.attach(s.back()));
+    CHECK(part.sessions.size() == Partition::kMaxSessions);
+    CHECK(part.detach(s[3]));
+    CHECK_FALSE(part.detach(s[3]));
+    CHECK(part.sessions.size() == Partition::kMaxSessions - 1);
+    CHECK(part.sessions[3] == s[Partition::kMaxSessions - 1]);   // the last one moved into the hole
+    CHECK(part.attach(s.back()));
+    for (size_t i = 0; i < Partition::kMaxSessions; ++i) {
+        if (i != 3) CHECK(part.detach(s[i]));
+    }
+    CHECK(part.detach(s.back()));
+    CHECK(part.sessions.empty());
+}
+
 TEST_CASE("pipeline: data flows through filter to ring with routing fields and in-band events") {
     Harness h;
     FilterSpec spec;
@@ -348,7 +369,7 @@ TEST_CASE("pipeline: filter swap and session removal emit in-band events; partit
     REQUIRE(recs.size() == 1);
     CHECK(recs[0].hdr.msg_type == static_cast<uint8_t>(ControlCode::SESSION_CLOSING));
     CHECK_FALSE(s->attached.load());
-    CHECK(h.part.n_sessions == 0);
+    CHECK(h.part.sessions.empty());
 }
 
 TEST_CASE("pipeline: threaded start/stop with pinned cpu off and commands applied") {

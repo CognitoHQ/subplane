@@ -339,6 +339,20 @@ TEST_CASE("recap manager: max_inflight queues the rest in order") {
     CHECK(rs[0].messages == 0);
 }
 
+TEST_CASE("recap manager: more requests time out at once than one batch of 64; every one is reported") {
+    Rig r(partition_yaml("", 100));
+    for (uint64_t i = 1; i <= 70; ++i) r.request(r.symbols.intern_u64(i));
+    for (int k = 0; k < 4 && requests(*r.recap).size() < 70; ++k) r.step();
+    REQUIRE(requests(*r.recap).size() == 70);
+    CHECK(r.replies().empty());
+    r.step(100);
+    const auto rs = r.replies();
+    CHECK(rs.size() == 70);
+    for (const auto& x : rs) CHECK(x.status == RecapStatus::TIMEOUT);
+    CHECK(r.c().recap_timeouts == 70);
+    CHECK(r.c().inflight == 0);
+}
+
 TEST_CASE("recap manager: timeout reports, backs off, retries with a new id; cancel stops it") {
     Rig r;
     const uint32_t sym = r.symbols.intern_u64(7);

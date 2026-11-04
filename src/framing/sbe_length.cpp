@@ -1,6 +1,7 @@
 #include "subplane/framing/sbe_length.h"
 
 #include <algorithm>
+#include <inplace_vector>
 
 namespace subplane {
 namespace {
@@ -107,8 +108,7 @@ WalkStatus SbeLengthWalker::walk(const uint8_t* msg, uint32_t avail, uint32_t& t
 WalkStatus SbeLengthWalker::walk_program(const WalkProgram& prog, const uint8_t* msg, uint32_t avail,
                                          uint32_t pos, uint16_t acting_version, uint32_t& total_len) const noexcept {
     struct Frame { uint64_t remaining; uint64_t block_len; };
-    Frame stack[SBE_MAX_GROUP_DEPTH];
-    unsigned depth = 0;
+    std::inplace_vector<Frame, SBE_MAX_GROUP_DEPTH> stack;
     uint32_t i = 0;
     while (i < prog.count) {
         const WalkOp& op = prog.ops[i];
@@ -127,21 +127,21 @@ WalkStatus SbeLengthWalker::walk_program(const WalkProgram& prog, const uint8_t*
                 // INTENT: reject num*blen > remaining up front so a corrupt count cannot spin
                 // the loop; without it a 32-bit numInGroup would iterate billions of times.
                 if (num * blen > static_cast<uint64_t>(avail - pos)) { total_len = 0; return WalkStatus::MALFORMED; }
-                if (depth >= SBE_MAX_GROUP_DEPTH) { total_len = 0; return WalkStatus::MALFORMED; }
+                if (stack.size() == stack.capacity()) { total_len = 0; return WalkStatus::MALFORMED; }
                 if (blen == 0 && op.jump == i + 1u) { i = static_cast<uint32_t>(op.jump) + 1u; break; } // empty entries
-                stack[depth++] = Frame{num, blen};
+                stack.unchecked_push_back(Frame{num, blen});   // capacity checked above
                 pos += static_cast<uint32_t>(blen);
                 ++i;
                 break;
             }
             case WalkOp::GROUP_END: {
-                Frame& f = stack[depth - 1];
+                Frame& f = stack.back();   // the walk program pairs every GROUP_END with a GROUP_BEGIN
                 if (--f.remaining > 0) {
                     if (avail - pos < f.block_len) { total_len = 0; return WalkStatus::TRUNCATED; }
                     pos += static_cast<uint32_t>(f.block_len);
                     i = static_cast<uint32_t>(op.jump) + 1u;
                 } else {
-                    --depth;
+                    stack.pop_back();
                     ++i;
                 }
                 break;

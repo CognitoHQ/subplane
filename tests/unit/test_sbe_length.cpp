@@ -220,3 +220,54 @@ TEST_CASE("walker: multi-entry groups in a non-first grouped template (CME shape
     CHECK(w.walk(old.b.data(), static_cast<uint32_t>(msg_end), len) == WalkStatus::OK);
     CHECK(len == msg_end);
 }
+
+namespace {
+// A message whose groups nest `depth` deep, each group a 1-byte block and `num` entries.
+std::string nested_xml(unsigned depth) {
+    std::string open, close;
+    for (unsigned d = 1; d <= depth; ++d) {
+        open += "<group name=\"G" + std::to_string(d) + "\" id=\"" + std::to_string(10 + d) + "\" blockLength=\"1\" dimensionType=\"groupSize\">"
+                "<field name=\"f" + std::to_string(d) + "\" id=\"" + std::to_string(20 + d) + "\" type=\"uint8\" offset=\"0\"/>";
+        close += "</group>";
+    }
+    return R"(<?xml version="1.0"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe" package="t" id="1" version="1" byteOrder="littleEndian">
+  <types>
+    <composite name="messageHeader"><type name="blockLength" primitiveType="uint16"/><type name="templateId" primitiveType="uint16"/><type name="schemaId" primitiveType="uint16"/><type name="version" primitiveType="uint16"/></composite>
+    <composite name="groupSize"><type name="blockLength" primitiveType="uint16"/><type name="numInGroup" primitiveType="uint16"/></composite>
+  </types>
+  <sbe:message name="Deep" id="1" blockLength="1"><field name="a" id="1" type="uint8" offset="0"/>)" + open + close + R"(</sbe:message>
+</sbe:messageSchema>)";
+}
+void nested_body(Buf& x, unsigned level, unsigned depth, unsigned num) {
+    x.u(1, 2); x.u(num, 2);
+    for (unsigned e = 0; e < num; ++e) {
+        x.zeros(1);
+        if (level < depth) nested_body(x, level + 1, depth, num);
+    }
+}
+} // namespace
+
+TEST_CASE("walker: groups nested to the depth limit walk; one deeper is refused at build") {
+    std::string err;
+    {
+        SbeSchema schema;
+        SbeLengthWalker w;
+        REQUIRE_MESSAGE(schema.load_string(nested_xml(SBE_MAX_GROUP_DEPTH), err), err);
+        REQUIRE_MESSAGE(w.build(schema, err), err);
+        for (unsigned num : {0u, 1u, 2u}) {
+            Buf x;
+            x.header(1, 1, 1); x.zeros(1);
+            nested_body(x, 1, SBE_MAX_GROUP_DEPTH, num);
+            x.zeros(7);   // the next message: not consumed
+            uint32_t len = 0;
+            CHECK(w.walk(x.b.data(), static_cast<uint32_t>(x.b.size()), len) == WalkStatus::OK);
+            CHECK(len == x.b.size() - 7);
+        }
+    }
+    SbeSchema schema;
+    SbeLengthWalker w;
+    REQUIRE_MESSAGE(schema.load_string(nested_xml(SBE_MAX_GROUP_DEPTH + 1), err), err);
+    CHECK_FALSE(w.build(schema, err));
+    CHECK(err.find("nests deeper than") != std::string::npos);
+}

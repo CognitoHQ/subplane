@@ -24,9 +24,8 @@ bool parse_path(const YAML::Node& n, const std::string& what, bool allow_string,
     for (size_t i = 0; i < p.size(); ++i) {
         const long v = p[i].as<long>();
         if (v < 0 || v > 65535) { err = what + ".path: field id out of range"; return false; }
-        out.ids[i] = static_cast<uint16_t>(v);
+        out.ids.unchecked_push_back(static_cast<uint16_t>(v));   // size checked above
     }
-    out.depth = static_cast<uint8_t>(p.size());
     const std::string t = n["type"].as<std::string>();
     if (!parse_fb_scalar(t, out.type)) { err = what + ".type: unknown scalar '" + t + "'"; return false; }
     if (out.type == FbScalar::STRING && !allow_string) { err = what + ".type: string is only valid for symbol in table mode"; return false; }
@@ -35,11 +34,11 @@ bool parse_path(const YAML::Node& n, const std::string& what, bool allow_string,
 
 // Reads an integer at a path: all ids but the last are table (or union value) fields.
 inline bool read_int(fbw::Buf s, uint32_t tbl, const FbFieldPath& f, uint64_t& v) noexcept {
-    for (uint8_t i = 0; i + 1 < f.depth; ++i) {
+    for (size_t i = 0; i + 1 < f.ids.size(); ++i) {
         tbl = fbw::deref(s, tbl, f.ids[i]);
         if (tbl == 0) return false;
     }
-    const uint32_t at = fbw::field(s, tbl, f.ids[f.depth - 1]);
+    const uint32_t at = fbw::field(s, tbl, f.ids.back());
     if (at == 0) return false;
     switch (f.type) {
         case FbScalar::U8:  { uint8_t x;  if (!fbw::rd(s, at, x)) return false; v = x; return true; }
@@ -55,11 +54,11 @@ inline bool read_int(fbw::Buf s, uint32_t tbl, const FbFieldPath& f, uint64_t& v
 }
 
 inline bool read_str(fbw::Buf s, uint32_t tbl, const FbFieldPath& f, const char*& p, uint32_t& len) noexcept {
-    for (uint8_t i = 0; i + 1 < f.depth; ++i) {
+    for (size_t i = 0; i + 1 < f.ids.size(); ++i) {
         tbl = fbw::deref(s, tbl, f.ids[i]);
         if (tbl == 0) return false;
     }
-    return fbw::string(s, tbl, f.ids[f.depth - 1], p, len);
+    return fbw::string(s, tbl, f.ids.back(), p, len);
 }
 
 } // namespace
@@ -153,9 +152,9 @@ bool parse_flatbuffers_decoder_config(const YAML::Node& node, FlatbuffersDecoder
             if (m["venue"]       && !parse_path(m["venue"],       pre + "venue",       false, spec.venue,       err)) return false;
             if (m["exchange_ts"] && !parse_path(m["exchange_ts"], pre + "exchange_ts", false, spec.exchange_ts, err)) return false;
             if (m["sequence"]    && !parse_path(m["sequence"],    pre + "sequence",    false, spec.sequence,    err)) return false;
-            if (out.venue_scope && spec.symbol.depth != 0) {
+            if (out.venue_scope && spec.symbol.mapped()) {
                 if (spec.symbol.type == FbScalar::STRING) { err = pre + "symbol: symbol_scope: venue requires an integer symbol"; return false; }
-                if (spec.venue.depth == 0) { err = pre + "lacks venue, which symbol_scope: venue requires"; return false; }
+                if (!spec.venue.mapped()) { err = pre + "lacks venue, which symbol_scope: venue requires"; return false; }
             }
             out.messages.push_back(spec);
         }
@@ -194,7 +193,7 @@ bool FlatbuffersDecoder::init(const FlatbuffersDecoderConfig& cfg, std::string& 
         e.template_id = dispatch_ == FbDispatch::TYPE_FIELD ? static_cast<uint16_t>(m.type) : static_cast<uint16_t>(i + 1);
         if (dispatch_ == FbDispatch::TYPE_FIELD && type_field_.type == FbScalar::U8 && m.type < 256)
             by_u8_[m.type] = static_cast<int16_t>(i);
-        if (m.symbol.depth == 0 && m.marker == RecapMarker::NONE) warnings_.push_back("message " + std::to_string(e.template_id) + " has no symbol path; routed by type only");
+        if (!m.symbol.mapped() && m.marker == RecapMarker::NONE) warnings_.push_back("message " + std::to_string(e.template_id) + " has no symbol path; routed by type only");
         entries_.push_back(e);
     }
     return true;
@@ -253,9 +252,9 @@ DecodeResult FlatbuffersDecoder::decode(const uint8_t* msg, uint32_t avail, Tick
     r.marker = e->marker;
     uint64_t v;
     // INTENT: venue before symbol; symbol_scope: venue interns with it.
-    out.venue_id    = (e->venue.depth != 0 && read_int(s, root, e->venue, v)) ? static_cast<uint16_t>(v) : 0;
+    out.venue_id    = (e->venue.mapped() && read_int(s, root, e->venue, v)) ? static_cast<uint16_t>(v) : 0;
     out.symbol_id = 0;
-    if (e->symbol.depth != 0) {
+    if (e->symbol.mapped()) {
         if (e->symbol.type == FbScalar::STRING) {
             const char* p; uint32_t len;
             if (read_str(s, root, e->symbol, p, len)) out.symbol_id = syms.resolve_str(p, len);
@@ -264,8 +263,8 @@ DecodeResult FlatbuffersDecoder::decode(const uint8_t* msg, uint32_t avail, Tick
                                          : syms.resolve_u64(v, venue_scope_ ? out.venue_id : uint16_t{0});
         }
     }
-    out.exchange_ts = (e->exchange_ts.depth != 0 && read_int(s, root, e->exchange_ts, v)) ? v : 0;
-    out.sequence    = (e->sequence.depth != 0 && read_int(s, root, e->sequence, v)) ? v : 0;
+    out.exchange_ts = (e->exchange_ts.mapped() && read_int(s, root, e->exchange_ts, v)) ? v : 0;
+    out.sequence    = (e->sequence.mapped() && read_int(s, root, e->sequence, v)) ? v : 0;
     r.status = DecodeStatus::OK;
     return r;
 }
@@ -281,7 +280,7 @@ bool FlatbuffersDecoder::read_recap_fields(const uint8_t* msg, uint32_t avail, R
     if (!e || e->marker == RecapMarker::NONE) return false;
     out.marker = e->marker;
     for (uint8_t i = 0; i < kRecapFields; ++i) {
-        if (e->recap[i].depth == 0) continue;
+        if (!e->recap[i].mapped()) continue;
         uint64_t v;
         if (read_int(s, root, e->recap[i], v)) { out.value[i] = v; out.has[i] = true; }
     }

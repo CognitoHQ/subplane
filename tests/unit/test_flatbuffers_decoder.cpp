@@ -181,7 +181,7 @@ TEST_CASE("flatbuffers: config errors") {
     bad("{type: flatbuffers, dispatch: identifier, messages: []}", "non-empty list");
     CHECK(parse_flatbuffers_decoder_config(YAML::Load(kFixtureCfg), cfg, err));
     CHECK(cfg.messages.size() == 3);
-    CHECK(cfg.messages[0].symbol.depth == 3);
+    CHECK(cfg.messages[0].symbol.ids.size() == 3);
     CHECK(cfg.messages[0].symbol.ids[2] == 0);
     CHECK(cfg.size_prefixed);
 }

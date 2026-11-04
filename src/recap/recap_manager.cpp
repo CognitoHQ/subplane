@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <inplace_vector>
 #include <sched.h>
 
 namespace subplane {
@@ -245,21 +246,21 @@ void RecapManager::send_ready(PState& ps) noexcept {
 void RecapManager::service_timeouts(PState& ps) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
     // Collected first: fail() and finish() change the map.
-    uint32_t expired[64];
+    // A full batch goes round again for the rest.
+    std::inplace_vector<uint32_t, 64> expired;
     for (;;) {
-        int n = 0;
+        expired.clear();
         for (auto& [sym, e] : ps.entries) {
-            if (n == 64) break;
-            if (e.state == Entry::State::INFLIGHT && ps.now >= e.due_ns) expired[n++] = sym;
+            if (e.state == Entry::State::INFLIGHT && ps.now >= e.due_ns) { if (!expired.try_push_back(sym)) break; }
             else if (e.state == Entry::State::BACKOFF && ps.now >= e.due_ns) { e.state = Entry::State::QUEUED; ps.fifo.push_back(sym); }
         }
-        for (int i = 0; i < n; ++i) {
-            const Entry& e = ps.entries.at(expired[i]);
+        for (const uint32_t sym : expired) {
+            const Entry& e = ps.entries.at(sym);
             if (ps.asm_.active && ps.asm_.request_id == e.request_id) abort_assembly(ps);
             inc(rc.recap_timeouts);
-            fail(ps, expired[i], RecapStatus::TIMEOUT, 0);
+            fail(ps, sym, RecapStatus::TIMEOUT, 0);
         }
-        if (n < 64) break;
+        if (expired.size() < expired.capacity()) break;
     }
 }
 

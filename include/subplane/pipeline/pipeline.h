@@ -18,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <inplace_vector>
 #include <string>
 #include <memory>
 #include <thread>
@@ -108,8 +109,7 @@ private:
     uint64_t      partition_mask_ = 0;
 
     // All sessions attached to any partition of this group (for group-wide events).
-    Session*  sessions_[Partition::kMaxSessions] = {};
-    uint32_t  n_sessions_ = 0;
+    std::inplace_vector<Session*, Partition::kMaxSessions> sessions_;
 
     SpscQueue<PipelineCommand, 1024> commands_;
     RecapChannel          recap_;
@@ -123,7 +123,7 @@ private:
     size_t                recap_out_cap_ = 0;
     size_t                release_out_cap_ = 0;
     RecapWaiters          recap_slots_;                       // slots held by recap sessions
-    Session*              merge_waiters_[RecapWaiters::kSlots] = {};
+    std::inplace_vector<Session*, RecapWaiters::kSlots> merge_waiters_;   // recap_merge scratch
     uint32_t              merge_counts_[RecapWaiters::kSlots] = {};
     Partition*            by_id_[64] = {};
     uint64_t              posted_ = 0;

@@ -27,6 +27,7 @@
 //           fields: { request_id: { path: [4], type: u64 }, as_of: { path: [5], type: u64 } } }
 
 #include <cstdint>
+#include <inplace_vector>
 #include <string>
 #include <vector>
 
@@ -41,10 +42,10 @@ enum class FbScalar : uint8_t { NONE = 0, U8, U16, U32, U64, I8, I16, I32, I64, 
 bool parse_fb_scalar(std::string_view name, FbScalar& out);
 
 struct FbFieldPath {
-    static constexpr int kMaxDepth = 4;
-    uint8_t  depth = 0;                 // 0 = not mapped
-    uint16_t ids[kMaxDepth] = {};
+    static constexpr size_t kMaxDepth = 4;
+    std::inplace_vector<uint16_t, kMaxDepth> ids;   // empty = not mapped
     FbScalar type = FbScalar::NONE;
+    bool mapped() const noexcept { return !ids.empty(); }
 };
 
 struct FbMessageSpec {
@@ -91,7 +92,7 @@ public:
         return false;
     }
     bool has_string_symbol() const noexcept {
-        for (const auto& e : entries_) if (e.symbol.depth != 0 && e.symbol.type == FbScalar::STRING) return true;
+        for (const auto& e : entries_) if (e.symbol.mapped() && e.symbol.type == FbScalar::STRING) return true;
         return false;
     }
     bool symbol_passthrough() const noexcept { return passthrough_; }

@@ -2,6 +2,8 @@
 
 #include "subplane/registry/component_registry.h"
 
+#include <algorithm>
+
 namespace subplane {
 
 const char* decoder_type_name(DecoderType t) {
@@ -222,24 +224,16 @@ void Partition::close() noexcept {
 }
 
 bool Partition::attach(Session* s) noexcept {
-    for (uint32_t i = 0; i < n_sessions; ++i) {
-        if (sessions[i] == s) return false;
-    }
-    if (n_sessions >= kMaxSessions) return false;
-    sessions[n_sessions++] = s;
-    return true;
+    if (std::ranges::contains(sessions, s)) return false;
+    return sessions.try_push_back(s) != nullptr;
 }
 
 bool Partition::detach(Session* s) noexcept {
-    for (uint32_t i = 0; i < n_sessions; ++i) {
-        if (sessions[i] == s) {
-            sessions[i] = sessions[n_sessions - 1];
-            sessions[n_sessions - 1] = nullptr;
-            --n_sessions;
-            return true;
-        }
-    }
-    return false;
+    const auto it = std::ranges::find(sessions, s);
+    if (it == sessions.end()) return false;
+    *it = sessions.back();   // order does not matter; recap uses slots, not indices
+    sessions.pop_back();
+    return true;
 }
 
 } // namespace subplane
