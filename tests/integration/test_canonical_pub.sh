@@ -98,6 +98,9 @@ done
 # Every family has HELP then TYPE, once.
 [ "$(grep -c '^# TYPE ' "$TMP/metrics.txt")" = "$(grep -c '^# HELP ' "$TMP/metrics.txt")" ] || fail "HELP/TYPE mismatch"
 [ -z "$(grep '^# TYPE ' "$TMP/metrics.txt" | awk '{print $3}' | sort | uniq -d)" ] || fail "a family is split"
+# promtool lints the whole exposition when it is installed (always in the toolchain image and CI).
+PROMTOOL=${PROMTOOL:-$(command -v promtool || true)}
+if [ -n "$PROMTOOL" ]; then "$PROMTOOL" check metrics < "$TMP/metrics.txt" || fail "promtool check metrics"; fi
 http_get "$API" '/metrics?format=json' > "$TMP/metrics.json" || fail "GET /metrics?format=json"
 if command -v python3 >/dev/null; then python3 -m json.tool "$TMP/metrics.json" >/dev/null || fail "metrics JSON invalid"; fi
 kill $AGENT_PID; wait $AGENT_PID 2>/dev/null
