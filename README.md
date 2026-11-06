@@ -27,7 +27,26 @@ subplane does that work once per box:
 - **A filtered ring per app.** Each app reads a shared-memory ring that holds only the messages it asked for, bit-identical to what the bus carried, plus in-band events for gaps, restarts and snapshots.
 - **One contract for every bus.** Which transport, encoding and framing the bus uses is agent configuration. Apps on a UDP SBE bus, a TCP DBN stream or a FlatBuffers feed read rings the same way, and typed views let them read fields without a codec when they want one.
 
-What it deliberately is not: a decoder (apps keep their own codecs and full decode), a broker (data flows one way, nothing routed back to a producer, nothing across hosts; recap requests go upstream only to a declared snapshot service, and cross-site cascading is a separate relay process, both planned), or a feed handler (no exchange protocols). Keeping the core to subscribe, route and fan out is what lets it stay small and fast, and lets everything else vary behind the one contract.
+What it deliberately is not: a decoder (apps keep their own codecs and full decode), a broker (data flows one way, nothing routed back to a producer, nothing across hosts; recap requests go upstream only to a declared snapshot service, and cross-site cascading is a separate relay process, planned), or a feed handler (no exchange protocols). Keeping the core to subscribe, route and fan out is what lets it stay small and fast, and lets everything else vary behind the one contract.
+
+## What it takes off a market data team
+
+Low-latency market data usually means hiring for the same list: Linux and network programming, CPU architecture, exchange protocols, profiling, packet capture and replay, threads and lock-free code. Most of what those engineers build first is the same plumbing at every firm. subplane and [subplane-feeds](https://github.com/satyan-g/subplane-feeds) build it once, in the open, so a team's time goes to what sets it apart.
+
+| Skill | Built once here | Still yours |
+|---|---|---|
+| Linux, network programming, CPU | `recvmmsg` batches, optional busy-poll and kernel receive timestamps, shared-memory rings and core pinning, all inside the agent. Apps include one header-only reader. | Tuning the box: IRQ affinity, isolated cores, NIC settings. Kernel bypass (Onload, ef_vi, DPDK) is not built; the budget is tens of microseconds on kernel sockets. |
+| Market data protocols | Message boundaries and lengths from the published SBE schema, with no hand-written handler per message; DBN and FlatBuffers routed the same way. Exchange WebSocket feeds (Binance, Coinbase, Kraken, Bitstamp, OKX) normalized to one canonical schema by YAML packs. Gaps, publisher restarts, late join and book recap handled by the agent and a snapshot service. | Order entry: out of scope, since data flows one way. A venue without a pack: a pack is YAML, not a new handler. |
+| Profiling and optimization | Apps stop decoding, filtering and routing, so that cost leaves them. Every hop is measured: latency histograms and counters on `/metrics` (Prometheus), the data flow on `/topology`, and `subplane replay --bench` for the pipeline in process. | Your strategy code. |
+| Packet capture, dissection and replay | `subplane probe` checks a framing description against live packets, `subplane replay --pcap` puts a capture back on the wire, `subplane tail` prints a ring, and gateways record and replay their input byte for byte. A recorder of ring records, replayed through the agent so apps run unmodified against history, is planned. | |
+| Threads and lock-free code | Single-writer rings and one-writer counters, written and tested once. An app polls its own ring, and a slow app overruns only itself. | Concurrency inside your apps. |
+
+### Build on it
+
+- **A new exchange:** write a pack (`docs/pack-format.md` in subplane-feeds).
+- **A new bus, transport or encoding:** `docs/guides/custom-integration.md`.
+- **An app, a consumer or a function runtime:** `docs/guides/app-developer.md`.
+- **A gateway or a snapshot service, in any language:** the subplane protocol, `docs/protocol/developer-guide.md`.
 
 ## The whole picture
 
@@ -187,7 +206,7 @@ flowchart LR
 Two paths, chosen by what the state is:
 
 - **Self-contained values** (instrument definition, trading status, last quote, last trade): the newest message is the whole state. The agent's last-value cache serves it over the control channel; the app seeds from it and tails the ring. Built.
-- **State built from many messages** (books, session volume, VWAP): the publisher's sister snapshot service holds it. The agent asks once per symbol for its whole box, holds that symbol's live messages for the waiting apps only, and merges the reply by sequence. Planned.
+- **State built from many messages** (books, session volume, VWAP): the publisher's sister snapshot service holds it. The agent asks once per symbol for its whole box, holds that symbol's live messages for the waiting apps only, and merges the reply by sequence. Built: the agent side, and the snapshot service for the crypto gateways in [subplane-feeds](https://github.com/satyan-g/subplane-feeds).
 
 ```mermaid
 sequenceDiagram
