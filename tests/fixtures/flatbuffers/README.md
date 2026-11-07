@@ -13,6 +13,9 @@ never depends on the FlatBuffers library.
 - `fb_sample.bin`: the 300 buffers back to back (each `u32 size` + buffer).
 - `fb_sample.pcap`: the same buffers as UDP/IPv4/Ethernet datagrams, 1..4 per
   datagram, for `subplane replay --pcap`.
+- `fb_sample.pcapng`: the same frames as pcapng (nanosecond timestamps), for
+  the pcapng reader. Regenerated from `fb_sample.pcap` by the unit test:
+  `SP_WRITE_PCAPNG_FIXTURE=$PWD/fb_sample.pcapng build/tests/test_pcapng`.
 - `fb_sample.expected`: one line per message: `kind seq ts instrument venue symbol flags`
   (kind 1 trade, 2 quote, 3 heartbeat; instrument/venue 0 and symbol `-` for heartbeats).
 

@@ -20,6 +20,10 @@
 ^docs/protocol/
 ^include/subplane/proto/
 
+# Recordings: the .spr format (pcapng with subplane custom blocks)
+^include/subplane/record/
+^docs/context/recording-format\.md$
+
 # Config vocabulary: framing, decoders, partitions, sessions, transports, recap
 ^src/framing/
 ^include/subplane/framing/

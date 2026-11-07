@@ -13,6 +13,8 @@ subplane_unit_test(test_core unit/test_message.cpp unit/test_api_server.cpp unit
 subplane_unit_test(test_core_types unit/test_filter_table.cpp unit/test_seqlock.cpp unit/test_histogram.cpp unit/test_symbol_table.cpp unit/test_lvc.cpp)
 # M2 shared-memory ring + client
 subplane_unit_test(test_ring unit/test_ring.cpp)
+# Recordings: pcap/pcapng reader and writer (include/subplane/record)
+subplane_unit_test(test_pcapng unit/test_pcapng.cpp)
 subplane_unit_test(test_reader_slots unit/test_reader_slots.cpp)
 # M3 SBE schema, length walker, routing decoder
 subplane_unit_test(test_sbe unit/test_sbe_schema.cpp unit/test_sbe_length.cpp unit/test_sbe_decoder.cpp)

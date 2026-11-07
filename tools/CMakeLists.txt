@@ -56,4 +56,7 @@ if(BUILD_TESTING OR SUBPLANE_BUILD_TESTS)
     add_test(NAME flatbuffers_replay
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh
                 ${SP} $<TARGET_FILE:subplaned> ${CMAKE_SOURCE_DIR}/tests/fixtures/flatbuffers)
+    add_test(NAME flatbuffers_replay_pcapng
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_flatbuffers_replay.sh
+                ${SP} $<TARGET_FILE:subplaned> ${CMAKE_SOURCE_DIR}/tests/fixtures/flatbuffers fb_sample.pcapng)
 endif()

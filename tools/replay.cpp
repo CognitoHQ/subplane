@@ -1,4 +1,4 @@
-// subplane replay: pcap replay and in-process pipeline benchmark.
+// subplane replay: pcap/pcapng replay and in-process pipeline benchmark.
 //
 //   subplane replay --pcap <file> --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]
 //   subplane replay --bench --config <config.yaml> [--packets N] [--per-packet K] ...
@@ -35,6 +35,7 @@
 #include "subplane/pipeline/partition.h"
 #include "subplane/pipeline/pipeline.h"
 #include "subplane/pipeline/session_manager.h"
+#include "subplane/record/pcapng.h"
 #include "subplane/symbol_table.h"
 #include "packet_gen.h"
 
@@ -49,7 +50,7 @@ void usage() {
     std::fputs(
         "usage:\n"
         "  subplane replay --pcap <file> --port <n> [--host 127.0.0.1] [--rate pps|0] [--timing pcap] [--loop N]\n"
-        "      Replays UDP payloads from a pcap. --rate 0 = as fast as possible (default);\n"
+        "      Replays UDP payloads from a pcap or pcapng (.spr). --rate 0 = as fast as possible (default);\n"
         "      --timing pcap reproduces capture gaps (each capped at 1s). --loop 0 = forever.\n"
         "  subplane replay --bench --config <config.yaml> [options]\n"
         "      --packets N=200000   measured packets (a 20k-packet warm-up precedes them)\n"
@@ -79,95 +80,34 @@ struct PcapStats {
     uint64_t records = 0, udp = 0, non_udp = 0, ipv6 = 0, fragments = 0, truncated = 0;
 };
 
-uint32_t rd32(const uint8_t* p, bool swap) {
-    uint32_t v;
-    std::memcpy(&v, p, 4);
-    return swap ? __builtin_bswap32(v) : v;
-}
-uint16_t rd16be(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
-
-enum class L3 { IPV4, IPV6, OTHER };
-
-// Returns the offset of the L3 header (or sets kind to non-IPv4).
-bool find_l3(uint32_t link, const uint8_t* d, uint32_t n, uint32_t& off, L3& kind) {
-    kind = L3::OTHER;
-    off = 0;
-    auto by_ethertype = [&](uint16_t et) {
-        kind = et == 0x0800 ? L3::IPV4 : (et == 0x86DD ? L3::IPV6 : L3::OTHER);
-    };
-    if (link == 1) {
-        if (n < 14) return false;
-        off = 12;
-        uint16_t et = rd16be(d + off);
-        while ((et == 0x8100 || et == 0x88A8) && off + 4 + 2 <= n) { off += 4; et = rd16be(d + off); }
-        off += 2;
-        by_ethertype(et);
-        return off <= n;
-    }
-    if (link == 113) {
-        if (n < 16) return false;
-        by_ethertype(rd16be(d + 14));
-        off = 16;
-        return true;
-    }
-    if (link == 101 || link == 228) {
-        if (n < 1) return false;
-        const unsigned ver = d[0] >> 4;
-        kind = ver == 4 ? L3::IPV4 : (ver == 6 ? L3::IPV6 : L3::OTHER);
-        if (link == 228 && ver != 4) kind = L3::OTHER;
-        return true;
-    }
-    return false;
-}
-
-bool load_pcap(const std::string& path, std::vector<uint8_t>& buf, std::vector<PcapPacket>& out,
+// Classic pcap or pcapng (a .spr recording is pcapng): every IPv4 UDP payload, in file order.
+// A file cut short replays the packets before the cut and counts it as truncated.
+bool load_pcap(const std::string& path, subplane::record::MappedFile& file, std::vector<PcapPacket>& out,
                PcapStats& st, std::string& err) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) { err = "cannot open " + path; return false; }
-    buf.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-    if (buf.size() < 24) { err = "file too short for a pcap header"; return false; }
-    uint32_t magic;
-    std::memcpy(&magic, buf.data(), 4);
-    bool swap = false, nano = false;
-    switch (magic) {
-        case 0xa1b2c3d4: break;
-        case 0xd4c3b2a1: swap = true; break;
-        case 0xa1b23c4d: nano = true; break;
-        case 0x4d3cb2a1: swap = true; nano = true; break;
-        default: err = "not a pcap file (bad magic)"; return false;
-    }
-    const uint32_t link = rd32(buf.data() + 20, swap);
-    if (link != 1 && link != 113 && link != 101 && link != 228) {
-        err = "unsupported link type " + std::to_string(link);
-        return false;
-    }
-    size_t pos = 24;
-    while (pos + 16 <= buf.size()) {
-        const uint32_t sec = rd32(buf.data() + pos, swap), frac = rd32(buf.data() + pos + 4, swap);
-        const uint32_t incl = rd32(buf.data() + pos + 8, swap);
-        pos += 16;
-        if (incl > buf.size() - pos) { ++st.truncated; break; }
+    using namespace subplane::record;
+    if (!file.open(path, err)) return false;
+    PcapReader rd;
+    if (!rd.open(file.data(), file.size(), err)) return false;
+    PcapItem it;
+    PcapStatus s;
+    while ((s = rd.next(it)) == PcapStatus::Ok) {
+        if (it.kind != PcapItem::PACKET) continue;
         ++st.records;
-        const uint8_t* d = buf.data() + pos;
-        const uint64_t ts = uint64_t{sec} * 1'000'000'000ull + (nano ? frac : uint64_t{frac} * 1000ull);
-        uint32_t l3off = 0;
-        L3 kind = L3::OTHER;
-        const bool ok = find_l3(link, d, incl, l3off, kind);
-        if (!ok || kind == L3::OTHER) { ++st.non_udp; pos += incl; continue; }
-        if (kind == L3::IPV6) { ++st.ipv6; pos += incl; continue; }
-        if (l3off + 20 > incl || (d[l3off] >> 4) != 4) { ++st.non_udp; pos += incl; continue; }
-        const uint32_t ihl = (d[l3off] & 0x0Fu) * 4u;
-        const uint16_t frag = rd16be(d + l3off + 6);
-        if (ihl < 20 || l3off + ihl + 8 > incl || d[l3off + 9] != 17) { ++st.non_udp; pos += incl; continue; }
-        if ((frag & 0x3FFF) != 0) { ++st.fragments; pos += incl; continue; } // MF set or offset != 0
-        const uint32_t uoff = l3off + ihl;
-        const uint32_t ulen = rd16be(d + uoff + 4);
-        if (ulen < 8) { ++st.truncated; pos += incl; continue; }
-        uint32_t plen = ulen - 8;
-        if (uoff + 8 + plen > incl) plen = incl - uoff - 8; // snaplen-truncated: send what we have
-        out.push_back({pos + uoff + 8, plen, ts});
-        ++st.udp;
-        pos += incl;
+        uint32_t off = 0, len = 0;
+        switch (udp_payload(it.linktype, it.data, it.caplen, off, len)) {
+            case UdpExtract::OK:
+                out.push_back({static_cast<size_t>(it.data + off - file.data()), len, it.ts_ns});
+                ++st.udp;
+                break;
+            case UdpExtract::IPV6: ++st.ipv6; break;
+            case UdpExtract::FRAGMENT: ++st.fragments; break;
+            case UdpExtract::TRUNCATED: ++st.truncated; break;
+            case UdpExtract::NOT_UDP: ++st.non_udp; break;
+        }
+    }
+    if (s == PcapStatus::Error) {
+        ++st.truncated;
+        std::fprintf(stderr, "pcap: %s; replaying the %zu packets before it\n", rd.error().c_str(), out.size());
     }
     return true;
 }
@@ -180,7 +120,7 @@ int run_pcap(const Args& args, std::string& err) {
     if (!timing.empty() && timing != "pcap") { err = "--timing accepts only 'pcap'"; return 2; }
     const std::string host = args.str("host", "127.0.0.1");
 
-    std::vector<uint8_t> buf;
+    subplane::record::MappedFile buf;
     std::vector<PcapPacket> pk;
     PcapStats st;
     if (!load_pcap(args.str("pcap", ""), buf, pk, st, err)) return 1;

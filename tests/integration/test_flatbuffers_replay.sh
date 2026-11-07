@@ -2,10 +2,12 @@
 # FlatBuffers over UDP end to end: subplane replay --pcap (real flatc buffers, 1..4 per datagram)
 # -> subplaned (udp + message_prefix/keep_prefix + flatbuffers decoder) -> ring.
 # Needs only bash, grep and sed (no curl/python: the CI container is minimal).
-# usage: test_flatbuffers_replay.sh <subplane replay> <subplaned> <subplane tail> <fixture dir>
+# usage: test_flatbuffers_replay.sh <subplane> <subplaned> <fixture dir> [capture file, default fb_sample.pcap]
+# The same fixture is checked in as classic pcap and as pcapng (fb_sample.pcapng), and both must replay alike.
 set -u
-SP=$1; AGENT=$2; FIX=$3
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.fbtest.*.ring' EXIT
+SP=$1; AGENT=$2; FIX=$3; CAP=${4:-fb_sample.pcap}
+NAME=fbtest$( [ "$CAP" = fb_sample.pcap ] || echo ng )
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.$NAME.*.ring' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 
 # Runs in a subshell so a failed connect (nothing listening yet) only fails the
@@ -24,7 +26,7 @@ PORT=$(( 20000 + (RANDOM % 30000) ))
 API=$(( 20000 + (RANDOM % 30000) ))
 SOCK="$TMP/ctl.sock"
 cat > "$TMP/config.yaml" <<YAML
-agent: { name: fbtest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [fb0] } ] }
+agent: { name: $NAME, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [fb0] } ] }
 partitions:
   - name: fb0
     transport: { type: udp, group: "", port: $PORT, interface: "", rcvbuf: 4194304 }
@@ -52,7 +54,7 @@ AGENT_PID=$!
 # Wait for the socket to be bound before replaying.
 for _ in $(seq 1 100); do http_get "$API" /status >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 $AGENT_PID 2>/dev/null || fail "agent exited early"
-"$SP" replay --pcap "$FIX/fb_sample.pcap" --port "$PORT" --host 127.0.0.1 --rate 20000 > "$TMP/replay.log" 2>&1 || fail "subplane replay failed"
+"$SP" replay --pcap "$FIX/$CAP" --port "$PORT" --host 127.0.0.1 --rate 20000 > "$TMP/replay.log" 2>&1 || fail "subplane replay failed"
 
 PART=""; MSGS=""
 for _ in $(seq 1 100); do
@@ -68,7 +70,7 @@ UNK=$(json_num unknown_templates "$PART"); DERR=$(json_num decode_errors "$PART"
 [ "${DERR:-0}" -eq 0 ] || fail "decode_errors=$DERR"
 echo "partition ok: $MSGS messages in $PKTS packets"
 
-RING=/dev/shm/subplane.fbtest.three.ring
+RING=/dev/shm/subplane.$NAME.three.ring
 [ -f "$RING" ] || fail "ring missing"
 "$SP" tail "$RING" --from-start --count 100000 > "$TMP/tail.log" 2>&1 || fail "subplane tail failed"
 DATA=$(grep -c " kind=0 " "$TMP/tail.log")
