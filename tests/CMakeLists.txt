@@ -23,7 +23,7 @@ subplane_unit_test(test_spp_codec unit/test_spp_codec.cpp unit/test_sbe_lint.cpp
 subplane_unit_test(test_transport unit/test_transport.cpp)
 subplane_unit_test(test_framing unit/test_framing.cpp)
 # M5 pipeline
-subplane_unit_test(test_pipeline unit/test_pipeline.cpp)
+subplane_unit_test(test_pipeline unit/test_pipeline.cpp unit/test_tap.cpp)
 subplane_unit_test(test_recap unit/test_recap_manager.cpp)
 subplane_unit_test(test_recap_pipeline unit/test_recap_pipeline.cpp)
 if(SUBPLANE_WITH_AERON)

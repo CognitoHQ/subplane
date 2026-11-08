@@ -1,8 +1,19 @@
 #include "subplane/pipeline/partition.h"
 
+#include "subplane/record/pcapng.h"
+#include "subplane/record/sha256.h"
 #include "subplane/registry/component_registry.h"
 
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 
 namespace subplane {
 
@@ -64,6 +75,27 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
             }
             out.lvc = on;
         }
+        if (const auto t = node["tap"]) {
+            if (!t.IsMap()) {
+                err = "partition " + out.name + ": tap must be a map, e.g. tap: { capacity_mb: 256 }";
+                return false;
+            }
+            out.tap = true;
+            out.tap_capacity_bytes = t["capacity_mb"].as<uint64_t>(256u) << 20;
+            out.tap_max_payload = t["max_payload"].as<uint32_t>(65536u);
+            const uint64_t c = out.tap_capacity_bytes;
+            if (c < (64ull << 10) || (c & (c - 1)) != 0) {
+                err = "partition " + out.name + ": tap.capacity_mb must be a power of two";
+                return false;
+            }
+            if (out.tap_max_payload == 0 || out.tap_max_payload > c / 4) {
+                err = "partition " + out.name + ": tap.max_payload must be in [1, capacity/4]";
+                return false;
+            }
+        }
+        YAML::Emitter e;
+        e << node;
+        out.yaml = e.c_str();
     } catch (const YAML::Exception& e) {
         err = "partition " + out.name + ": " + e.what();
         return false;
@@ -106,6 +138,10 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
         if (!schema_.load_file(schema_path, err)) {
             err = "partition " + cfg_.name + ": schema " + schema_path + ": " + err;
             return false;
+        }
+        if (cfg_.tap) { // the recording carries the schema the decoder loaded
+            std::ifstream f(schema_path, std::ios::binary);
+            schema_xml_.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
         }
         if (!sbe_decoder_.init(dcfg, schema_, err)) {
             err = "partition " + cfg_.name + ": decoder: " + err;
@@ -221,6 +257,110 @@ bool Partition::open(std::string& err) {
 
 void Partition::close() noexcept {
     if (transport_) transport_->close();
+    if (tap_ring_) tap_ring_->close();
+}
+
+namespace {
+
+// Where a recorder puts this partition's units in their synthetic UDP header
+// (recording-format.md): the group or host when it is an IPv4 address, else
+// 127.0.0.1; the port, or the Aeron stream id.
+void tap_wrap(const std::string& type, const YAML::Node& t, uint32_t& ip, uint16_t& port) {
+    ip = 0x7F000001u;
+    port = 0;
+    std::string addr;
+    try {
+        if (type == "aeron") {
+            port = static_cast<uint16_t>(t["stream_id"].as<int32_t>(0));
+        } else {
+            port = static_cast<uint16_t>(t["port"].as<int>(0));
+            addr = t[type == "tcp_stream" ? "host" : "group"].as<std::string>("");
+        }
+    } catch (const YAML::Exception&) {
+    }
+    in_addr a{};
+    if (!addr.empty() && ::inet_pton(AF_INET, addr.c_str(), &a) == 1) ip = ntohl(a.s_addr);
+}
+
+bool write_file_atomic(const std::string& path, const std::vector<uint8_t>& bytes, uint32_t mode, std::string& err) {
+    const std::string tmp = path + ".tmp";
+    ::unlink(tmp.c_str());
+    const int fd = ::open(tmp.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+    if (fd < 0) { err = "open " + tmp + ": " + std::strerror(errno); return false; }
+    bool ok = ::fchmod(fd, static_cast<mode_t>(mode & 0666u)) == 0;
+    size_t off = 0;
+    while (ok && off < bytes.size()) {
+        const ssize_t n = ::write(fd, bytes.data() + off, bytes.size() - off);
+        if (n < 0 && errno == EINTR) continue;
+        ok = n > 0;
+        if (ok) off += static_cast<size_t>(n);
+    }
+    if (::close(fd) != 0) ok = false;
+    if (!ok || ::rename(tmp.c_str(), path.c_str()) != 0) {
+        err = "write " + path + ": " + std::strerror(errno);
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool Partition::open_tap(const TapSetup& setup, std::string& err) {
+    if (!cfg_.tap) return true;
+    using namespace record;
+    const std::string base = setup.ring_dir + "/subplane." + setup.agent_name + ".tap." + cfg_.name;
+    tap_path_ = base + ".ring";
+    tap_ctx_path_ = base + ".ctx";
+
+    // The CONTEXT block body, as the recorder writes it at the head of every segment.
+    std::vector<uint8_t> ctx;
+    tlv_put_u32(ctx, SpRecTag::FORMAT_VERSION, kSpRecFormatVersion);
+    tlv_put(ctx, SpRecTag::AGENT_NAME, setup.agent_name);
+    tlv_put(ctx, SpRecTag::AGENT_VERSION, setup.agent_version);
+    tlv_put_u64(ctx, SpRecTag::AGENT_EPOCH, setup.epoch);
+    tlv_put(ctx, SpRecTag::PARTITION, cfg_.name);
+    tlv_put(ctx, SpRecTag::TRANSPORT_TYPE, cfg_.transport_type);
+    tlv_put(ctx, SpRecTag::PARTITION_YAML, cfg_.yaml);
+    const Sha256Digest yh = sha256(cfg_.yaml);
+    tlv_put(ctx, SpRecTag::PARTITION_SHA256, yh.data(), uint32_t(yh.size()));
+    if (!schema_xml_.empty()) {
+        tlv_put(ctx, SpRecTag::SCHEMA_XML, schema_xml_);
+        const Sha256Digest sh = sha256(schema_xml_);
+        tlv_put(ctx, SpRecTag::SCHEMA_SHA256, sh.data(), uint32_t(sh.size()));
+    }
+    bool kernel_ts = false;
+    try {
+        kernel_ts = cfg_.transport_cfg["kernel_timestamps"].as<bool>(false);
+    } catch (const YAML::Exception&) {
+    }
+    tlv_put(ctx, SpRecTag::TS_SOURCE, kernel_ts ? "kernel" : "poll");
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    tap_wrap(cfg_.transport_type, cfg_.transport_cfg, ip, port);
+    uint8_t wrap[8] = {};
+    std::memcpy(wrap, &ip, 4);
+    std::memcpy(wrap + 4, &port, 2);
+    tlv_put(ctx, SpRecTag::WRAP, wrap, sizeof wrap);
+    if (!write_file_atomic(tap_ctx_path_, ctx, setup.ring_mode, err)) {
+        err = "partition " + cfg_.name + ": tap context: " + err;
+        return false;
+    }
+
+    RingConfig rc;
+    rc.capacity_bytes = cfg_.tap_capacity_bytes;
+    rc.max_payload = cfg_.tap_max_payload;
+    rc.session_name = ("tap." + cfg_.name).substr(0, sizeof(RingHeader::session_name) - 1);
+    rc.mode = setup.ring_mode;
+    tap_ring_ = std::make_unique<RingWriter>();
+    if (!tap_ring_->open(rc, tap_path_, setup.epoch, err)) {
+        err = "partition " + cfg_.name + ": tap ring " + tap_path_ + ": " + err;
+        tap_ring_.reset();
+        return false;
+    }
+    tap = tap_ring_.get();
+    tap_seq = 0;
+    return true;
 }
 
 bool Partition::attach(Session* s) noexcept {

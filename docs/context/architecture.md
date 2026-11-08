@@ -257,7 +257,7 @@ Every record is two parts: a fixed header tuple that the agent fills from wherev
 | 46 | `venue_id` | u16 | Venue from the mapped field, 0 if unmapped. |
 | 48 | `partition_id` | u16 | Partition (activation) that produced the record. |
 | 50 | `msg_type` | u8 | `MsgType` for DATA, `ControlCode` otherwise. |
-| 51 | `kind` | u8 | 0 DATA, 1 BUS_ADMIN, 2 AGENT_CONTROL, 3 PAD. |
+| 51 | `kind` | u8 | 0 DATA, 1 BUS_ADMIN, 2 AGENT_CONTROL, 3 PAD, 4 RAW (tap rings only: one received unit; see "Tap"). |
 | 52 | `wire_format` | u8 | 30 = SBE. |
 | 53 | `flags` | u8 | bit0 LVC-truncated, bit1 snapshot-origin. |
 | 54 | `reserved[10]` | | Zero. |
@@ -409,6 +409,17 @@ Planned: the publisher identity check (status 6, with canonical v2's `SourceEpoc
 
 **Canonical schema.** Version 2 (planned) adds `RecapBegin` (21), `RecapEnd` (22), `RecapReject` (23) and `SourceEpoch` on `Heartbeat`, so the feeds package's `spwsgw-snap` can serve canonical streams. A firm's own bus maps its own markers instead.
 
+## Tap
+
+A partition with `tap:` copies every unit its transport delivers into a **tap ring**, for a recorder (`docs/context/recording-format.md`). Built: the tap ring and its context file. Planned: `subplane record`, which writes them to `.pcapng` files.
+
+- **Where:** `<fanout.ring_dir>/subplane.<agent>.tap.<partition>.ring`, an ordinary ring (same layout, reader slots, heartbeat, `CLOSED` on shutdown) whose records are:
+  - `Kind::RAW` records: one per received unit, before framing, so malformed, duplicate and unknown units are kept too. The payload is the unit's bytes (a UDP payload, a TCP stream record, an Aeron message), `ingest_ts` is its receive time, and `sequence` counts every unit offered to the tap from 1: a gap means units the recording lacks.
+  - `TRANSPORT_UP`/`TRANSPORT_DOWN` control records, as sessions get them.
+- **The context file:** `subplane.<agent>.tap.<partition>.ctx`, beside the ring and written before it (atomically), holds the CONTEXT TLVs of the recording format: agent name, version and epoch, the partition's YAML as loaded, the schema XML (`sbe_routing`), their SHA-256, the timestamp source and the synthetic UDP destination. A recorder checks its epoch against the ring's.
+- **Cost:** off, one predictable branch per packet. On, one copy of each unit into the ring, which never blocks: a slow recorder is lapped, and a unit larger than `max_payload` is counted in `tap_dropped`. Measured (`subplane replay --bench --tap`, 3 messages per packet, pinned): about 30 to 40 ns per message more with the tap on.
+- `/partitions` shows the tap's ring, counts and the slowest reader's lag; `/topology` lists the ring downstream with role `record`.
+
 ## Relay (planned)
 
 A separate process (working name `sprelayd`), not the agent: the agent never publishes data (INV-017). It tunnels the bus (gateway) protocol between sites, never an exchange protocol.
@@ -544,12 +555,12 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 |---|---|
 | `GET /health` | `{"status":"ok"}` |
 | `GET /status` | name, version, uptime, epoch, partitions, sessions |
-| `GET /partitions` | per partition: name, id, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts |
+| `GET /partitions` | per partition: name, id, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts; with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
 | `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation, ring-wide `reader_flags`, and `readers` (slot, pid, name, lag bytes, records, overruns, heartbeat, tracing) |
 | `POST /sessions/<name>/trace?on=1\|0[&pid=N][&sample=N]` | latency tracing for the session's readers: every reader, or the slots of one pid; trace 1 record in `sample` |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |
-| `GET /topology` | what the agent consumes (one `data` entry per partition, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it), each by canonical endpoint key: `docs/context/observability.md` |
+| `GET /topology` | what the agent consumes (one `data` entry per partition, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it; one `record` entry per tap ring), each by canonical endpoint key: `docs/context/observability.md` |
 | `GET /metrics` | Prometheus text exposition (`docs/context/observability.md`: every partition, transport, recap, group and session counter, state gauges, the `recv_to_publish` histogram, `subplane_service_info`); `?format=json` for the JSON form |
 | `POST /reload` | re-reads the config file and reconciles the `sessions` section |
 
@@ -559,7 +570,7 @@ Anything else is 404 with a JSON error body. There is no per-session detail path
 
 Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
-- Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, plus `last_unknown_template`.
+- Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `tap_records`, `tap_dropped`, plus `last_unknown_template`.
 - Per session: `published`, `filtered`, `publish_failed`, `ring_overruns` (reserved; the writer cannot observe reader overruns, so it stays 0: each reader reports its own through its reader slot, `subplane_app_overruns_total`).
 - Histogram: one `LogHistogram` per thread group, `recv_to_publish` in ns (receive timestamp to after the packet is published, recorded per packet). 64 power-of-two buckets by 4 sub-buckets (256 total), relative error up to 25%, single writer with relaxed load and store, snapshotted cold for p50, p90, p99, p99.9, min, max, mean. Per-stage histograms are planned.
 - Transports keep their own one-writer counters (`aeron`: fragments, oversize, image events, client errors; `tcp_stream`: connects, disconnects, framing errors), exported through the cold `Transport::counters()`.
@@ -584,6 +595,7 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
 - `lvc` (`on` default | `off`): whether this partition's data feeds the last-value cache. Turn it off for partitions whose values are built from many messages (book updates, accumulated volume), where the last single update would mislead; their state comes from recap (planned) instead.
 - `recap`: the snapshot service for this partition; see "Recap" (config, component and manager implemented; the merge planned).
+- `tap`: `{capacity_mb: 256, max_payload: 65536}` (both optional; the block's presence turns it on): copy every received unit into the partition's tap ring for `subplane record`; see "Tap".
 
 `sessions[]` (reloadable)
 - `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `partitions` (names), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true), `recap` (default false; see "Recap").

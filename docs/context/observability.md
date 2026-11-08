@@ -58,7 +58,9 @@ Label names must match `[a-zA-Z_][a-zA-Z0-9_]*` and must not start with `__`; ot
 | `subplane_control_clients` | gauge | | clients on the control socket |
 | `subplane_symbols`, `subplane_symbols_capacity` | gauge | | symbol table use and size (`agent.max_symbols`) |
 | `subplane_lvc_writes_total` | counter | | last-value cache writes |
-| `subplane_partition_<counter>_total` | counter | partition | every partition counter: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `transport_down`, `transport_up`, `recap_markers` |
+| `subplane_partition_<counter>_total` | counter | partition | every partition counter: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `transport_down`, `transport_up`, `recap_markers`, `tap_records`, `tap_dropped` (units copied to, or too large for, the tap ring) |
+| `subplane_partition_tap_readers` | gauge | partition | with `tap:`, readers (recorders) attached to the partition's tap ring |
+| `subplane_partition_tap_lag_bytes` | gauge | partition | with `tap:`, how far the slowest tap reader is behind the ring head |
 | `subplane_partition_state` | gauge | partition, state | 1 for the current state (`init`, `active`, `degraded`), 0 for the others |
 | `subplane_partition_last_sequence` | gauge | partition | last sequence accepted |
 | `subplane_partition_last_receive_age_seconds` | gauge | partition | seconds since the last packet (0 before the first) |
@@ -190,6 +192,7 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 - **`role`:** what is lost if the edge breaks:
   - `data`: the live stream;
   - `recap`: recovery only;
+  - `record`: a recording only (a partition's tap ring, read by `subplane record`);
   - `control`: a request path, for example a gateway's republish input (planned).
 - **`state`:**
   - for a `data` edge, the transport state: `up`, `down` or `unknown`;

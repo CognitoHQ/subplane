@@ -69,6 +69,7 @@ public:
 private:
     void loop() noexcept;
     void process_packet(Partition& p, const PacketView& pkt) noexcept;
+    void tap_unit(Partition& p, const PacketView& pkt) noexcept;
     void process_message(Partition& p, const uint8_t* msg, uint32_t len, uint64_t recv_ts,
                          const FrameInfo& info) noexcept;
     // Returns false if the packet/message is a duplicate and must be dropped.

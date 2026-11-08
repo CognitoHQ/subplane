@@ -22,6 +22,14 @@ struct PartitionStatus {
     uint64_t    transport_down = 0;
     uint64_t    transport_up = 0;
     std::string recap_json;     // recap counters as JSON; empty without a recap block
+    // tap: (empty tap_ring without one): the ring a recorder reads, what went
+    // into it, and the slowest reader's lag behind the head.
+    std::string tap_ring;
+    uint64_t    tap_records = 0;
+    uint64_t    tap_dropped = 0;
+    uint64_t    tap_bytes = 0;      // ring head
+    uint32_t    tap_readers = 0;
+    uint64_t    tap_lag_bytes = 0;
 };
 
 // One reader's slot as the agent last read it (shm/ring_layout.h). Cold copy;

@@ -62,6 +62,7 @@ void usage() {
         "      --batch N=32         packets per transport poll (max 64)\n"
         "      --cpu N              pin the calling thread\n"
         "      --json               print a JSON object instead of the table\n"
+        "      --tap                also copy every packet into a tap ring (what a recorder reads)\n"
         "exit: 0 ok, 1 runtime failure, 2 bad arguments\n",
         stderr);
 }
@@ -224,6 +225,7 @@ struct BenchOpts {
     uint64_t packets = 200000, warmup = 20000, sessions = 1, symbols_per_session = 0, batch = 32;
     sptool::GenOptions gen;
     int cpu = -1;
+    bool tap = false;
 };
 
 struct RunResult {
@@ -255,6 +257,10 @@ bool run_one(const BenchOpts& o, const YAML::Node& part_node, const std::string&
     using namespace subplane;
     subplane::PartitionConfig pcfg;
     if (!PartitionConfig::parse(part_node, 0, base_dir, pcfg, err)) return false;
+    if (o.tap) {
+        pcfg.tap = true;
+        pcfg.tap_capacity_bytes = 64ull << 20;
+    }
 
     SymbolTable symbols(4096);
     Lvc lvc;
@@ -265,6 +271,18 @@ bool run_one(const BenchOpts& o, const YAML::Node& part_node, const std::string&
     BenchTransport* bench = bt.get();
     // INTENT: transport_override so the config's multicast group is never joined.
     if (!part.build(pcfg, err, std::move(bt)) || !part.open(err)) return false;
+    struct TapFiles { // nobody reads the bench's tap: it is lapped, which costs the writer nothing
+        const Partition& p;
+        ~TapFiles() { if (!p.tap_path().empty()) { ::unlink(p.tap_path().c_str()); ::unlink(p.tap_context_path().c_str()); } }
+    } tap_files{part};
+    if (o.tap) {
+        TapSetup ts;
+        ts.ring_dir = "/dev/shm";
+        ts.agent_name = "ftbench" + std::to_string(::getpid()) + name;
+        ts.agent_version = "bench";
+        ts.epoch = now_ns();
+        if (!part.open_tap(ts, err)) return false;
+    }
 
     // Pre-generate every packet so generation cost is outside the measurement.
     if (!part.schema()) { err = "--bench needs an sbe_routing partition (the generator encodes SBE); partition uses " + std::string(decoder_type_name(part.decoder_type())); return false; }
@@ -366,6 +384,7 @@ int run_bench(const Args& args, std::string& err) {
         err = "--packets/--per-packet/--symbols >= 1, --batch 1..64, --sessions <= 200";
         return 2;
     }
+    o.tap = args.has("tap");
     if (args.has("all-symbols") && o.symbols_per_session > 0) { err = "--all-symbols and --symbols-per-session conflict"; return 2; }
     o.gen.per_packet = per_packet;
     o.gen.symbols = symbols;
@@ -440,7 +459,7 @@ int cmd_replay(int argc, char** argv) {
     if (!args.parse(argc, argv,
                     {"pcap", "port", "host", "rate", "timing", "loop", "config", "packets", "per-packet", "symbols",
                      "mix", "sessions", "symbols-per-session", "batch", "cpu"},
-                    {"bench", "all-symbols", "json", "help"}, err)) {
+                    {"bench", "all-symbols", "json", "tap", "help"}, err)) {
         std::fprintf(stderr, "error: %s\n", err.c_str());
         usage();
         return 2;

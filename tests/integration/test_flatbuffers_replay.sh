@@ -7,7 +7,7 @@
 set -u
 SP=$1; AGENT=$2; FIX=$3; CAP=${4:-fb_sample.pcap}
 NAME=fbtest$( [ "$CAP" = fb_sample.pcap ] || echo ng )
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.$NAME.*.ring' EXIT
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; kill $(jobs -p) 2>/dev/null; rm -f /dev/shm/subplane.$NAME.*.ring /dev/shm/subplane.$NAME.*.ctx' EXIT
 fail() { echo "FAIL: $*"; tail -30 "$TMP"/*.log 2>/dev/null; exit 1; }
 
 # Runs in a subshell so a failed connect (nothing listening yet) only fails the
@@ -39,6 +39,7 @@ partitions:
         - { type: 2, msg_type: QUOTE, symbol: { path: [3, 0, 0], type: u32 }, venue: { path: [3, 0, 1], type: u16 }, exchange_ts: { path: [1], type: u64 }, sequence: { path: [0], type: u64 } }
         - { type: 3, admin: HEARTBEAT, sequence: { path: [0], type: u64 } }
     heartbeat_timeout_ms: 2000
+    tap: { capacity_mb: 8 }
 sessions:
   - { name: three, ring: { capacity_mb: 8, max_payload: 4096 }, partitions: [fb0], symbols: ["1000", "1006", "1031"], msg_types: [TRADE], deliver: { bus_admin: true, agent_control: true } }
 fanout: { ring_dir: /dev/shm }
@@ -83,5 +84,17 @@ QUOTES=$(grep -c " QUOTE " "$TMP/tail.log")
 [ "$BAD" -eq 0 ] || fail "$BAD records for instruments outside the filter"
 [ "$QUOTES" -eq 0 ] || fail "$QUOTES QUOTE records despite the msg_types filter"
 echo "ring ok: trades=$DATA heartbeats=$HB"
+
+# The tap: every datagram, as it arrived, for a recorder.
+TAP=/dev/shm/subplane.$NAME.tap.fb0.ring
+[ -f "$TAP" ] && [ -f "/dev/shm/subplane.$NAME.tap.fb0.ctx" ] || fail "tap ring or context missing"
+TAPJ=$(sed -n 's/.*"tap":{\([^}]*\)}.*/\1/p' <<<"$PART")
+[ "$(json_num records "{$TAPJ}")" = 120 ] || fail "tap records: $TAPJ"
+[ "$(json_num dropped "{$TAPJ}")" = 0 ] || fail "tap dropped: $TAPJ"
+"$SP" tail "$TAP" --from-start --count 100000 > "$TMP/tap.log" 2>&1 || fail "subplane tail on the tap failed"
+RAW=$(grep -c " RAW " "$TMP/tap.log")
+[ "$RAW" -eq 120 ] || fail "expected 120 RAW records on the tap, got $RAW"
+http_get "$API" /topology | grep -q '"role":"record"' || fail "no record edge in /topology"
+echo "tap ok: $RAW units"
 kill $AGENT_PID; wait $AGENT_PID 2>/dev/null
 echo "PASS"

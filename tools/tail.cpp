@@ -25,6 +25,7 @@ volatile sig_atomic_t g_stop = 0;
 void on_signal(int) { g_stop = 1; }
 
 const char* code_name(const TickHeader& h) {
+    if (h.kind == static_cast<uint8_t>(Kind::RAW)) return "RAW"; // a tap ring's received unit
     if (h.kind == static_cast<uint8_t>(Kind::DATA)) {
         switch (static_cast<MsgType>(h.msg_type)) {
             case MsgType::TRADE: return "TRADE";

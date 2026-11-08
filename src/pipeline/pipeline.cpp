@@ -115,6 +115,7 @@ int Pipeline::run_once() noexcept {
             continue;
         }
         for (int i = 0; i < n; ++i) {
+            if (p.tap != nullptr) [[unlikely]] tap_unit(p, batch_.pkts[i]);
             process_packet(p, batch_.pkts[i]);
         }
         handled += n;
@@ -130,6 +131,22 @@ int Pipeline::run_once() noexcept {
     heartbeat_rings(after);
     loops_.store(loops_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     return handled;
+}
+
+// INTENT: the tap copies the unit before framing, so a recording holds what
+// arrived (malformed, duplicate and unknown units too), which is what replay
+// needs to reproduce a run. It is one memcpy into a ring that never blocks: a
+// slow recorder is lapped and writes a LOSS block, it never slows this thread.
+// `sequence` counts every unit offered, so a unit that did not fit (larger than
+// tap.max_payload) is a gap the recorder sees as well.
+[[gnu::noinline]] void Pipeline::tap_unit(Partition& p, const PacketView& pkt) noexcept {
+    TickHeader h{};
+    h.kind = static_cast<uint8_t>(Kind::RAW);
+    h.ingest_ts = pkt.recv_ts_ns;
+    h.partition_id = p.id();
+    h.sequence = ++p.tap_seq;
+    if (p.tap->publish(h, pkt.data, pkt.len)) inc(p.counters.tap_records);
+    else inc(p.counters.tap_dropped);
 }
 
 void Pipeline::process_packet(Partition& p, const PacketView& pkt) noexcept {
@@ -363,6 +380,7 @@ void Pipeline::apply_transport_changes(Partition& p, Transport& t) noexcept {
         ev.last_seq = p.last_seq;
         ev.changed_ns = now;
         emit_control(p, up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, &ev, sizeof(ev), now);
+        if (p.tap != nullptr) p.tap->publish_control(up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, p.id(), now, &ev, sizeof(ev));
         // INTENT: a new publisher instance is a new stream: its sequences say
         // nothing about the old one's, so the next sequence is accepted as a
         // fresh start (as after BUS_SEQ_RESET), on every partition. Comparing
@@ -500,6 +518,9 @@ void Pipeline::heartbeat_rings(uint64_t now) noexcept {
     if (now - last_heartbeat_ns_ < kRingHeartbeatNs) return;
     last_heartbeat_ns_ = now;
     for (Session* sp : sessions_) sp->ring.heartbeat(now);
+    for (Partition* p : partitions_) {
+        if (p->tap != nullptr) p->tap->heartbeat(now);
+    }
 }
 
 // ---------------------------------------------------------------------------

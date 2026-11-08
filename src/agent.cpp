@@ -17,6 +17,7 @@
 #include "subplane/symbol_table.h"
 #include "subplane/control/control_server.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -240,6 +241,19 @@ bool Agent::start() {
         groups_ = std::move(fresh);
     }
 
+    uint32_t ring_mode = 0644;
+    {
+        // Octal, as chmod takes it: "0660" lets a shared group claim reader slots.
+        const std::string mode = config_manager_->get_value<std::string>("agent.ring_mode", "0644");
+        char* end = nullptr;
+        const unsigned long m = std::strtoul(mode.c_str(), &end, 8);
+        if (mode.empty() || *end != '\0' || m > 0777 || (m & 0400) == 0) {
+            std::cerr << "agent.ring_mode: want an octal file mode with owner read, like 0644 or 0660; got '" << mode << "'" << std::endl;
+            return false;
+        }
+        ring_mode = static_cast<uint32_t>(m);
+    }
+
     for (auto& p : partitions_) {
         if (!p->open(err)) {
             LogRegistry::instance().error("AGENT", "START_FAILED", err);
@@ -247,6 +261,24 @@ bool Agent::start() {
             return false;
         }
         LogRegistry::instance().info("PARTITION", "OPEN", p->name() + " " + p->transport().describe());
+    }
+    // INTENT: tap rings open before the pipelines start: a pipeline reads
+    // Partition::tap without synchronisation, so it must be set before then.
+    {
+        TapSetup ts;
+        ts.ring_dir = config_manager_->get_value<std::string>("fanout.ring_dir", "/dev/shm");
+        ts.agent_name = name_;
+        ts.agent_version = version_;
+        ts.epoch = epoch_;
+        ts.ring_mode = ring_mode;
+        for (auto& p : partitions_) {
+            if (!p->open_tap(ts, err)) {
+                LogRegistry::instance().error("AGENT", "START_FAILED", err);
+                for (auto& q : partitions_) q->close();
+                return false;
+            }
+            if (!p->tap_path().empty()) LogRegistry::instance().info("PARTITION", "TAP", p->name() + " " + p->tap_path());
+        }
     }
 
     // INTENT: recap components open before the pipelines start, so a bad
@@ -287,17 +319,7 @@ bool Agent::start() {
     smc.agent_name = name_;
     smc.epoch = epoch_;
     smc.max_symbols = max_symbols_;
-    {
-        // Octal, as chmod takes it: "0660" lets a shared group claim reader slots.
-        const std::string mode = config_manager_->get_value<std::string>("agent.ring_mode", "0644");
-        char* end = nullptr;
-        const unsigned long m = std::strtoul(mode.c_str(), &end, 8);
-        if (mode.empty() || *end != '\0' || m > 0777 || (m & 0400) == 0) {
-            std::cerr << "agent.ring_mode: want an octal file mode with owner read, like 0644 or 0660; got '" << mode << "'" << std::endl;
-            return false;
-        }
-        smc.ring_mode = static_cast<uint32_t>(m);
-    }
+    smc.ring_mode = ring_mode;
     {
         int linger_ms = config_manager_->get_value<int>("control.linger_ms", 5000);
         if (linger_ms < 0) linger_ms = 0;
@@ -391,6 +413,21 @@ AgentStatus Agent::get_status() const {
         ps.transport_down = c.transport_down;
         ps.transport_up = c.transport_up;
         if (p->has_recap()) ps.recap_json = p->recap_counters.to_json();
+        if (const RingWriter* tap = p->tap) {
+            ps.tap_ring = p->tap_path();
+            ps.tap_records = c.tap_records;
+            ps.tap_dropped = c.tap_dropped;
+            ps.tap_bytes = tap->published_head();
+            if (const ReaderSlot* slots = tap->reader_slots()) {
+                for (uint32_t i = 0; i < READER_SLOTS; ++i) {
+                    const uint32_t pid = slots[i].owner_pid.load(std::memory_order_acquire);
+                    if (pid == READER_SLOT_FREE || pid == READER_SLOT_RECLAIMING || pid > 0x7FFFFFFFu) continue;
+                    ++ps.tap_readers;
+                    const uint64_t pos = slots[i].read_pos.load(std::memory_order_relaxed);
+                    if (ps.tap_bytes > pos) ps.tap_lag_bytes = std::max(ps.tap_lag_bytes, ps.tap_bytes - pos);
+                }
+            }
+        }
         s.partitions.push_back(std::move(ps));
     }
     if (sessions_) s.sessions = sessions_->status();
@@ -610,6 +647,14 @@ std::string Agent::render_topology() const {
     o += "],\"downstream\":[";
     const ConsumerScan scan = consumers(st.sessions);
     first = true;
+    // A tap ring is fed to a recorder: losing it loses the recording, not live data.
+    for (const PartitionStatus& ps : st.partitions) {
+        if (ps.tap_ring.empty()) continue;
+        o += first ? "" : ",";
+        first = false;
+        o += "{\"key\":" + jstr(observability::shm_ring_key(ps.tap_ring, host_)) + ",\"role\":\"record\",\"state\":\"up\"";
+        o += ",\"local\":{\"partition\":" + jstr(ps.name) + ",\"readers\":" + std::to_string(ps.tap_readers) + "}}";
+    }
     for (const auto& s : st.sessions) {
         o += first ? "" : ",";
         first = false;
@@ -759,6 +804,14 @@ std::string Agent::render_metrics(const std::string& format) const {
                     {{"direction", "upstream"}, {"role", "recap"}, {"key", recap_keys_[p.id()]}, {"partition", p.name()}},
                     p.recap_counters.connected.load(std::memory_order_relaxed) != 0 ? 1 : 0);
         }
+    }
+    for (const PartitionStatus& ps : st.partitions) {
+        if (ps.tap_ring.empty()) continue;
+        w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
+                {{"direction", "downstream"}, {"role", "record"}, {"key", observability::shm_ring_key(ps.tap_ring, host_)}, {"partition", ps.name}}, 1);
+        w.gauge("subplane_partition_tap_readers", "Readers (recorders) attached to the partition's tap ring", {{"partition", ps.name}}, ps.tap_readers);
+        w.gauge("subplane_partition_tap_lag_bytes", "How far the slowest tap reader is behind the head", {{"partition", ps.name}},
+                static_cast<double>(ps.tap_lag_bytes));
     }
     const ConsumerScan scan = consumers(st.sessions);
     for (const auto& s : st.sessions) {

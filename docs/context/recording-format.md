@@ -9,7 +9,8 @@ Each file carries what is needed to read it: the partition's configuration and t
 What is built and what is planned:
 
 - **Built:** the reader and writer (`include/subplane/record/pcapng.h`, header-only, C++20), pcapng input to `subplane replay --pcap`.
-- **Planned:** the agent's tap ring, `subplane record`, and the `pcap` transport that replays a recording, or any pcap or pcapng capture, through an agent.
+- **Built:** the agent's tap ring and its context file (`tap:` on a partition; architecture.md, "Tap").
+- **Planned:** `subplane record`, and the `pcap` transport that replays a recording, or any pcap or pcapng capture, through an agent.
 
 ## Blocks
 
@@ -53,7 +54,7 @@ Every subplane custom block has the body:
 | Kind | Name | Body |
 |---|---|---|
 | 1 | CONTEXT | a list of TLVs, below. At the head of every segment, before its first packet. |
-| 2 | LOSS | `SpRecLoss` {u64 at_ns, u64 units, u64 bytes, u32 interface, u32 reserved}, 32 bytes: the tap ring lapped the recorder, so `units` units were not recorded. |
+| 2 | LOSS | `SpRecLoss` {u64 at_ns, u64 units, u64 bytes, u32 interface, u32 reserved}, 32 bytes: `units` units the partition received are not in the file (the tap ring lapped the recorder, or a unit did not fit the tap ring or one datagram). `bytes` is 0 when unknown. |
 | 3 | TRANSPORT | `SpRecTransport` {u64 at_ns, u32 interface, u32 up}, 16 bytes: the partition's transport went down (0) or came up (1). |
 
 Readers skip kinds they do not know. A new kind is an additive change.
@@ -76,6 +77,7 @@ A list of `{u16 tag, u16 reserved, u32 length, value, padding to 4}`. Unknown ta
 | 10 | TS_SOURCE | text: `kernel` (SO_TIMESTAMPNS) or `poll` (one clock read per receive batch) |
 | 11 | TRANSPORT_TYPE | text: `udp`, `udp_multicast`, `tcp_stream` or `aeron` |
 | 12 | INTERFACE | u32: the interface this context describes |
+| 13 | WRAP | u32 IPv4 destination (host byte order), u16 destination port, u16 0: what each unit's synthetic UDP header carries |
 
 Why a recording carries its context: the publisher's schema already versions every SBE message (schema id and version in its header), but the XML that was live is easy to lose, and the agent's framing and decoder config change over time. With both in the file, a replay uses the configuration the data was recorded with by default, and an explicit configuration can override it to test new config on old data (planned, with the `pcap` transport).
 

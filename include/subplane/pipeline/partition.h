@@ -6,6 +6,7 @@
 // pipeline thread.
 
 #include "subplane/core/counters.h"
+#include "subplane/fanout/ring_writer.h"
 #include "subplane/decoder/dbn_decoder.h"
 #include "subplane/decoder/flatbuffers_decoder.h"
 #include "subplane/decoder/sbe_routing_decoder.h"
@@ -43,10 +44,27 @@ struct PartitionConfig {
     // messages (books, accumulated volume): those come from recap instead, and a
     // last value of one update would mislead.
     bool        lvc = true;
+    // tap: {capacity_mb, max_payload}: every received unit is also copied into
+    // the partition's tap ring, for `subplane record` (recording-format.md).
+    bool        tap = false;
+    uint64_t    tap_capacity_bytes = 256ull << 20;
+    uint32_t    tap_max_payload = 65536;
+    // The partition's entry as loaded, emitted again as YAML: a recording
+    // carries it so the data can be read without the config file.
+    std::string yaml;
 
     // Parses one entry of the `partitions:` sequence. `id` is the index.
     static bool parse(const YAML::Node& node, uint16_t id, const std::string& base_dir,
                       PartitionConfig& out, std::string& err);
+};
+
+// What the agent knows that a partition's tap context needs (Agent::start).
+struct TapSetup {
+    std::string ring_dir;
+    std::string agent_name;
+    std::string agent_version;
+    uint64_t    epoch = 0;
+    uint32_t    ring_mode = 0644;
 };
 
 enum class PartitionState : uint8_t { INIT = 0, ACTIVE = 1, DEGRADED = 2 };
@@ -64,7 +82,17 @@ public:
                std::unique_ptr<Transport> transport_override = nullptr,
                std::unique_ptr<RecapTransport> recap_override = nullptr);
     bool open(std::string& err);   // opens the transport
-    void close() noexcept;
+    void close() noexcept;         // closes the transport, and marks the tap ring CLOSED
+
+    // Cold, before the pipeline starts. With `tap:` in the config, writes the
+    // context file and then creates the tap ring beside it (in that order, so
+    // a recorder that finds the ring also finds its context). No-op without.
+    bool open_tap(const TapSetup& setup, std::string& err);
+    // The tap's ring path, and its context file (`.ctx`); empty without a tap.
+    const std::string& tap_path() const noexcept { return tap_path_; }
+    const std::string& tap_context_path() const noexcept { return tap_ctx_path_; }
+    // The schema bytes the decoder loaded (sbe_routing only, else empty).
+    const std::string& schema_xml() const noexcept { return schema_xml_; }
 
     // Cold accessors.
     const std::string& name() const noexcept { return cfg_.name; }
@@ -150,6 +178,10 @@ public:
     // Pending recaps and held messages; set by the owning Pipeline when the
     // partition has a recap block, nullptr otherwise.
     RecapState*       recap = nullptr;
+    // The tap ring (nullptr without `tap:`), and the count of units offered to
+    // it, carried in each tap record's `sequence` so the recorder sees losses.
+    RingWriter*       tap = nullptr;
+    uint64_t          tap_seq = 0;
 
     // Hot. Returns false if full or already attached.
     bool attach(Session* s) noexcept;
@@ -172,6 +204,9 @@ private:
     bool                       has_recap_ = false;
     RecapConfig                recap_cfg_;
     std::unique_ptr<RecapTransport> recap_transport_;
+    std::string                schema_xml_;
+    std::unique_ptr<RingWriter> tap_ring_;
+    std::string                tap_path_, tap_ctx_path_;
     bool build_recap(std::unique_ptr<RecapTransport> recap_override, std::string& err);
 };
 

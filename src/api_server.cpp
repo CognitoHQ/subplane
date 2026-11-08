@@ -433,6 +433,11 @@ StringType ApiServer::serialize_partitions(const std::vector<PartitionStatus>& p
           << ",\"last_rx_ns\":" << p.last_rx_ns << ",\"transport\":\"" << p.transport
           << "\",\"transport_down\":" << p.transport_down << ",\"transport_up\":" << p.transport_up;
         if (!p.recap_json.empty()) j << ",\"recap\":" << p.recap_json;
+        if (!p.tap_ring.empty()) {
+            j << ",\"tap\":{\"ring\":\"" << json_escape(p.tap_ring) << "\",\"records\":" << p.tap_records
+              << ",\"dropped\":" << p.tap_dropped << ",\"bytes\":" << p.tap_bytes << ",\"readers\":" << p.tap_readers
+              << ",\"lag_bytes\":" << p.tap_lag_bytes << "}";
+        }
         j << "}";
     }
     j << "]";

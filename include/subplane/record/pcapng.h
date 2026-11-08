@@ -74,13 +74,15 @@ enum class SpRecTag : uint16_t {
     TS_SOURCE = 10,       // text: "kernel" or "poll"
     TRANSPORT_TYPE = 11,  // text: udp, udp_multicast, tcp_stream, aeron
     INTERFACE = 12,       // u32, the pcapng interface id this context describes
+    WRAP = 13,            // u32 IPv4 destination (host order), u16 destination port, u16 0:
+                          // what the recorder puts in each unit's synthetic UDP header
 };
 inline constexpr uint32_t kSpRecFormatVersion = 1;
 
 struct SpRecLoss {
     uint64_t at_ns;      // when the recorder noticed
     uint64_t units;      // units lost (from the tap's sequence)
-    uint64_t bytes;      // tap ring bytes skipped
+    uint64_t bytes;      // tap ring bytes skipped, 0 when unknown
     uint32_t interface;  // pcapng interface id
     uint32_t reserved;
 };
