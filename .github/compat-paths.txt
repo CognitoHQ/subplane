@@ -20,7 +20,7 @@
 ^docs/protocol/
 ^include/subplane/proto/
 
-# Recordings: the .spr format (pcapng with subplane custom blocks)
+# Recordings: the recording format (pcapng with subplane custom blocks)
 ^include/subplane/record/
 ^docs/context/recording-format\.md$
 

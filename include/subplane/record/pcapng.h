@@ -2,7 +2,7 @@
 
 // subplane recordings: a pcapng reader and writer (and the classic pcap reader).
 // Header-only, C++20, libc only. The format and the custom blocks are specified in
-// docs/context/recording-format.md; a .spr file is a valid pcapng file.
+// docs/context/recording-format.md; a recording is a valid pcapng file.
 //
 //   PcapReader rd;                    // classic pcap or pcapng, either byte order
 //   rd.open(bytes, size, err);        // over a buffer the caller owns (mmap or a vector)

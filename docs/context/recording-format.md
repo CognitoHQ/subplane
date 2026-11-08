@@ -1,15 +1,15 @@
-# Recording format (`.spr`)
+# Recording format
 
 A subplane recording holds what an agent's partition **received**: each transport unit as it arrived, with its receive time. It does not hold what the agent made from it. Replay sends the units through an agent again, so the agent that replays rebuilds every ring record; nothing in a recording depends on the ring or record format.
 
-A `.spr` file is a standard **pcapng** file ([IETF draft-ietf-opsawg-pcapng](https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/)). Wireshark, tshark, capinfos, editcap and tcpreplay open it as is, and `subplane replay --pcap` reads it (and classic pcap) today.
+A recording is a standard **pcapng** file ([IETF draft-ietf-opsawg-pcapng](https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/)), named `.pcapng`. There is no subplane file type: Wireshark, tshark, capinfos, editcap and tcpreplay open a recording as is, and `subplane replay --pcap` reads it (and classic pcap) today. Readers tell a subplane recording from any other capture by its CONTEXT block, not by its name.
 
 Each file carries what is needed to read it: the partition's configuration and the schema it was decoded with. A recording can be read years later without asking which config was live that day.
 
 What is built and what is planned:
 
 - **Built:** the reader and writer (`include/subplane/record/pcapng.h`, header-only, C++20), pcapng input to `subplane replay --pcap`.
-- **Planned:** the agent's tap ring, `subplane record`, and the `spr` transport that replays a recording through an agent.
+- **Planned:** the agent's tap ring, `subplane record`, and the `pcap` transport that replays a recording, or any pcap or pcapng capture, through an agent.
 
 ## Blocks
 
@@ -77,7 +77,7 @@ A list of `{u16 tag, u16 reserved, u32 length, value, padding to 4}`. Unknown ta
 | 11 | TRANSPORT_TYPE | text: `udp`, `udp_multicast`, `tcp_stream` or `aeron` |
 | 12 | INTERFACE | u32: the interface this context describes |
 
-Why a recording carries its context: the publisher's schema already versions every SBE message (schema id and version in its header), but the XML that was live is easy to lose, and the agent's framing and decoder config change over time. With both in the file, a replay uses the configuration the data was recorded with by default, and an explicit configuration can override it to test new config on old data (planned, with the `spr` transport).
+Why a recording carries its context: the publisher's schema already versions every SBE message (schema id and version in its header), but the XML that was live is easy to lose, and the agent's framing and decoder config change over time. With both in the file, a replay uses the configuration the data was recorded with by default, and an explicit configuration can override it to test new config on old data (planned, with the `pcap` transport).
 
 ## Not covered, and why
 

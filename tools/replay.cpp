@@ -50,7 +50,7 @@ void usage() {
     std::fputs(
         "usage:\n"
         "  subplane replay --pcap <file> --port <n> [--host 127.0.0.1] [--rate pps|0] [--timing pcap] [--loop N]\n"
-        "      Replays UDP payloads from a pcap or pcapng (.spr). --rate 0 = as fast as possible (default);\n"
+        "      Replays UDP payloads from a pcap or pcapng file. --rate 0 = as fast as possible (default);\n"
         "      --timing pcap reproduces capture gaps (each capped at 1s). --loop 0 = forever.\n"
         "  subplane replay --bench --config <config.yaml> [options]\n"
         "      --packets N=200000   measured packets (a 20k-packet warm-up precedes them)\n"
@@ -80,7 +80,7 @@ struct PcapStats {
     uint64_t records = 0, udp = 0, non_udp = 0, ipv6 = 0, fragments = 0, truncated = 0;
 };
 
-// Classic pcap or pcapng (a .spr recording is pcapng): every IPv4 UDP payload, in file order.
+// Classic pcap or pcapng (subplane recordings are pcapng): every IPv4 UDP payload, in file order.
 // A file cut short replays the packets before the cut and counts it as truncated.
 bool load_pcap(const std::string& path, subplane::record::MappedFile& file, std::vector<PcapPacket>& out,
                PcapStats& st, std::string& err) {

@@ -23,7 +23,7 @@ Most people stop at the first two.
 3. **Reference and specifications:** what the guides summarize, in full.
    - `context/architecture.md`: data flow, ring and record format, control channel, every configuration key, source layout.
    - `context/observability.md`: the metrics, topology and health contract every service serves.
-   - `context/recording-format.md`: the `.spr` recording format (pcapng with embedded context).
+   - `context/recording-format.md`: the recording format (pcapng with embedded context).
    - `protocol/subplane-protocol.md`: the subplane protocol (SPP), normative.
    - `context/invariants.md`: the engineering rules that do not bend.
    - `compat-log.md`: every contract change and what it means for apps, publishers and operators.
