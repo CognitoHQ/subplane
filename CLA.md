@@ -1,6 +1,6 @@
 # Individual Contributor License Agreement
 
-> **Draft, pending legal review.** Adapted from the Apache Software Foundation's Individual Contributor License Agreement V2.2. Until this notice is removed, contributions are not accepted from anyone outside the project.
+> Adapted from the Apache Software Foundation's Individual Contributor License Agreement V2.2.
 
 Thank you for your interest in the projects of Satyanandam Gullapudi, doing business as CognitoHQ (the "Maintainer"). To clarify the intellectual property license granted with Contributions from any person or entity, the Maintainer must have a signed Contributor License Agreement ("CLA") from each Contributor, indicating agreement with the license terms below. This agreement is for your protection as a Contributor as well as the protection of the Maintainer and its users. It does not change your rights to use your own Contributions for any other purpose.
 
