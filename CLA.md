@@ -4,7 +4,7 @@
 
 Thank you for your interest in the projects of Satyanandam Gullapudi, doing business as CognitoHQ (the "Maintainer"). To clarify the intellectual property license granted with Contributions from any person or entity, the Maintainer must have a signed Contributor License Agreement ("CLA") from each Contributor, indicating agreement with the license terms below. This agreement is for your protection as a Contributor as well as the protection of the Maintainer and its users. It does not change your rights to use your own Contributions for any other purpose.
 
-**How to sign:** when you open your first pull request, the CLA Assistant bot asks you to sign this Agreement with your GitHub account. Your signature, the date and the pull request are recorded. If your employer has rights to what you write, see section 4: your employer may need to sign the Corporate CLA (`CLA-corporate.md`) first.
+**How to sign:** in your first pull request to a repository, add one row to `CLA-signatures.md` in that repository: your GitHub handle, your full name, the date, and `individual` (or `corporate: <company>` once your employer has signed the Corporate CLA). Committing that row in your own pull request is your signature to this Agreement. CI checks that the author of every pull request has a row. If your employer has rights to what you write, see section 4: your employer may need to sign the Corporate CLA (`CLA-corporate.md`) first.
 
 You accept and agree to the following terms and conditions for Your Contributions (present and future) that you submit to the Maintainer. Except for the license granted herein to the Maintainer and recipients of software distributed by the Maintainer, You reserve all right, title, and interest in and to Your Contributions.
 

@@ -43,9 +43,8 @@ subplane is source-available under the Functional Source License 1.1 with an
 Apache-2.0 future licence (FSL-1.1-ALv2, see `LICENSE`): use it for anything
 except a competing commercial product or service, and each release becomes
 Apache-2.0 two years after it ships. The app contract (paths in `NOTICE`) is
-Apache-2.0 now. Before a
-first contribution is merged, its author signs the Individual Contributor
-License Agreement (`CLA.md`); the CLA Assistant bot asks on the pull request,
-and signing once covers every later contribution to subplane and
-subplane-feeds. If your employer has rights to what you write, it signs the
-Corporate CLA (`CLA-corporate.md`) first.
+Apache-2.0 now. Before a first contribution is merged, its author signs the Individual
+Contributor License Agreement (`CLA.md`) by adding a row to
+`CLA-signatures.md` in their pull request; CI checks that the author of every
+pull request has one. If your employer has rights to what you write, it signs
+the Corporate CLA (`CLA-corporate.md`) first.

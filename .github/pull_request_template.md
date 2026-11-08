@@ -2,4 +2,4 @@
 
 Compat: <!-- "see docs/compat-log.md" if this PR adds an entry there, or "none (<reason>)" -->
 
-<!-- First contribution? The CLA Assistant bot will ask you to sign CLA.md (and your employer CLA-corporate.md, if it owns your work). -->
+<!-- First contribution? Add your row to CLA-signatures.md in this PR (that signs CLA.md); if your employer owns your work, it signs CLA-corporate.md first. -->
