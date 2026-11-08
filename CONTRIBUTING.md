@@ -45,6 +45,3 @@ License Agreement (`CLA.md`); the CLA Assistant bot asks on the pull request,
 and signing once covers every later contribution to subplane and
 subplane-feeds. If your employer has rights to what you write, it signs the
 Corporate CLA (`CLA-corporate.md`) first.
-
-The agreements are drafts pending legal review; until that notice is removed
-from them, outside contributions are not accepted.
