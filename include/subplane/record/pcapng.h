@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 
 // subplane recordings: a pcapng reader and writer (and the classic pcap reader).

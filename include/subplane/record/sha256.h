@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 
 // SHA-256 (FIPS 180-4), for the hashes a recording's CONTEXT carries

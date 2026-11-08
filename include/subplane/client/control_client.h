@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 
 // subplane app SDK: control channel client (see control/control_proto.h).

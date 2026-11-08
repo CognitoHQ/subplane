@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 
 // On-disk / in-memory layout of a subplane shared-memory ring.

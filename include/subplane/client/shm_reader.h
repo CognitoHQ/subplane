@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 
 // subplane app SDK: zero-copy reader for a subplane shared-memory ring.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // shm_demo_app: the complete app-side contract in one file.
 //
 //   shm_demo_app --socket /run/subplane/subplane.sock [--session demo]
