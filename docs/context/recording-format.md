@@ -43,7 +43,7 @@ Every subplane custom block has the body:
 
 | Offset | Field | Type |
 |---|---|---|
-| 0 | Private Enterprise Number | u32, `kRecPen` |
+| 0 | Private Enterprise Number | u32, `kSpRecPen` |
 | 4 | kind | u32, below |
 | 8 | body length | u32, bytes that follow (before padding) |
 | 12 | body | |
@@ -53,8 +53,8 @@ Every subplane custom block has the body:
 | Kind | Name | Body |
 |---|---|---|
 | 1 | CONTEXT | a list of TLVs, below. At the head of every segment, before its first packet. |
-| 2 | LOSS | `RecLoss` {u64 at_ns, u64 units, u64 bytes, u32 interface, u32 reserved}, 32 bytes: the tap ring lapped the recorder, so `units` units were not recorded. |
-| 3 | TRANSPORT | `RecTransport` {u64 at_ns, u32 interface, u32 up}, 16 bytes: the partition's transport went down (0) or came up (1). |
+| 2 | LOSS | `SpRecLoss` {u64 at_ns, u64 units, u64 bytes, u32 interface, u32 reserved}, 32 bytes: the tap ring lapped the recorder, so `units` units were not recorded. |
+| 3 | TRANSPORT | `SpRecTransport` {u64 at_ns, u32 interface, u32 up}, 16 bytes: the partition's transport went down (0) or came up (1). |
 
 Readers skip kinds they do not know. A new kind is an additive change.
 
