@@ -37,7 +37,14 @@ subplane is infrastructure: correctness and stability over velocity. Read
 - **Security**: privately, never in a public issue; see `SECURITY.md`.
 - **Conduct**: see `CODE_OF_CONDUCT.md`.
 
-## Licence
+## Licence and CLA
 
-By contributing you agree that your contributions are licensed under the
-Apache License 2.0 (see `LICENSE`).
+subplane is licensed under the Apache License 2.0 (see `LICENSE`). Before a
+first contribution is merged, its author signs the Individual Contributor
+License Agreement (`CLA.md`); the CLA Assistant bot asks on the pull request,
+and signing once covers every later contribution to subplane and
+subplane-feeds. If your employer has rights to what you write, it signs the
+Corporate CLA (`CLA-corporate.md`) first.
+
+The agreements are drafts pending legal review; until that notice is removed
+from them, outside contributions are not accepted.
