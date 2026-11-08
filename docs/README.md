@@ -27,7 +27,7 @@ Most people stop at the first two.
    - `protocol/subplane-protocol.md`: the subplane protocol (SPP), normative.
    - `context/invariants.md`: the engineering rules that do not bend.
    - `compat-log.md`: every contract change and what it means for apps, publishers and operators.
-4. **Project:** `context/project-vision.md` (thesis, non-goals, roadmap) and `context/landscape.md` (how subplane compares with other tools), plus `../CONTRIBUTING.md` for working on subplane itself.
+4. **Project:** `context/project-vision.md` (thesis, non-goals, roadmap), plus `../CONTRIBUTING.md` for working on subplane itself.
 
 Everything is implemented unless marked "(planned)".
 
