@@ -54,10 +54,10 @@ TEST_CASE("pcapng: written sections read back: interfaces, ns timestamps, UDP pa
     CHECK(b == 1);
 
     std::vector<uint8_t> ctx;
-    tlv_put_u32(ctx, SprTag::FORMAT_VERSION, kSprFormatVersion);
-    tlv_put(ctx, SprTag::PARTITION, "eq-p0");
-    tlv_put(ctx, SprTag::PARTITION_YAML, "name: eq-p0\ntransport: {type: udp}\n"); // odd length: padded
-    REQUIRE(w.custom(static_cast<uint32_t>(SprBlock::CONTEXT), ctx.data(), uint32_t(ctx.size())));
+    tlv_put_u32(ctx, RecTag::FORMAT_VERSION, kRecFormatVersion);
+    tlv_put(ctx, RecTag::PARTITION, "eq-p0");
+    tlv_put(ctx, RecTag::PARTITION_YAML, "name: eq-p0\ntransport: {type: udp}\n"); // odd length: padded
+    REQUIRE(w.custom(static_cast<uint32_t>(RecBlock::CONTEXT), ctx.data(), uint32_t(ctx.size())));
 
     const uint64_t ts0 = 1'762'400'000'123'456'789ull; // > 2^32 ns: both timestamp words used
     const uint8_t p1[5] = {1, 2, 3, 4, 5};
@@ -67,8 +67,8 @@ TEST_CASE("pcapng: written sections read back: interfaces, ns timestamps, UDP pa
     REQUIRE(w.packet(a, ts0, h, kUdpWrapBytes, p1, sizeof p1));
     REQUIRE(udp_wrap(h, 0x7F000001u, 1001, 0, sizeof p2) == kUdpWrapBytes);
     REQUIRE(w.packet(b, ts0 + 1, h, kUdpWrapBytes, p2, sizeof p2));
-    const SprLoss loss{ts0 + 2, 7, 4096, a, 0};
-    REQUIRE(w.custom(static_cast<uint32_t>(SprBlock::LOSS), reinterpret_cast<const uint8_t*>(&loss), sizeof loss));
+    const RecLoss loss{ts0 + 2, 7, 4096, a, 0};
+    REQUIRE(w.custom(static_cast<uint32_t>(RecBlock::LOSS), reinterpret_cast<const uint8_t*>(&loss), sizeof loss));
     const uint64_t written = w.bytes();
     const auto file = m.close();
     CHECK(file.size() == written);
@@ -82,17 +82,17 @@ TEST_CASE("pcapng: written sections read back: interfaces, ns timestamps, UDP pa
     REQUIRE(items.size() == 4);
 
     CHECK(items[0].kind == PcapItem::CUSTOM);
-    CHECK(items[0].pen == kSprPen);
+    CHECK(items[0].pen == kRecPen);
     CHECK(items[0].copyable);
-    CHECK(items[0].custom_kind == static_cast<uint32_t>(SprBlock::CONTEXT));
+    CHECK(items[0].custom_kind == static_cast<uint32_t>(RecBlock::CONTEXT));
     std::string part, yaml;
     uint32_t ver = 0;
-    CHECK(tlv_each(items[0].data, items[0].caplen, [&](SprTag t, const uint8_t* v, uint32_t n) {
-        if (t == SprTag::PARTITION) part.assign(reinterpret_cast<const char*>(v), n);
-        if (t == SprTag::PARTITION_YAML) yaml.assign(reinterpret_cast<const char*>(v), n);
-        if (t == SprTag::FORMAT_VERSION && n == 4) std::memcpy(&ver, v, 4);
+    CHECK(tlv_each(items[0].data, items[0].caplen, [&](RecTag t, const uint8_t* v, uint32_t n) {
+        if (t == RecTag::PARTITION) part.assign(reinterpret_cast<const char*>(v), n);
+        if (t == RecTag::PARTITION_YAML) yaml.assign(reinterpret_cast<const char*>(v), n);
+        if (t == RecTag::FORMAT_VERSION && n == 4) std::memcpy(&ver, v, 4);
     }));
-    CHECK(ver == kSprFormatVersion);
+    CHECK(ver == kRecFormatVersion);
     CHECK(part == "eq-p0");
     CHECK(yaml == "name: eq-p0\ntransport: {type: udp}\n");
 
@@ -118,9 +118,9 @@ TEST_CASE("pcapng: written sections read back: interfaces, ns timestamps, UDP pa
     CHECK(len == 3);
     CHECK(std::memcmp(items[2].data + off, p2, 3) == 0);
 
-    CHECK(items[3].custom_kind == static_cast<uint32_t>(SprBlock::LOSS));
-    REQUIRE(items[3].caplen == sizeof(SprLoss));
-    SprLoss got{};
+    CHECK(items[3].custom_kind == static_cast<uint32_t>(RecBlock::LOSS));
+    REQUIRE(items[3].caplen == sizeof(RecLoss));
+    RecLoss got{};
     std::memcpy(&got, items[3].data, sizeof got);
     CHECK(got.units == 7);
     CHECK(got.bytes == 4096);

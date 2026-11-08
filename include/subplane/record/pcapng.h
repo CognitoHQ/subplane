@@ -10,7 +10,7 @@
 //   while (rd.next(it) == PcapStatus::Ok) {
 //       if (it.kind == PcapItem::PACKET) { uint32_t off, len;
 //           if (udp_payload(it.linktype, it.data, it.caplen, off, len) == UdpExtract::OK) use(it.data + off, len); }
-//       else if (it.pen == kSprPen) on_custom(it.custom_kind, it.data, it.caplen);
+//       else if (it.pen == kRecPen) on_custom(it.custom_kind, it.data, it.caplen);
 //   }
 //
 //   PcapngWriter w(file);             // a FILE* the caller opened; never closes it
@@ -51,18 +51,18 @@ inline constexpr uint16_t kLinkEthernet = 1;
 // subplane has none yet (to be registered under CognitoHQ). 0 is IANA's reserved
 // value, used here as an obvious placeholder; files written with it are pre-release.
 // When the real PEN lands, readers keep accepting 0 so earlier recordings still read.
-inline constexpr uint32_t kSprPen = 0;
+inline constexpr uint32_t kRecPen = 0;
 
 // Custom block kinds (recording-format.md). The body follows {pen, kind, body_len}.
-enum class SprBlock : uint32_t {
-    CONTEXT = 1,    // TLV list: what is needed to read the segment (SprTag)
-    LOSS = 2,       // SprLoss: the recorder was lapped by the tap
-    TRANSPORT = 3,  // SprTransport: the partition's transport went down or came up
+enum class RecBlock : uint32_t {
+    CONTEXT = 1,    // TLV list: what is needed to read the segment (RecTag)
+    LOSS = 2,       // RecLoss: the recorder was lapped by the tap
+    TRANSPORT = 3,  // RecTransport: the partition's transport went down or came up
 };
 
 // TLV tags of a CONTEXT block. Unknown tags are skipped, so new ones are additive.
-enum class SprTag : uint16_t {
-    FORMAT_VERSION = 1,   // u32, kSprFormatVersion
+enum class RecTag : uint16_t {
+    FORMAT_VERSION = 1,   // u32, kRecFormatVersion
     AGENT_NAME = 2,       // text
     AGENT_VERSION = 3,    // text
     AGENT_EPOCH = 4,      // u64 ns, the tap ring's epoch
@@ -75,23 +75,23 @@ enum class SprTag : uint16_t {
     TRANSPORT_TYPE = 11,  // text: udp, udp_multicast, tcp_stream, aeron
     INTERFACE = 12,       // u32, the pcapng interface id this context describes
 };
-inline constexpr uint32_t kSprFormatVersion = 1;
+inline constexpr uint32_t kRecFormatVersion = 1;
 
-struct SprLoss {
+struct RecLoss {
     uint64_t at_ns;      // when the recorder noticed
     uint64_t units;      // units lost (from the tap's sequence)
     uint64_t bytes;      // tap ring bytes skipped
     uint32_t interface;  // pcapng interface id
     uint32_t reserved;
 };
-static_assert(sizeof(SprLoss) == 32);
+static_assert(sizeof(RecLoss) == 32);
 
-struct SprTransport {
+struct RecTransport {
     uint64_t at_ns;
     uint32_t interface;
     uint32_t up;         // 1 up, 0 down
 };
-static_assert(sizeof(SprTransport) == 16);
+static_assert(sizeof(RecTransport) == 16);
 
 // ------------------------------------------------------------------ helpers
 
@@ -217,7 +217,7 @@ struct PcapItem {
     uint32_t caplen = 0;       // bytes at data
     uint32_t origlen = 0;      // PACKET: length on the wire
     uint32_t pen = 0;          // CUSTOM
-    uint32_t custom_kind = 0;  // CUSTOM (SprBlock for kSprPen)
+    uint32_t custom_kind = 0;  // CUSTOM (RecBlock for kRecPen)
 };
 
 class PcapReader {
@@ -350,7 +350,7 @@ private:
                     it.kind = PcapItem::CUSTOM;
                     it.copyable = type == kBlockCustomCopy;
                     it.pen = detail::rd32(body, swap_);
-                    if (it.pen != kSprPen) { // someone else's block: hand over the raw data
+                    if (it.pen != kRecPen) { // someone else's block: hand over the raw data
                         it.data = body + 4;
                         it.caplen = blen - 4;
                         return PcapStatus::Ok;
@@ -487,7 +487,7 @@ public:
     }
 
     // A custom block: {pen, kind, body_len, body, padding}.
-    bool custom(uint32_t kind, const uint8_t* body, uint32_t body_len, bool copyable = true, uint32_t pen = kSprPen) {
+    bool custom(uint32_t kind, const uint8_t* body, uint32_t body_len, bool copyable = true, uint32_t pen = kRecPen) {
         const uint32_t len = 12 + 12 + detail::pad4(body_len);
         uint8_t h[20];
         put32(h, copyable ? kBlockCustomCopy : kBlockCustomNoCopy); put32(h + 4, len);
@@ -531,7 +531,7 @@ private:
 // ------------------------------------------------------------------ CONTEXT TLVs
 
 // {u16 tag, u16 reserved, u32 len, value, padding to 4}. Built off the data path.
-inline void tlv_put(std::vector<uint8_t>& out, SprTag tag, const void* v, uint32_t len) {
+inline void tlv_put(std::vector<uint8_t>& out, RecTag tag, const void* v, uint32_t len) {
     const size_t at = out.size();
     out.resize(at + 8 + detail::pad4(len), 0);
     const uint16_t t = static_cast<uint16_t>(tag);
@@ -539,11 +539,11 @@ inline void tlv_put(std::vector<uint8_t>& out, SprTag tag, const void* v, uint32
     std::memcpy(out.data() + at + 4, &len, 4);
     if (len != 0) std::memcpy(out.data() + at + 8, v, len);
 }
-inline void tlv_put(std::vector<uint8_t>& out, SprTag tag, std::string_view s) {
+inline void tlv_put(std::vector<uint8_t>& out, RecTag tag, std::string_view s) {
     tlv_put(out, tag, s.data(), uint32_t(s.size()));
 }
-inline void tlv_put_u64(std::vector<uint8_t>& out, SprTag tag, uint64_t v) { tlv_put(out, tag, &v, 8); }
-inline void tlv_put_u32(std::vector<uint8_t>& out, SprTag tag, uint32_t v) { tlv_put(out, tag, &v, 4); }
+inline void tlv_put_u64(std::vector<uint8_t>& out, RecTag tag, uint64_t v) { tlv_put(out, tag, &v, 8); }
+inline void tlv_put_u32(std::vector<uint8_t>& out, RecTag tag, uint32_t v) { tlv_put(out, tag, &v, 4); }
 
 // Walks a CONTEXT body. Returns false on a malformed list.
 template <class Fn>
@@ -556,7 +556,7 @@ bool tlv_each(const uint8_t* p, uint32_t n, Fn&& fn) {
         std::memcpy(&t, p + i, 2);
         std::memcpy(&len, p + i + 4, 4);
         if (len > n - i - 8) return false;
-        fn(static_cast<SprTag>(t), p + i + 8, len);
+        fn(static_cast<RecTag>(t), p + i + 8, len);
         const uint32_t step = 8 + detail::pad4(len);
         if (step > n - i) return true; // last value without its padding
         i += step;
