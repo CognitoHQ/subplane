@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // views_app: read a subplane ring with the generated canonical views, no codec.
 //
 //   views_app <ring path> [--count N] [--seconds N] [--quiet] [--from-start] [--spin] [--latency] [--dump N]

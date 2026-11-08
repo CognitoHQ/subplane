@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #pragma once
 
 // Payload layouts for AGENT_CONTROL records (TickHeader::kind == AGENT_CONTROL).

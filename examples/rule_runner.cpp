@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // rule_runner: function-style consumption of a session.
 //
 //   rule_runner --socket /run/subplane/subplane.sock [--session rules]

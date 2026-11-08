@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // canonical_pub: the smallest publisher that subplane can ingest. Copy this to
 // start a gateway: it depends on nothing but the generated canonical struct
 // header and sockets. No agent code, no SDK.

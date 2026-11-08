@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 <!--
   subplane canonical market-data schema. Flat on purpose: no groups, no varData,
   every scalar naturally aligned at its payload offset (8-byte message header

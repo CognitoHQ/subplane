@@ -426,5 +426,6 @@ Source-available under the [Functional Source License 1.1, Apache-2.0 future lic
 - **Free for any use except competing with it:** run it in production inside your firm, modify it, use it for research, teaching or consulting work.
 - **Not allowed without our consent:** selling it, or offering it (or something substantially like it) as a commercial product or service.
 - **Each release becomes Apache-2.0** two years after it ships.
+- **The app contract is Apache-2.0 now:** the SDK headers, record, ring and control formats, schemas, protocol specs, examples and generated code (paths in `NOTICE`), so apps and publishers need no licence to talk to subplane.
 
 For anything the licence does not cover, open an issue titled "Licence request" (no details needed); licences are granted case by case. See `LICENSE` and `NOTICE`; contribution guidelines (and the CLA) are in `CONTRIBUTING.md`.

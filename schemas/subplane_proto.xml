@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 <!--
   The subplane protocol (SPP): control messages between subplane processes
   (agent, snapshot service, gateway, relay) and, through the agent, apps.
