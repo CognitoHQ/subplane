@@ -31,7 +31,7 @@ Only what builds today:
 - **[Architecture](docs/context/architecture.md)**: data flow, ring and record format, control channel, config reference, source layout
 - **[Invariants](docs/context/invariants.md)**: non-negotiable engineering rules
 - **[Observability](docs/context/observability.md)**: the metrics and topology contract every service serves
-- **[Landscape](docs/context/landscape.md)**: agent vs library vs middleware (Fluent Bit, Helix, OpenMAMA, Aeron, etc.)
+- **[Landscape](docs/context/landscape.md)**: agent vs library vs middleware vs managed feed (public positioning; full competitive notes are private, `.subplane/landscape-notes.md`)
 
 **Maintainer notes** (gitignored, in `.subplane/`; not part of the repository, so a clone does not have them):
 - `decisions.md`: design decision log
