@@ -39,7 +39,7 @@ The contract is the product. The reader headers, record layout and control proto
 
 The one-line version: one app contract for any bus; transport, framing and routing are agent configuration, not application code.
 
-## Why open source, when every large shop could build this
+## Why a shared implementation, when every large shop could build this
 
 Every shop with many apps per box already has a home-grown "subscribe to the bus, filter my symbols, hand me the bytes" layer, usually a library linked into each app. That is not an argument against subplane; it is the same situation Aeron faced. Every serious shop had its own reliable multicast transport, and Aeron still won, because once a good open implementation existed the custom one became a liability: nobody wants to maintain it, new hires do not know it, and vendors do not speak it. The argument was never "you cannot build this", it was "you should stop owning this".
 
@@ -49,6 +49,7 @@ The same applies one layer up. Aeron standardized how bytes move between process
 - Publisher requirements near zero (INV-014). A standard that demands publishers change loses before it starts.
 - Transport independence (above). No single shop's custom layer bothers to do this, and it is what lets a firm migrate buses without touching apps.
 - An operational surface in one place: gaps, degraded partitions, per-session drops, snapshots and filter reloads, visible over HTTP. Custom layers almost never have this because each app team built only what it needed.
+- A licence a firm can run it under without asking: FSL-1.1-ALv2 allows any use except a competing commercial product, internal production use included, and each release becomes Apache-2.0 two years after it ships.
 
 ## Consumption models
 
