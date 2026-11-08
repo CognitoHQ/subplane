@@ -1,0 +1,17 @@
+name: cla
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the author has signed the CLA
+        env:
+          # INTENT: the login goes through an env var, never interpolated into
+          # the script.
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: scripts/check-cla.sh "$AUTHOR"

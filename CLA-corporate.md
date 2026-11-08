@@ -6,7 +6,7 @@ Thank you for your interest in the projects of Satyanandam Gullapudi, doing busi
 
 This version of the Agreement allows an entity (the "Corporation") to submit Contributions to the Maintainer, to authorize Contributions submitted by its designated employees to the Maintainer, and to grant copyright and patent licenses thereto.
 
-**How to sign:** open an issue titled "Corporate CLA" with no other details; the Maintainer arranges a signed copy privately. Each designated employee also signs the Individual CLA (`CLA.md`) with their GitHub account.
+**How to sign:** open an issue titled "Corporate CLA" with no other details; the Maintainer arranges a signed copy privately. Each designated employee then adds a row to `CLA-signatures.md` (see `CLA.md`) marked `corporate: <company>`.
 
 You accept and agree to the following terms and conditions for Your present and future Contributions submitted to the Maintainer. Except for the license granted herein to the Maintainer and recipients of software distributed by the Maintainer, You reserve all right, title, and interest in and to Your Contributions.
 

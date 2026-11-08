@@ -7,7 +7,7 @@
 set -euo pipefail
 
 pr="${1:?usage: scripts/merge-pr.sh <pr-number>}"
-required=(compat-log build-2604-gcc16)
+required=(compat-log build-2604-gcc16 cla)
 
 checks="$(gh pr checks "$pr" --json name,state --jq '.[] | "\(.name) \(.state)"')"
 fail=0
