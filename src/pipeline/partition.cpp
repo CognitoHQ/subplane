@@ -45,7 +45,7 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
             return false;
         }
         // INTENT: yaml-cpp throws InvalidNode when assigning an undefined child
-        // (missing key) to a Node. Clone only what exists; see lessons.md.
+        // (missing key) to a Node. Clone only what exists.
         out.transport_cfg = YAML::Clone(node["transport"]);
         if (node["framing"].IsDefined()) out.framing_node = YAML::Clone(node["framing"]);
         if (!node["decoder"].IsDefined() || !node["decoder"].IsMap()) {

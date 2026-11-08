@@ -28,6 +28,14 @@ subplane is infrastructure: correctness and stability over velocity. Read
 3. Real-packet check: `scripts/fetch-cme-sample.sh` then `ctest -R cme_probe`.
 4. One logical change per commit; explain the why in the message body.
 5. Open a pull request against `main`. CI must be green.
+6. A change to a contract path (`.github/compat-paths.txt`) adds a row to
+   `docs/compat-log.md`, or the PR says `Compat: none (<reason>)`; CI checks it.
+
+## Reporting
+
+- **Bugs and features**: open an issue from the templates.
+- **Security**: privately, never in a public issue; see `SECURITY.md`.
+- **Conduct**: see `CODE_OF_CONDUCT.md`.
 
 ## Licence
 

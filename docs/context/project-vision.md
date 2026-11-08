@@ -4,7 +4,7 @@ Status key: everything below is implemented unless marked "(planned)".
 
 ## Identity
 
-subplane is the subscription plane under the apps: a single-binary routing agent, one instance on each application box. It subscribes to the firm's internal SBE bus, decodes only the fields needed for routing, filters per application, and fans the original SBE bytes out to local apps through shared memory.
+subplane is the subscription plane under the apps: a single-binary routing agent, one instance on each application box. It subscribes to a firm's internal SBE bus, decodes only the fields needed for routing, filters per application, and fans the original SBE bytes out to local apps through shared memory.
 
 It is not a decoder: it never fully decodes a message, and apps decode SBE with their own generated codecs. It is not a broker: data flows one way (bus to agent to apps) and apps never publish through it. Control may flow upstream, but only to services declared in config: the planned recap path sends snapshot requests to a publisher's sister snapshot service on behalf of the box (see "Recovery: recap").
 
@@ -107,7 +107,7 @@ build/examples/rule_runner --socket /tmp/subplane.sock --from-start --seconds 10
 - **Ring per session.** Memory grows linearly with instances; fifty identical workers means fifty rings. The fix is a per-partition payload arena with header-only session rings (roadmap item 2), which also keeps fan-out cost per session at one cache line when a bus sends large units such as batched FlatBuffers or book snapshots; it is on the roadmap because these two cases depend on it.
 - **One pipeline core per thread group.** Per-session cost is small, but many sessions on a hot partition still serialize on one core. Thread groups are static at startup, so capacity is provisioned ahead of a burst.
 - **Hard caps.** 256 sessions per partition; fine for apps, tight for a fleet of tiny workers.
-- **Snapshot is last value, not history.** Anything beyond the ring's capacity needs the firm's archive. State that is not a last value (books, accumulated volume) needs recap (planned).
+- **Snapshot is last value, not history.** Anything beyond the ring's capacity needs a separate archive. State that is not a last value (books, accumulated volume) needs recap (planned).
 - **Parallel functions break ordering.** The ring is ordered per session; a runtime that runs functions concurrently owns per-symbol ordering. Sharding by symbol into separate sessions keeps the guarantee.
 - **Invocation granularity.** A process per record is hopeless at tick rates. Functions run in-process or in a warm pool; the runtime, not the agent, chooses the isolation level.
 - **Session adoption** by a replacement instance with a new identity (an orchestrated pod) is not designed yet; today the replacement attaches by name within the linger window or creates a new session.
@@ -125,7 +125,7 @@ Exchange -> firm feed handler -> internal bus (topics x partitions, published SB
                   local apps (decode SBE themselves with generated codecs)
 ```
 
-subplane does not talk to exchanges. Its input is the firm's own bus, which already carries SBE messages described by a published schema.
+subplane does not talk to exchanges. Its input is a firm's own bus, which already carries SBE messages described by a published schema.
 
 ## What apps get
 
@@ -144,7 +144,7 @@ Apps decode the SBE payload with their own codecs generated from the publisher's
 
 Tier: tens of microseconds on kernel sockets (`recvmmsg`, optional busy-poll). A "low microseconds" claim was withdrawn: kernel UDP alone is 5 to 20 microseconds, so single-digit microseconds was never reachable without kernel bypass.
 
-First measured numbers (from `.subplane/decisions.md`, 2026-10-12). These are loopback and in-process figures on a 12-core dev box, not a production NIC:
+First measured numbers (2026-10-12). These are loopback and in-process figures on a 12-core dev box, not a production NIC:
 
 - In-process bench (`subplane replay --bench`, pinned pipeline thread, no busy-poll, 3 SBE messages per packet, 100 symbols, batch 32, 16 MB rings). Frame, routing decode and filter cost about 100 ns per message. Each attached session adds about 30 ns per message (filter check plus ring memcpy).
 
@@ -215,7 +215,7 @@ Recap (planned) adds one optional requirement, only for publishers that want it:
 - **Rust rewrite.** No stable ABI, same C-ABI endpoint, ecosystem and familiarity favour C++20. Switching cost is lowest now, and the decision is noted as revisitable.
 - **ITCH as the first target.** ITCH is order-by-order, so nothing app-useful comes out without a book builder. The thesis is bulk tick feeds that already carry trades, quotes and book deltas.
 - **Aeron IPC as the v1 app contract.** It would make the Aeron client API part of the app contract. The v1 contract is a small header-only reader under our control. Aeron ingest is implemented (2026-10-13; the media driver is now a build dependency), so an `aeron_ipc` fan-out component beside the shared-memory ring is back on the roadmap (item 9), as an option, not the contract.
-- **A general app publishing API** (rejected 2026-10-12, narrowed the same day). A free-form app-to-agent-to-apps path would make subplane a broker. What is planned instead is `shm_ingest`: a local app writes one-way into a ring the agent reads as just another partition (schema, framing, sequence, routing, fan-out), so derived data produced on the box reaches every other app over the same contract. Flow stays one-way per partition; nothing is routed back to its producer; leaving the box is still the firm's bus's job. Reason for the change: every shop generates derived data and needs a publishing layer, vendors do not offer one, and small shops have no bus for it.
+- **A general app publishing API** (rejected 2026-10-12, narrowed the same day). A free-form app-to-agent-to-apps path would make subplane a broker. What is planned instead is `shm_ingest`: a local app writes one-way into a ring the agent reads as just another partition (schema, framing, sequence, routing, fan-out), so derived data produced on the box reaches every other app over the same contract. Flow stays one-way per partition; nothing is routed back to its producer; leaving the box is still the bus's job. Reason for the change: every shop generates derived data and needs a publishing layer, vendors do not offer one, and small shops have no bus for it.
 - **`dlopen` plugins.** They contradict zero-cost dispatch and cross a C++ ABI. YAML activation of compiled-in components gives the operational flexibility without foreign code.
 
 ## Roadmap

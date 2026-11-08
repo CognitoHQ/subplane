@@ -1,0 +1,33 @@
+name: Bug
+description: The agent, a tool or the SDK does something it should not.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The partition YAML, the schema if it matters, and the input (a pcap is ideal). Strip anything private.
+      render: yaml
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "`subplaned --version`, or the commit you built"
+    validations: { required: true }
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS and kernel, NIC, transport (UDP, TCP, Aeron), how it was built (scripts/dev.sh or otherwise).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and metrics
+      description: Agent log lines, `/partitions` or `/metrics` output around the problem.
+      render: text

@@ -3,7 +3,7 @@
 The agent binary is `subplaned` (CMake target `subplaned`, `src/main.cpp`). The operator CLI is `subplane` (`tools/subplane.cpp`, one subcommand per tool: `probe`, `tail`, `schema`, `send`, `replay`, `dbn-sim`, `aeron-pub`, `soak`).
 
 ## What This Is
-A single-binary routing agent for the firm's internal SBE bus, one per application box. It subscribes to bus partitions over UDP multicast, finds message boundaries by walking the published SBE schema, decodes only routing fields, filters per application session, and fans the original SBE bytes out through per-session shared-memory rings. Apps decode SBE with their own codecs; they no longer deserialize, filter or route. Not a decoder, not a broker.
+A single-binary routing agent for a firm's internal SBE bus, one per application box. It subscribes to bus partitions over UDP multicast, finds message boundaries by walking the published SBE schema, decodes only routing fields, filters per application session, and fans the original SBE bytes out through per-session shared-memory rings. Apps decode SBE with their own codecs; they no longer deserialize, filter or route. Not a decoder, not a broker.
 
 ## Project Phase: v1 IMPLEMENTED
 Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline, shm rings, control channel, last-value cache, HTTP cold API, tools, tests, CI. Aeron ingest done (roadmap item 9a). Docs reset done (M9). Framing and schema walk validated on real CME MDP 3.0 packets (`scripts/fetch-cme-sample.sh`, `ctest -R cme_probe`). Build order for what comes next is the numbered roadmap in `docs/context/project-vision.md` (per-entry symbol routing, shared rings, generic SBE decoder, recorder, `shm_ingest`, kdb+ feed, Databento, Python, Aeron, Kafka). Licence: Apache-2.0. Repository stays private until it is rebranded under the CognitoHQ organization.
@@ -33,11 +33,11 @@ Only what builds today:
 - **[Observability](docs/context/observability.md)**: the metrics and topology contract every service serves
 - **[Landscape](docs/context/landscape.md)**: agent vs library vs middleware (Fluent Bit, Helix, OpenMAMA, Aeron, etc.)
 
-**Private docs** (gitignored, in `.subplane/`):
-- **[Decisions](.subplane/decisions.md)**: Design decision log
-- **[Plan](.subplane/plan.md)**: Current/next sprint plan
-- **[Tasks](.subplane/tasks.md)**: Backlog and unplanned work
-- **[Lessons](.subplane/lessons.md)**: Corrections and patterns to avoid
+**Maintainer notes** (gitignored, in `.subplane/`; not part of the repository, so a clone does not have them):
+- `decisions.md`: design decision log
+- `plan.md`: current/next sprint plan
+- `tasks.md`: backlog and unplanned work
+- `lessons.md`: corrections and patterns to avoid
 
 ## Philosophy
 - **On-box agent, not middleware.** Runs next to the apps it serves. One bus subscription per box, not per app. Data flows one way: bus to agent to apps, no app publishing. Control may flow upstream, only to services declared in config (recap requests to a snapshot service, planned).

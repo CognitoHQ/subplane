@@ -13,7 +13,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# -O2 over -O3 by decision (see .subplane/decisions.md).
+# -O2 over -O3: -O3's aggressive inlining and vectorization change code layout
+# and behaviour in ways that are hard to predict; -O2 is the safer default for
+# infrastructure. Revisit only with benchmark numbers.
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")

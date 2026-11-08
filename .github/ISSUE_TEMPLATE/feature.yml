@@ -1,0 +1,21 @@
+name: Feature
+description: A transport, encoding, fan-out or tool subplane should have.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need, and why
+      description: The problem first. subplane routes and fans out; it does not decode for apps or broker messages (docs/context/project-vision.md, non-goals).
+    validations: { required: true }
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it could look like
+      description: Config, API or CLI you have in mind, if any.
+  - type: checkboxes
+    id: roadmap
+    attributes:
+      label: Checked
+      options:
+        - label: I looked at the roadmap in docs/context/project-vision.md
