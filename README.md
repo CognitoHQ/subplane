@@ -31,7 +31,7 @@ What it deliberately is not: a decoder (apps keep their own codecs and full deco
 
 ## What it takes off a market data team
 
-Low-latency market data usually means hiring for the same list: Linux and network programming, CPU architecture, exchange protocols, profiling, packet capture and replay, threads and lock-free code. Most of what those engineers build first is the same plumbing at every firm. subplane and [subplane-feeds](https://github.com/satyan-g/subplane-feeds) build it once, in the open, so a team's time goes to what sets it apart.
+Low-latency market data usually means hiring for the same list: Linux and network programming, CPU architecture, exchange protocols, profiling, packet capture and replay, threads and lock-free code. Most of what those engineers build first is the same plumbing at every firm. subplane and [subplane-feeds](https://github.com/CognitoHQ/subplane-feeds) build it once, in the open, so a team's time goes to what sets it apart.
 
 | Skill | Built once here | Still yours |
 |---|---|---|
@@ -206,7 +206,7 @@ flowchart LR
 Two paths, chosen by what the state is:
 
 - **Self-contained values** (instrument definition, trading status, last quote, last trade): the newest message is the whole state. The agent's last-value cache serves it over the control channel; the app seeds from it and tails the ring. Built.
-- **State built from many messages** (books, session volume, VWAP): the publisher's sister snapshot service holds it. The agent asks once per symbol for its whole box, holds that symbol's live messages for the waiting apps only, and merges the reply by sequence. Built: the agent side, and the snapshot service for the crypto gateways in [subplane-feeds](https://github.com/satyan-g/subplane-feeds).
+- **State built from many messages** (books, session volume, VWAP): the publisher's sister snapshot service holds it. The agent asks once per symbol for its whole box, holds that symbol's live messages for the waiting apps only, and merges the reply by sequence. Built: the agent side, and the snapshot service for the crypto gateways in [subplane-feeds](https://github.com/CognitoHQ/subplane-feeds).
 
 ```mermaid
 sequenceDiagram
