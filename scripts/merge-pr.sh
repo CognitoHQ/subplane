@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Merge a pull request only when its required checks have passed.
 #   scripts/merge-pr.sh <pr-number>
-# INTENT: the repo is private on a free plan, so GitHub cannot mark checks as
-# required. This script is the gate instead: use it rather than the merge
-# button or a bare `gh pr merge`.
+# INTENT: written when the repo was private on a free plan and GitHub could not
+# mark checks as required. main is protected now (the same three checks), and
+# this script stays the habit: it names the failing check before trying.
 set -euo pipefail
 
 pr="${1:?usage: scripts/merge-pr.sh <pr-number>}"

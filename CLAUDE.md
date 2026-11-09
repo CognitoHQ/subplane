@@ -52,7 +52,7 @@ Only what builds today:
 - **Opus 4.6 for planning**: architecture, research, design decisions, reviews.
 - **Sonnet 4.6 for execution**: writing code, scaffolding, tests, mechanical changes.
 - **Update docs as we go.** Every decision/finding gets captured in the right doc.
-- **Record compatibility impact.** Any change to a contract path (`.github/compat-paths.txt`: ring, header, control protocol, SDK, canonical schema, config vocabulary, HTTP API) adds an entry to `docs/compat-log.md` or states `Compat: none (<reason>)`; CI checks it. Merge PRs only with `scripts/merge-pr.sh <n>`, which refuses unless the checks passed (branch protection is unavailable on this plan). Version numbers stay frozen until the first release.
+- **Record compatibility impact.** Any change to a contract path (`.github/compat-paths.txt`: ring, header, control protocol, SDK, canonical schema, config vocabulary, HTTP API) adds an entry to `docs/compat-log.md` or states `Compat: none (<reason>)`; CI checks it. Merge PRs only with `scripts/merge-pr.sh <n>`, which refuses unless the checks passed (main is also protected: build, compat-log and cla are required). Version numbers stay frozen until the first release.
 - **Lean CLAUDE.md.** Details live in context docs, lazy-loaded when needed.
 - **Measure before optimizing.** Use latency metrics to justify performance changes.
 - **Private docs stay private.** Strategy and research in `.subplane/` (gitignored).

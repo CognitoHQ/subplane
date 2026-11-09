@@ -38,7 +38,7 @@ Low-latency market data usually means hiring for the same list: Linux and networ
 | Linux, network programming, CPU | `recvmmsg` batches, optional busy-poll and kernel receive timestamps, shared-memory rings and core pinning, all inside the agent. Apps include one header-only reader. | Tuning the box: IRQ affinity, isolated cores, NIC settings. Kernel bypass (Onload, ef_vi, DPDK) is not built; the budget is tens of microseconds on kernel sockets. |
 | Market data protocols | Message boundaries and lengths from the published SBE schema, with no hand-written handler per message; DBN and FlatBuffers routed the same way. Exchange WebSocket feeds (Binance, Coinbase, Kraken, Bitstamp, OKX) normalized to one canonical schema by YAML packs. Gaps, publisher restarts, late join and book recap handled by the agent and a snapshot service. | Order entry: out of scope, since data flows one way. A venue without a pack: a pack is YAML, not a new handler. |
 | Profiling and optimization | Apps stop decoding, filtering and routing, so that cost leaves them. Every hop is measured: latency histograms and counters on `/metrics` (Prometheus), the data flow on `/topology`, and `subplane replay --bench` for the pipeline in process. | Your strategy code. |
-| Packet capture, dissection and replay | `subplane probe` checks a framing description against live packets, `subplane replay --pcap` puts a capture back on the wire, `subplane tail` prints a ring, and gateways record and replay their input byte for byte. A recorder of ring records, replayed through the agent so apps run unmodified against history, is planned. | |
+| Packet capture, dissection and replay | `subplane probe` checks a framing description against live packets, `subplane replay --pcap` puts a capture back on the wire, `subplane tail` prints a ring, and gateways record and replay their input byte for byte. Recording the agent's input as standard `.pcapng` (opens in Wireshark and tcpreplay) and replaying it through the agent, so apps run unmodified against history, is being built: the pcapng format and the tap ring are in, the `subplane record` tool and the `pcap` transport are next. | |
 | Threads and lock-free code | Single-writer rings and one-writer counters, written and tested once. An app polls its own ring, and a slow app overruns only itself. | Concurrency inside your apps. |
 
 ### Build on it
@@ -257,16 +257,16 @@ flowchart LR
 
 ## Quick start
 
-Needs Docker: `scripts/dev.sh` builds and runs everything in the toolchain image (`docker/Dockerfile`: Ubuntu 26.04, GCC 16, C++26; INV-007), built on first use. On an Ubuntu 26.04 host, `sudo scripts/deps-2604.sh` installs the same toolchain and the commands below work without the image. The Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java); `-DSUBPLANE_WITH_AERON=OFF` drops the fetch and the `aeron` transport.
+Needs Docker: `scripts/dev.sh` builds and runs everything in the toolchain image (`docker/Dockerfile`: Ubuntu 26.04, GCC 16, C++26), built on first use. On an Ubuntu 26.04 host, `sudo scripts/deps-2604.sh` installs the same toolchain and the commands below work without the image. The Aeron C client and media driver are fetched and built at configure time (`cmake/aeron.cmake`, pinned tag, no Java); `-DSUBPLANE_WITH_AERON=OFF` drops the fetch and the `aeron` transport.
 
 ```bash
 scripts/dev.sh test       # build ./build and run ctest, in the image
-scripts/dev.sh shell      # the binaries need 26.04's glibc: run the rest inside it
+scripts/dev.sh shell      # the binaries need 26.04's glibc: run the rest inside it (or prefix each with scripts/dev.sh run)
 
 # Local demo config: unicast instead of multicast, so no network setup is needed.
-sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/ft.yaml
+sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/subplane-demo.yaml
 
-build/subplaned --config /tmp/ft.yaml &
+build/subplaned --config /tmp/subplane-demo.yaml &
 
 # Synthetic publisher, using the same framing as config.yaml.
 FRAMING='{packet_header: [{name: seq, type: u64le}, {name: count, type: u16le}], message_prefix: [{name: len, type: u16le}], sequence: packet_header.seq, length: message_prefix.len}'
