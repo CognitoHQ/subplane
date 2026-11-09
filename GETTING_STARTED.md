@@ -10,14 +10,16 @@ All commands run from the repository root. Run each long-lived process in its ow
 scripts/dev.sh test        # builds ./build in the toolchain image, then runs ctest
 ```
 
-The build runs in Docker, in the toolchain image (`docker/Dockerfile`: Ubuntu 26.04, GCC 16), built on first use. The binaries need Ubuntu 26.04's glibc and libstdc++, so run them through `scripts/dev.sh run <cmd>` on an older host. On an Ubuntu 26.04 host, `sudo scripts/deps-2604.sh` installs the same toolchain and plain `cmake` works. pugixml and doctest are vendored.
+The build runs in Docker, in the toolchain image (`docker/Dockerfile`: Ubuntu 26.04, GCC 16), built on first use. pugixml and doctest are vendored.
+
+The binaries need Ubuntu 26.04's glibc and libstdc++. On any other host, put `scripts/dev.sh run` in front of each `build/...` command below, in every terminal: each run is a fresh container, but all of them share the host's network, `/dev/shm` and `/tmp`, so the agent in one terminal and `tail` or an app in another see the same rings and control socket, and `curl` works from the host. On an Ubuntu 26.04 host, `sudo scripts/deps-2604.sh` installs the same toolchain, plain `cmake` works, and the commands run as written.
 
 ## 2. Make a local config
 
 `config.yaml` subscribes to multicast group 239.1.1.1. For a local run, switch to unicast (empty `group`) and make the schema path absolute:
 
 ```bash
-sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/ft.yaml
+sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/subplane-demo.yaml
 ```
 
 The config defines one partition `eq-p0` (UDP port 30001, framed as an 8-byte sequence plus 2-byte count packet header and a 2-byte length prefix per message) and one session `alpha` that wants TRADE and QUOTE for all symbols.
@@ -25,10 +27,10 @@ The config defines one partition `eq-p0` (UDP port 30001, framed as an 8-byte se
 ## 3. Start the agent (terminal 1)
 
 ```bash
-build/subplaned --config /tmp/ft.yaml
+build/subplaned --config /tmp/subplane-demo.yaml
 ```
 
-Look for a `CONTROL LISTENING` log line. The control socket is `/run/subplane/subplane.sock` if that directory is writable, otherwise the fallback `/tmp/subplane.sock`. The session ring appears at `/dev/shm/subplane.subplane.alpha.ring` (`subplane.<agent>.<session>.ring`).
+Look for a `CONTROL LISTENING` log line. If it fails with `BIND_FAILED Address already in use`, something else holds port 8080: add `-e 's/port: 8080/port: 8089/'` to the `sed` in step 2 and use that port with `curl` below. The control socket is `/run/subplane/subplane.sock` if that directory is writable, otherwise the fallback `/tmp/subplane.sock`. The session ring appears at `/dev/shm/subplane.subplane.alpha.ring` (`subplane.<agent>.<session>.ring`).
 
 ## 4. Check framing with subplane probe (optional, terminal 2)
 
@@ -85,7 +87,7 @@ Check `curl -s localhost:8080/sessions` while it runs: `demo` shows `owner: clie
 
 ## 9. Change sessions at runtime
 
-Edit the `sessions:` section of `/tmp/ft.yaml` (for example add a symbol list or a message type), then:
+Edit the `sessions:` section of `/tmp/subplane-demo.yaml` (for example add a symbol list or a message type), then:
 
 ```bash
 curl -s -X POST localhost:8080/reload
@@ -97,7 +99,7 @@ Only the `sessions` section is reloadable; partitions, framing and decoder chang
 ## 10. Benchmark the pipeline in-process
 
 ```bash
-build/tools/subplane replay --bench --config /tmp/ft.yaml --sessions 2 --packets 200000
+build/tools/subplane replay --bench --config /tmp/subplane-demo.yaml --sessions 2 --packets 200000
 ```
 
 This drives the pipeline on the calling thread with an in-memory transport and prints the `recv_to_publish` histogram. Add `--cpu N` to pin and `--json` for machine-readable output. It measures the agent, not the kernel socket; see `docs/context/project-vision.md` for how to read the numbers.
