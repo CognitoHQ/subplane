@@ -63,7 +63,7 @@ flowchart LR
         FP["Firm SBE publishers"]
     end
     BUS(["Internal bus<br/>SBE over Aeron or UDP multicast"])
-    SNAP["Snapshot service<br/>per publisher"]:::planned
+    SNAP["Snapshot service<br/>per publisher"]
     RELAY["Relay<br/>to other sites"]:::planned
     subgraph BOX["Each application box"]
         AG["subplaned<br/>subscribe once, route, filter"]
@@ -76,7 +76,7 @@ flowchart LR
     BUS --> AG
     AG --> R1 & R2 & R3
     BUS --> SNAP
-    AG <-. "recap: request, then state as of S" .-> SNAP
+    AG <-- "recap: request, then state as of S" --> SNAP
     BUS --> RELAY
     classDef planned stroke-dasharray: 5 5
 ```
@@ -92,7 +92,7 @@ flowchart TB
     subgraph PL["Publisher layer: model aware"]
         direction TB
         P1["Gateways and firm publishers<br/>publish the stream"]
-        P2["Snapshot service<br/>state as of sequence S"]:::planned
+        P2["Snapshot service<br/>state as of sequence S"]
         P3["Site instrument master<br/>ids, names, venues"]:::planned
     end
     subgraph AG["subplaned: model free"]
@@ -103,7 +103,7 @@ flowchart TB
         L4["Symbol discovery<br/>interning, SYMBOL_MAPPED, SYMBOLS, /symbols"]
         L5["Sequence and liveness<br/>gaps, degraded, recovered"]
         L6["Last-value cache<br/>self-contained values"]
-        L6b["Recap and merge<br/>hold, merge at S"]:::planned
+        L6b["Recap and merge<br/>hold, merge at S"]
         L7["Filter and fan-out<br/>one ring per session"]
         L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7
         L5 --> L6b --> L7
@@ -111,7 +111,7 @@ flowchart TB
     A1["App API<br/>ring reader, control channel, typed views"]
     P1 --> L1
     P3 -. definitions in band .-> P1
-    L6b <-. recap .-> P2
+    L6b <-- recap --> P2
     L7 --> A1
     classDef planned stroke-dasharray: 5 5
 ```
@@ -136,7 +136,7 @@ Planned: the agent binds the publisher id to the human name it reads from defini
 
 ### Last-value cache
 
-The cache holds one record per instrument and message type, for values where the newest message is the whole state: instrument definition, trading status, last quote, last trade. A late joiner reads it over the control channel (`SNAPSHOT`, or `GET /lvc/{symbol}?type=` for an operator), seeds its state, and tails the ring. It never holds a book or an accumulated value such as session volume: those are built from many messages with the publisher's rules, and come from the publisher's snapshot service through recap (planned).
+The cache holds the newest record per instrument and message type. That record is the whole state only for self-contained values: instrument definition, trading status, last quote, last trade. A late joiner reads it over the control channel (`SNAPSHOT`, or `GET /lvc/{symbol}?type=` for an operator), seeds its state, and tails the ring. For a book or an accumulated value such as session volume the newest message is only the last change: that state is built from many messages with the publisher's rules, and comes from the publisher's snapshot service through recap. A partition carrying such state can set `lvc: off`.
 
 ## Deployment patterns
 
@@ -146,7 +146,7 @@ The cache holds one record per instrument and message type, for values where the
 | The same bus on many boxes | [2. Many boxes](#2-many-boxes) | built |
 | Exchanges that speak WebSocket and JSON | [3. Gateways](#3-exchanges-through-gateways) | built (five crypto venues) |
 | Several buses or encodings | [4. Mixed sources](#4-mixed-sources-one-contract) | built |
-| Apps that start late, restart or miss data | [5. Late join and recovery](#5-late-join-and-recovery) | last value built, recap planned |
+| Apps that start late, restart or miss data | [5. Late join and recovery](#5-late-join-and-recovery) | built (recap needs a snapshot service; one ships for the crypto gateways) |
 | Apps at another site | [6. Across sites](#6-across-sites) | planned |
 | Derived data produced on the box | [7. Publishing on the box](#7-publishing-on-the-box) | planned |
 
@@ -320,7 +320,7 @@ Everything in the docs is implemented unless marked "(planned)".
 
 ## Checked against real packets
 
-`scripts/fetch-cme-sample.sh` downloads 27 public CME MDP 3.0 packets and CME's schema (v9 and v13), and `ctest -R cme_probe` replays them through the production framer and schema walker with a framing block written from CME's documentation. Every message length from the schema walk matches the wire. The test skips when the sample has not been fetched.
+`scripts/fetch-cme-sample.sh` downloads 27 publicly posted CME MDP 3.0 packets (from open-source repositories and a Databento sample) and CME's schema (v9 and v13), and `ctest -R cme_probe` replays them through the production framer and schema walker with a framing block written from CME's documentation. With the v9 schema every template is known and every message length from the schema walk matches the wire; v13 no longer has two of the sample's templates (32 and 35), and the test checks that too. The test skips when the sample has not been fetched.
 
 A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/subplane dbn-sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
 
@@ -334,7 +334,7 @@ A flat SBE message (no groups, no varData) is a fixed block behind the 8-byte me
 
 ```bash
 build/tools/subplane schema --schema schemas/sample_md.xml --views all --out out/
-# wrote out/sample_md_views.h  out/sample_md_views.py  out/sample_md_views.q
+# wrote out/sample_md_views.h, out/sample_md_views.py, out/sample_md_views.q (out/ is created if missing)
 # emitted Trade, Quote, Ticker, Heartbeat, SeqReset; skipped BookUpdate: has groups (Levels)
 ```
 

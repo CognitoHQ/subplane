@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Typed views generated from the shipped schemas at build time by `subplane schema`.
 # sp_generate_views(<xml> <namespace>) defines the outputs under ${SP_GENERATED_DIR};
 # consumers add ${SP_GENERATED_DIR} to their include path and list the header as a source.

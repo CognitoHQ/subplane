@@ -8,8 +8,9 @@ release.
 
 The app contract is licensed under the Apache License, Version 2.0 (see
 LICENSE-APACHE), so apps, publishers and other implementations can use it
-without the FSL's conditions. It is these paths; the files carry
-`SPDX-License-Identifier: Apache-2.0`:
+without the FSL's conditions. It is every file under these paths; source files
+there carry `SPDX-License-Identifier: Apache-2.0`, and this notice covers the
+rest (the documents, the generated SPP codec):
 - include/subplane/client/          (app SDK: ring reader, control client)
 - include/subplane/shm/             (ring layout, control events)
 - include/subplane/core/message.h   (record header)
