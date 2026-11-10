@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Example apps. They depend only on the client headers (plus core/clock.h), not on subplane_core.
 # INTENT: apps compile the client headers and generated views with their own toolchains, so the
 # examples build as C++20 while the agent is C++26 (INV-007). Raising this lets C++23/26 leak into

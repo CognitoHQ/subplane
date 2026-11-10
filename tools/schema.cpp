@@ -18,6 +18,7 @@
 #include "subplane/decoder/sbe_views.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -31,11 +32,18 @@ void usage() {
                "       subplane schema --schema X.xml --lint [--control] [--routing F,F...] [--admin ID,ID...] [--against OLD.xml] [--strict]\n", stderr);
 }
 
-bool write_file(const std::string& path, const std::string& body, std::string& err) {
+// Writes DIR/NAME, creating DIR if needed; returns the path written (empty on error).
+std::string write_file(const std::string& dir, const std::string& name, const std::string& body, std::string& err) {
+    const std::filesystem::path out = dir.empty() ? std::filesystem::path(".") : std::filesystem::path(dir);
+    std::error_code ec;
+    std::filesystem::create_directories(out, ec);
+    if (ec) { err = "cannot create " + out.string() + ": " + ec.message(); return {}; }
+    const std::string path = (out / name).string();
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) { err = "cannot write " + path; return false; }
+    if (!f) { err = "cannot write " + path; return {}; }
     f << body;
-    return static_cast<bool>(f);
+    if (!f) { err = "cannot write " + path; return {}; }
+    return path;
 }
 
 } // namespace
@@ -87,8 +95,8 @@ int cmd_schema(int argc, char** argv) {
         std::string body;
         if (!emit_cpp_codec(schema, copt, body, err)) { std::fprintf(stderr, "subplane schema: codec: %s\n", err.c_str()); return 1; }
         if (args.has("stdout")) { std::fwrite(body.data(), 1, body.size(), stdout); return 0; }
-        const std::string path = args.str("out", "") + "/" + views_basename(schema) + "_codec.h";
-        if (!write_file(path, body, err)) { std::fprintf(stderr, "subplane schema: %s\n", err.c_str()); return 1; }
+        const std::string path = write_file(args.str("out", ""), views_basename(schema) + "_codec.h", body, err);
+        if (path.empty()) { std::fprintf(stderr, "subplane schema: %s\n", err.c_str()); return 1; }
         std::fprintf(stderr, "wrote %s\n", path.c_str());
         return 0;
     }
@@ -125,8 +133,8 @@ int cmd_schema(int argc, char** argv) {
         if (args.has("stdout")) {
             std::fwrite(body.data(), 1, body.size(), stdout);
         } else {
-            const std::string path = dir + "/" + base + "_views." + (k == "cpp" ? "h" : k == "numpy" ? "py" : "q");
-            if (!write_file(path, body, err)) { std::fprintf(stderr, "subplane schema: %s\n", err.c_str()); return 1; }
+            const std::string path = write_file(dir, base + "_views." + (k == "cpp" ? "h" : k == "numpy" ? "py" : "q"), body, err);
+            if (path.empty()) { std::fprintf(stderr, "subplane schema: %s\n", err.c_str()); return 1; }
             std::fprintf(stderr, "wrote %s\n", path.c_str());
         }
     }

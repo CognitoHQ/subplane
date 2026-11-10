@@ -122,7 +122,7 @@ partitions:
   #   heartbeat_timeout_ms: 5000
 
   # The same canonical stream over Aeron: what subplane-feeds gateways publish (e.g. `spwsgw --pack packs/binance-spot.yaml`).
-  # One SBE message per offer, so the whole fragment is the message and Sequence comes from it.
+  # An offer holds one or more whole canonical messages back to back; the schema walk splits them and Sequence comes from each.
   # Try it: build/tools/subplane aeron-pub --channel aeron:ipc --stream-id 1001 --count 1000   (attaches to the agent's embedded driver)
   #         or a real feed: spwsgw --pack packs/binance-spot.yaml --symbols BTCUSDT --channel aeron:ipc --stream-id 1001 --aeron-dir <this agent's aeron_dir>
   # - name: canonical_aeron
@@ -138,7 +138,15 @@ partitions:
   #     schema: schemas/subplane_canonical.xml
   #     fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
   #     symbol_id_mode: table
-  #     messages: [ { template: 1, msg_type: TRADE }, { template: 2, msg_type: QUOTE }, { template: 100, admin: HEARTBEAT } ]
+  #     messages:                     # every canonical template: an unlisted one is dropped before its Sequence is read, so it shows as a gap
+  #       - { template: 1,   msg_type: TRADE }
+  #       - { template: 2,   msg_type: QUOTE }
+  #       - { template: 3,   msg_type: BOOK_UPDATE }
+  #       - { template: 4,   msg_type: BOOK_SNAPSHOT }
+  #       - { template: 5,   msg_type: OHLCV }
+  #       - { template: 6,   msg_type: STATUS }
+  #       - { template: 10,  msg_type: DEFINITION }  # InstrumentDefinition
+  #       - { template: 100, admin: HEARTBEAT }
   #   heartbeat_timeout_ms: 5000
 
 # Operator-defined sessions. Apps may also create their own over the control channel.
