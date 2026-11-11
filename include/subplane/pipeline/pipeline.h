@@ -74,7 +74,11 @@ private:
                          const FrameInfo& info) noexcept;
     // Returns false if the packet/message is a duplicate and must be dropped.
     bool check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept;
-    void publish_data(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept;
+    // `stream_seq` is the partition's sequence of the record (h.sequence may be
+    // the instrument's); the recap hold and floors work in stream sequences.
+    void publish_data(Partition& p, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept;
+    void instrument_gap(Partition& p, const TickHeader& h, uint64_t expected, uint64_t received, uint64_t now) noexcept;
+    void inst_reset(Partition& p) noexcept;
     void publish_admin(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept;
     void emit_control(Partition& p, ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept;
     void emit_control_all(ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept;
@@ -87,7 +91,8 @@ private:
     void publish_partition_state(Partition& p) noexcept;
 
     // Recap (architecture.md, "Recap"). Pipeline thread only.
-    const RecapPending* recap_hold(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept;
+    const RecapPending* recap_hold(Partition& p, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept;
+    void recap_symbol_stale(Partition& p, uint32_t symbol_id, SymbolStaleReason reason, uint64_t now) noexcept;
     void recap_track(Session& s, const FilterTable* before, const FilterTable* after, uint64_t now) noexcept;
     void recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now) noexcept;
     void recap_drop_waiter(Partition& p, RecapPending& e, Session& s) noexcept;
@@ -120,6 +125,11 @@ private:
     // CANCEL would leave the manager retrying for nobody, dropping a release
     // would leak a reply slab.
     std::vector<std::unique_ptr<RecapState>> recap_states_;
+    // INTENT: one array per topic that maps instrument_sequence, sized by the
+    // symbol table at add_partition (INV-002), shared by the topic's partitions:
+    // the instrument's count is the topic's, whichever partition carries it.
+    std::vector<std::vector<uint64_t>> inst_states_;
+    uint32_t              max_symbols_ = 0;
     std::vector<RecapCommand> recap_out_;
     std::vector<RecapRelease> release_out_;
     size_t                recap_out_cap_ = 0;

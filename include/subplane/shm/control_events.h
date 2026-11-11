@@ -31,6 +31,20 @@ struct GapEvent {
     uint64_t detected_ns;
 };
 
+// INSTRUMENT_GAP: one instrument's sequence (the publisher's count of it in the
+// topic, canonical InstrumentSeq) jumped, whichever partition carried it.
+// Written to the sessions whose filter takes the symbol, before the record that
+// jumped. received > expected always (a record at or below the last is a
+// duplicate and dropped).
+struct InstrumentGapEvent {
+    uint32_t symbol_id;
+    uint16_t topic_id;
+    uint16_t reserved0;
+    uint64_t expected_seq;
+    uint64_t received_seq;
+    uint64_t detected_ns;
+};
+
 // TOPIC_DEGRADED / TOPIC_RECOVERED. DEGRADED each time the count of the
 // topic's degraded partitions changes and is not zero; RECOVERED when it
 // reaches zero. `partitions` is how many of the topic's partitions this agent
@@ -132,6 +146,7 @@ enum class SymbolStaleReason : uint16_t {
     TRANSPORT_DOWN    = 2, // reserved: a transport going down is not a trigger by itself
     PUBLISHER_RESTART = 3, // TRANSPORT_UP{PUBLISHER_RESTART}
     SEQUENCE_RESET    = 4, // BUS_SEQ_RESET, or a backward jump beyond dup_window
+    INSTRUMENT_GAP    = 5, // this symbol's instrument sequence jumped (INSTRUMENT_GAP); only this symbol
 };
 struct SymbolStaleEvent {
     uint32_t symbol_id;
@@ -144,6 +159,7 @@ struct SymbolStaleEvent {
 #pragma pack(pop)
 
 static_assert(sizeof(GapEvent) == 32);
+static_assert(sizeof(InstrumentGapEvent) == 32);
 static_assert(sizeof(TopicStateEvent) == 24);
 static_assert(sizeof(TransportStateEvent) == 24);
 static_assert(sizeof(FilterReloadedEvent) == 8);
@@ -153,6 +169,7 @@ static_assert(sizeof(SymbolMappedEvent) == 32);
 static_assert(sizeof(RecapEvent) == 32);
 static_assert(sizeof(SymbolStaleEvent) == 24);
 static_assert(std::is_trivially_copyable_v<GapEvent>);
+static_assert(std::is_trivially_copyable_v<InstrumentGapEvent>);
 static_assert(std::is_trivially_copyable_v<SymbolMappedEvent>);
 
 } // namespace subplane

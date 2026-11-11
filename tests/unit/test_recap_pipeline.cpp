@@ -246,10 +246,10 @@ TEST_CASE("recap state: hash index survives collisions and deletes; holds span c
     TickHeader h{};
     for (uint64_t s = 1; s <= 6; ++s) {
         h.sequence = s;
-        REQUIRE(st.hold(e, h, payload.data(), 100)); // 164 bytes each: 6 fit in 16 chunks of 64
+        REQUIRE(st.hold(e, h, h.sequence, payload.data(), 100)); // 164 bytes each: 6 fit in 16 chunks of 64
     }
     h.sequence = 7;
-    CHECK_FALSE(st.hold(e, h, payload.data(), 100));
+    CHECK_FALSE(st.hold(e, h, h.sequence, payload.data(), 100));
     uint64_t want = 1;
     st.for_each_held(e, [&](const TickHeader& hh, const uint8_t* p, uint32_t len) {
         CHECK(hh.sequence == want++);
@@ -259,7 +259,7 @@ TEST_CASE("recap state: hash index survives collisions and deletes; holds span c
     CHECK(want == 7);
     st.free_holds(e);
     CHECK(st.free_chunks() == st.total_chunks());
-    REQUIRE(st.hold(e, h, payload.data(), 100));
+    REQUIRE(st.hold(e, h, h.sequence, payload.data(), 100));
 }
 
 TEST_CASE("recap merge: snapshot, COMPLETE, then the held messages above S; live sessions are never delayed") {
@@ -746,4 +746,92 @@ TEST_CASE("recap triggers: no recap session, no recap work; a transport bounce a
     CHECK(got[2].hdr.kind == static_cast<uint8_t>(Kind::DATA));
     CHECK(r.part.recap->generation() == gen);
     CHECK(r.requests().empty());
+}
+
+TEST_CASE("recap with instrument sequences: snapshot records carry the instrument's; a jump recaps only that symbol") {
+    // MarketSegmentID stands in for an instrument sequence (CME RptSeq) here.
+    std::string yaml = partition_yaml();
+    yaml.replace(yaml.find("fields: { symbol: SecurityID, sequence: SeqNum }"), 48,
+                 "fields: { symbol: SecurityID, sequence: SeqNum, instrument_sequence: MarketSegmentID }");
+    Rig r(yaml);
+    const SbeSchema& sc = *r.part.schema();
+    const FieldDef* iseq_field = sc.find_field(*sc.find_message(1), "MarketSegmentID");
+    REQUIRE(iseq_field);
+    const auto trade_i = [&](uint64_t sec, uint64_t seq, uint64_t iseq, uint64_t t) {
+        std::vector<uint8_t> b = trade(sec, seq, t);
+        std::memcpy(b.data() + sc.header().size + iseq_field->offset, &iseq, iseq_field->size);
+        return b;
+    };
+    const auto live = [&](uint64_t sec, uint64_t iseq) {
+        ++r.seq;
+        r.fake->push(trade_i(sec, r.seq, iseq, r.seq), now_ns());   // tag = the stream sequence
+        r.pipe.run_once();
+    };
+    auto live_app = r.app({1001, 2002}, false);
+    live(1001, 1);   // stream 1
+    live(1001, 2);   // stream 2
+    auto rec = r.app({1001, 2002}, true);
+    REQUIRE(r.requests().size() == 2);
+    rec->drain();    // RECAP_PENDING x2
+    r.reply(2002, 2, {});   // 2002 has no state: an empty snapshot, live from here
+    r.reply(1001, 2, {trade_i(1001, 0, 2, 100)});
+    auto got = rec->drain();
+    REQUIRE(got.size() == 5);   // 2002: BEGIN, COMPLETE; 1001: BEGIN, record, COMPLETE
+    size_t i = 0;
+    while (i < got.size() && !(is(got[i], ControlCode::RECAP_BEGIN) && recap_ev(got[i]).symbol_id == r.sym(1001))) ++i;
+    REQUIRE(i + 2 < got.size());
+    CHECK(got[i + 1].hdr.kind == static_cast<uint8_t>(Kind::DATA));
+    CHECK(got[i + 1].hdr.sequence == 2);   // the instrument's sequence as of S, not S
+    CHECK((got[i + 1].hdr.flags & FLAG_SNAPSHOT_ORIGIN) != 0);
+    CHECK(is(got[i + 2], ControlCode::RECAP_COMPLETE));
+
+    live(1001, 3);   // stream 3
+    live(2002, 1);   // stream 4
+    got = rec->drain();
+    REQUIRE(got.size() == 2);
+    CHECK(got[0].hdr.sequence == 3);
+    CHECK(got[1].hdr.sequence == 1);
+
+    // 1001 jumps 3 -> 5 (the stream did not): only 1001 is recapped.
+    live(1001, 5);   // stream 5, held
+    live(2002, 2);   // stream 6, live
+    live(1001, 6);   // stream 7, held
+    got = rec->drain();
+    REQUIRE(got.size() == 4);
+    CHECK(is(got[0], ControlCode::INSTRUMENT_GAP));
+    CHECK(is(got[1], ControlCode::SYMBOL_STALE));
+    SymbolStaleEvent se{};
+    std::memcpy(&se, got[1].payload.data(), sizeof se);
+    CHECK(se.symbol_id == r.sym(1001));
+    CHECK(se.reason == static_cast<uint16_t>(SymbolStaleReason::INSTRUMENT_GAP));
+    CHECK(is(got[2], ControlCode::RECAP_PENDING));
+    CHECK(got[3].hdr.symbol_id == r.sym(2002));
+    CHECK(got[3].hdr.sequence == 2);
+    const auto reqs = r.requests();
+    REQUIRE(reqs.size() == 1);
+    CHECK(reqs[0].symbol_id == r.sym(1001));
+    CHECK(r.part.counters.snapshot().gaps == 0);
+    CHECK(r.part.counters.snapshot().inst_gaps == 1);
+
+    // A snapshot as of stream 5 (instrument 5): the held stream-7 record follows it.
+    r.reply(1001, 5, {trade_i(1001, 0, 5, 200)}, 4);
+    got = rec->drain();
+    REQUIRE(got.size() == 4);
+    CHECK(is(got[0], ControlCode::RECAP_BEGIN));
+    CHECK(got[1].hdr.sequence == 5);
+    CHECK(tag(got[1]) == 200);
+    CHECK(is(got[2], ControlCode::RECAP_COMPLETE));
+    CHECK(got[3].hdr.sequence == 6);
+    CHECK(tag(got[3]) == 7);
+
+    // The live session saw the gap and every record, by instrument sequence.
+    std::vector<std::pair<uint32_t, uint64_t>> seen;
+    bool gap = false;
+    for (auto& x : live_app->drain()) {
+        if (is(x, ControlCode::INSTRUMENT_GAP)) gap = true;
+        if (x.hdr.kind == static_cast<uint8_t>(Kind::DATA)) seen.emplace_back(x.hdr.symbol_id, x.hdr.sequence);
+    }
+    CHECK(gap);
+    const uint32_t a = r.sym(1001), b = r.sym(2002);
+    CHECK(seen == std::vector<std::pair<uint32_t, uint64_t>>{{a, 1}, {a, 2}, {a, 3}, {b, 1}, {a, 5}, {b, 2}, {a, 6}});
 }

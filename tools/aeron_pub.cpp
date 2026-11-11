@@ -25,6 +25,7 @@
 #include <sched.h>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifndef SP_CANONICAL_SCHEMA
 #define SP_CANONICAL_SCHEMA "schemas/subplane_canonical.xml"
@@ -56,11 +57,14 @@ bool offer(aeron_exclusive_publication_t* pub, const uint8_t* msg, size_t len, u
 }
 
 // Canonical prefix shared by every data message.
-void prefix(const SbeSchema& s, uint8_t* msg, const MessageDef& m, uint32_t instrument, uint64_t seq) {
+// `iseq` is the instrument's own count (canonical InstrumentSeq); a schema
+// without the field skips it.
+void prefix(const SbeSchema& s, uint8_t* msg, const MessageDef& m, uint32_t instrument, uint64_t seq, uint64_t iseq) {
     const uint64_t ts = now_ns();
     sptool::set_u64(s, msg, m, "InstrumentId", instrument);
     sptool::set_u64(s, msg, m, "VenueId", 1);
     sptool::set_u64(s, msg, m, "Sequence", seq);
+    if (iseq != 0) sptool::set_u64(s, msg, m, "InstrumentSeq", iseq);
     sptool::set_u64(s, msg, m, "ExchangeTs", ts);
     sptool::set_u64(s, msg, m, "RecvTs", ts);
 }
@@ -134,19 +138,20 @@ int cmd_aeron_pub(int argc, char** argv) {
     uint8_t buf[1024];
     sptool::MessageBuilder b(s);
     uint64_t seq = 0, sent = 0, heartbeats = 0;
+    std::vector<uint64_t> iseq(symbols + 1, 0);
     while (count == 0 || sent < count) {
         const uint32_t sym = static_cast<uint32_t>(1 + sent % symbols);
         const int64_t px = 100'000'000'000ll + static_cast<int64_t>(sym) * 1'000'000'000ll + static_cast<int64_t>(sent % 50) * 10'000'000ll;
         if (sent % 2 == 0) {
             b.begin(*trade, buf, sizeof buf);
-            prefix(s, buf, *trade, sym, ++seq);
+            prefix(s, buf, *trade, sym, ++seq, ++iseq[sym]);
             sptool::set_u64(s, buf, *trade, "Price", static_cast<uint64_t>(px));
             sptool::set_u64(s, buf, *trade, "Qty", 250'000'000);
             sptool::set_u64(s, buf, *trade, "TradeId", seq);
             sptool::set_u64(s, buf, *trade, "Aggressor", 1 + seq % 2);
         } else {
             b.begin(*quote, buf, sizeof buf);
-            prefix(s, buf, *quote, sym, ++seq);
+            prefix(s, buf, *quote, sym, ++seq, ++iseq[sym]);
             sptool::set_u64(s, buf, *quote, "BidPx", static_cast<uint64_t>(px - 10'000'000));
             sptool::set_u64(s, buf, *quote, "BidQty", 1'000'000'000);
             sptool::set_u64(s, buf, *quote, "AskPx", static_cast<uint64_t>(px + 10'000'000));
@@ -158,7 +163,7 @@ int cmd_aeron_pub(int argc, char** argv) {
         ++sent;
         if (hb_every && sent % hb_every == 0) {
             b.begin(*hb, buf, sizeof buf);
-            prefix(s, buf, *hb, 0, ++seq);
+            prefix(s, buf, *hb, 0, ++seq, 0);
             if (!b.ok() || !offer(pub, buf, b.size(), offer_timeout_ns)) { std::fputs("subplane aeron-pub: heartbeat offer failed\n", stderr); return 1; }
             ++heartbeats;
         }

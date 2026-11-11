@@ -98,11 +98,14 @@ public:
 
     // Hot. Appends one message to e's hold list; false (nothing written) when
     // the arena lacks room or the message is larger than kMaxHeldPayload.
-    bool hold(RecapPending& e, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept;
+    // `stream_seq` is the message's partition sequence: the merge compares it
+    // with the snapshot's S, while h.sequence may be the instrument's.
+    bool hold(RecapPending& e, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept;
     void free_holds(RecapPending& e) noexcept;
 
     // Calls f(const TickHeader&, const uint8_t* payload, uint32_t len) for
-    // each held message in arrival order. The payload points into a scratch
+    // each held message in arrival order, with the stream sequence given to
+    // hold() in the header's seq_tag. The payload points into a scratch
     // buffer valid until the next call.
     template <class F>
     void for_each_held(const RecapPending& e, F&& f) noexcept {

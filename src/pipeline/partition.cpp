@@ -263,6 +263,12 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
             err = "partition " + cfg_.name + ": decoder: " + err;
             return false;
         }
+        // INTENT: the instrument state is an array indexed by symbol id, so
+        // the ids must be the table's dense ones; passthrough ids are any u32.
+        if (sbe_decoder_.maps_instrument_sequence() && sbe_decoder_.symbol_passthrough()) {
+            err = "partition " + cfg_.name + ": decoder: instrument_sequence needs symbol_id_mode: table";
+            return false;
+        }
         walker = &sbe_decoder_.walker();
     } else if (dtype == "dbn") {
         decoder_type_ = DecoderType::DBN;

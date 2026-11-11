@@ -24,7 +24,7 @@ Read the reference that matches the task before you write XML:
 2. **Gather the facts.**
    - Who sends it, and who reads it.
    - How often: per tick, or rarely.
-   - Which fields routing needs: instrument, sequence, exchange time, venue.
+   - Which fields routing needs: instrument, sequence, instrument sequence (optional, per instrument across the topic), exchange time, venue.
    - Whether the value is self-contained (last value wins) or built up from many messages (a book, accumulated volume). Built-up state needs recap, not the last-value cache.
    - For a change to an existing schema: the current XML.
 3. **Draft the XML** with the rules in the matching reference:

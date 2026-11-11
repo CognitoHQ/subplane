@@ -70,7 +70,7 @@ struct Tpl {
     const MessageDef* def = nullptr;
     const FieldDef *sec = nullptr, *seq = nullptr, *ts = nullptr, *seg = nullptr, *px = nullptr, *qty = nullptr,
                    *side = nullptr, *bidpx = nullptr, *bidqty = nullptr, *askpx = nullptr, *askqty = nullptr,
-                   *newseq = nullptr, *seqfield = nullptr;
+                   *newseq = nullptr, *seqfield = nullptr, *iseq = nullptr;
     const GroupDef *levels = nullptr, *orders = nullptr;
     const FieldDef *l_px = nullptr, *l_qty = nullptr, *l_side = nullptr, *o_id = nullptr, *o_qty = nullptr;
     const FieldDef *action = nullptr, *level = nullptr; // canonical BookUpdate (flat, one level)
@@ -99,6 +99,7 @@ public:
             t.side = find_f(f, "Side", "Aggressor"); t.bidpx = find_f(f, "BidPx"); t.bidqty = find_f(f, "BidQty");
             t.askpx = find_f(f, "AskPx"); t.askqty = find_f(f, "AskQty"); t.newseq = find_f(f, "NewSeq");
             t.action = find_f(f, "Action"); t.level = find_f(f, "Level");
+            t.iseq = find_f(f, "InstrumentSeq");   // canonical: each instrument counted 1, 2, 3 ...
             if (cfg_.seq_source == SeqSource::MESSAGE_FIELD) {
                 t.seqfield = find_f(f, cfg_.seq_field);
                 if (!t.seqfield) { err = std::string(what) + " has no sequence field " + cfg_.seq_field; return false; }
@@ -119,6 +120,7 @@ public:
             !bind_tpl(reset_, 101, o_.seq_reset_at > 0, "SeqReset")) return false;
         // Canonical prices are int64 scaled by 1e-9: make the synthetic numbers read as sane prices/sizes.
         canonical_ = s_.package() == "subplane.canonical";
+        iseq_.assign(o_.symbols + 1, 0);
 
         auto find_ff = [](const std::vector<FramingField>& v, const std::string& n) -> const FramingField* {
             for (const auto& f : v) if (f.name == n) return &f;
@@ -204,6 +206,7 @@ private:
             setf(root, t.sec, sym);
             setf(root, t.ts, now_ns());
             setf(root, t.seg, 1);
+            if (kind == GenKind::TRADE || kind == GenKind::QUOTE || kind == GenKind::BOOK) setf(root, t.iseq, ++iseq_[sym]);
             switch (kind) {
                 case GenKind::TRADE:
                     setf(root, t.px, px); setf(root, t.qty, (1 + rnd() % 500) * qscale); setf(root, t.side, 1 + rnd() % 2);
@@ -265,6 +268,7 @@ private:
     Tpl trade_, quote_, book_, hb_, reset_;
     const FramingField *seqf_ = nullptr, *countf_ = nullptr, *lenf_ = nullptr;
     uint64_t next_pkt_seq_ = 1, msg_seq_ = 0, msg_no_ = 0, sym_n_ = 0, nmsg_ = 0;
+    std::vector<uint64_t> iseq_;   // per symbol, for InstrumentSeq
     bool canonical_ = false;
     uint64_t rng_ = 0x9E3779B97F4A7C15ULL;
     GenStats st_;

@@ -20,7 +20,7 @@ static_assert(static_cast<uint32_t>(TransportReason::LOCAL_FAILURE) == static_ca
 static_assert(static_cast<uint32_t>(TransportReason::PUBLISHER_RESTART) == static_cast<uint32_t>(TransportStateReason::PUBLISHER_RESTART));
 
 Pipeline::Pipeline(std::string name, uint64_t epoch, SymbolTable& symbols, Lvc& lvc)
-    : name_(std::move(name)), epoch_(epoch), resolver_(symbols), lvc_(lvc) {
+    : name_(std::move(name)), epoch_(epoch), resolver_(symbols), lvc_(lvc), max_symbols_(symbols.capacity()) {
     name_buf_.reserve(64);
 }
 
@@ -32,6 +32,24 @@ void Pipeline::add_partition(Partition* p) {
     partitions_.push_back(p);
     partition_mask_ |= (1ull << p->id());
     by_id_[p->id()] = p;
+    // INTENT: this pipeline owns the partition's instrument state from here,
+    // as it owns its recap state. A partition added to a pipeline before (the
+    // agent rebuilds its pipelines at start) points into the old one's memory.
+    p->inst_seq = nullptr;
+    p->inst_seq_size = 0;
+    if (p->maps_instrument_sequence()) {
+        for (Partition* q : partitions_) {
+            if (q != p && q->topic_id() == p->topic_id() && q->inst_seq != nullptr) {
+                p->inst_seq = q->inst_seq;
+                p->inst_seq_size = q->inst_seq_size;
+            }
+        }
+        if (p->inst_seq == nullptr) {
+            inst_states_.emplace_back(static_cast<size_t>(max_symbols_) + 1, 0);
+            p->inst_seq = inst_states_.back().data();
+            p->inst_seq_size = max_symbols_ + 1;
+        }
+    }
     if (p->has_recap()) {
         auto st = std::make_unique<RecapState>();
         st->init(p->recap_config());
@@ -236,8 +254,33 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
     }
 
     if (h.kind == static_cast<uint8_t>(Kind::DATA)) {
+        const uint64_t stream_seq = h.sequence;
+        // INTENT: per-instrument order, after the stream's own check (which
+        // still finds transport loss, operator view). The instrument sequence
+        // is the topic's count of this instrument, whichever partition carried
+        // it: a duplicate (the same record on two partitions, or replayed) is
+        // dropped here, a jump is reported for this symbol only. Apps see it as
+        // the record's sequence. One load and compare when nothing is wrong.
+        // A record at or below the last is a duplicate however far behind: one
+        // partition may lag another by any amount, and an instrument count
+        // starts again only with its stream (inst_reset), never on its own.
+        if (p.inst_seq != nullptr) {
+            const uint64_t is = r.instrument_seq;
+            h.sequence = is;
+            if (is != 0 && h.symbol_id != 0 && h.symbol_id < p.inst_seq_size) [[likely]] {   // symbol 0: not resolved
+                uint64_t& last = p.inst_seq[h.symbol_id];
+                if (last != 0 && is != last + 1) [[unlikely]] {
+                    if (is <= last) {
+                        inc(p.counters.inst_dups);
+                        return;
+                    }
+                    instrument_gap(p, h, last + 1, is, recv_ts);
+                }
+                last = is;
+            }
+        }
         if (p.lvc_enabled) lvc_.update(h, msg, len);
-        publish_data(p, h, msg, len);
+        publish_data(p, h, stream_seq, msg, len);
     } else {
         inc(p.counters.admin);
         // INTENT: the publisher stamps its stream_id (topic_id << 16 |
@@ -252,7 +295,10 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
         const bool seq_reset = static_cast<ControlCode>(h.msg_type) == ControlCode::BUS_SEQ_RESET;
         // INTENT: the bus restarted its sequence. Accept whatever comes
         // next rather than flagging a gap against the old stream.
-        if (seq_reset) p.expected_seq = 0;
+        if (seq_reset) {
+            p.expected_seq = 0;
+            inst_reset(p);
+        }
         publish_admin(p, h, msg, len);
         // After the reset itself, so a recap session sees BUS_SEQ_RESET, then
         // SYMBOL_STALE. The floors wait for the new stream's first sequence.
@@ -304,6 +350,7 @@ bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept
         // jump beyond dup_window is treated as a reset: counted, reported
         // in-band as a GAP with received < expected, and resynced.
         inc(p.counters.seq_resets);
+        inst_reset(p);
         GapEvent ev{};
         ev.topic_id = p.topic_id();
         ev.expected_seq = p.expected_seq;
@@ -323,12 +370,41 @@ bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept
     return false;
 }
 
-void Pipeline::publish_data(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept {
+// Cold-ish (once per jump). Before the record that jumped is published, so a
+// session reads INSTRUMENT_GAP, then the record.
+void Pipeline::instrument_gap(Partition& p, const TickHeader& h, uint64_t expected, uint64_t received, uint64_t now) noexcept {
+    inc(p.counters.inst_gaps);
+    InstrumentGapEvent ev{};
+    ev.symbol_id = h.symbol_id;
+    ev.topic_id = p.topic_id();
+    ev.expected_seq = expected;
+    ev.received_seq = received;
+    ev.detected_ns = now;
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
+        const FilterTable* f = s.filter.load(std::memory_order_acquire);
+        // INTENT: only sessions that take this record hear about its gap: the
+        // event is about one instrument, unlike a stream gap.
+        if (f == nullptr || !f->agent_control || !f->accept(h)) continue;
+        if (!s.ring.publish_control(ControlCode::INSTRUMENT_GAP, p.topic_id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
+    }
+    if (p.recap != nullptr) recap_symbol_stale(p, h.symbol_id, SymbolStaleReason::INSTRUMENT_GAP, now);
+}
+
+// INTENT: the stream restarted (publisher restart, sequence reset, backward
+// jump): a new publisher instance counts its instruments afresh, so every
+// instrument of the topic syncs on its next record instead of being dropped
+// as a duplicate of the old count. Rare; a memset of max_symbols words.
+void Pipeline::inst_reset(Partition& p) noexcept {
+    if (p.inst_seq != nullptr) std::memset(p.inst_seq, 0, static_cast<size_t>(p.inst_seq_size) * sizeof(uint64_t));
+}
+
+void Pipeline::publish_data(Partition& p, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept {
     // INTENT: one load and a branch when nothing is pending (the common case);
     // a pending symbol's message is held once for its waiters, and every
     // other session still gets it now (recap never delays a live session).
     const RecapPending* pending = nullptr;
-    if (p.recap != nullptr && p.recap->pending() != 0) [[unlikely]] pending = recap_hold(p, h, bytes, len);
+    if (p.recap != nullptr && p.recap->pending() != 0) [[unlikely]] pending = recap_hold(p, h, stream_seq, bytes, len);
     for (Session* sp : p.sessions) {
         Session& s = *sp;
         if (pending != nullptr && s.recap && pending->waiters.test(s.recap_slot)) continue;
@@ -409,6 +485,7 @@ void Pipeline::apply_transport_changes(Partition& p, Transport& t) noexcept {
         // publisher is no trigger: anything missed shows as a gap.
         if (up && c.reason == TransportReason::PUBLISHER_RESTART) {
             p.expected_seq = 0;
+            inst_reset(p);
             if (p.recap != nullptr) {
                 recap_restart(p, SymbolStaleReason::PUBLISHER_RESTART, now);
                 p.recap->set_awaiting_seq(true);
@@ -552,14 +629,14 @@ RecapEventStatus event_status(RecapStatus st) noexcept {
 }
 } // namespace
 
-const RecapPending* Pipeline::recap_hold(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept {
+const RecapPending* Pipeline::recap_hold(Partition& p, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept {
     RecapState& st = *p.recap;
     RecapPending* e = st.find(h.symbol_id);
     if (e == nullptr) return nullptr;
     // INTENT: held whatever the waiters' filters say; they are applied at the
     // merge, so a waiter that joins later with another filter still gets every
     // message it accepts.
-    if (st.hold(*e, h, bytes, len)) {
+    if (st.hold(*e, h, stream_seq, bytes, len)) {
         e->overflowed = false;
         inc(p.recap_counters.recap_held);
         return e;
@@ -570,7 +647,7 @@ const RecapPending* Pipeline::recap_hold(Partition& p, const TickHeader& h, cons
     // told once per overflow, not once per message.
     inc(p.recap_counters.recap_hold_overflows);
     st.free_holds(*e);
-    if (e->floor < h.sequence) e->floor = h.sequence;
+    if (e->floor < stream_seq) e->floor = stream_seq;
     if (!e->overflowed) {
         e->overflowed = true;
         RecapEvent ev{};
@@ -688,6 +765,29 @@ void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t no
                 recap_add_waiter(p, s, ev.symbol_id, now); // RECAP_PENDING when it was live
             }
         }
+    }
+}
+
+// One symbol's view is no longer exact (its instrument sequence jumped): the
+// recap sessions that take it are told and wait on a recap of it, as
+// recap_restart does for every symbol. A symbol already pending stays pending.
+void Pipeline::recap_symbol_stale(Partition& p, uint32_t symbol_id, SymbolStaleReason reason, uint64_t now) noexcept {
+    SymbolStaleEvent ev{};
+    ev.symbol_id = symbol_id;
+    ev.topic_id = p.topic_id();
+    ev.reason = static_cast<uint16_t>(reason);
+    ev.last_seq = p.last_seq;
+    ev.changed_ns = now;
+    const uint32_t w = symbol_id >> 6;
+    for (Session* sp : p.sessions) {
+        Session& s = *sp;
+        if (!s.recap) continue;
+        const FilterTable* f = s.filter.load(std::memory_order_acquire);
+        if (f == nullptr || w >= f->symbol_bits.size() || !((f->symbol_bits[w] >> (symbol_id & 63u)) & 1u)) continue;
+        if (f->agent_control && !s.ring.publish_control(ControlCode::SYMBOL_STALE, p.topic_id(), now, &ev, sizeof(ev))) {
+            inc(s.counters.publish_failed);
+        }
+        recap_add_waiter(p, s, symbol_id, now);
     }
 }
 
@@ -837,7 +937,10 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
             h.kind != static_cast<uint8_t>(Kind::DATA) || h.symbol_id != e.symbol_id) {
             continue;
         }
-        h.sequence = S;
+        // INTENT: on a topic with instrument sequences, a session orders this
+        // symbol by them: the snapshot record carries the instrument's as of S
+        // (the snapshot service writes it), and the held records follow it.
+        h.sequence = p.inst_seq != nullptr ? dr.instrument_seq : S;
         h.flags |= FLAG_SNAPSHOT_ORIGIN;
         inc(p.recap_counters.recap_records);
         for (Session* sp : merge_waiters_) {
@@ -855,7 +958,7 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
     }
     // Then the held live messages the snapshot does not contain, in order.
     p.recap->for_each_held(e, [&](const TickHeader& h, const uint8_t* payload, uint32_t len) {
-        if (h.sequence <= S) return;
+        if (h.seq_tag <= S) return;   // the stream sequence (RecapState::hold)
         for (Session* sp : merge_waiters_) {
             Session& s = *sp;
             const FilterTable* f = s.filter.load(std::memory_order_acquire);

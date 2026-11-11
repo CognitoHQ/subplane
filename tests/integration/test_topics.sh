@@ -39,7 +39,7 @@ TOPIC_A="  - name: x.a
     decoder:
       type: sbe_routing
       schema: $SCHEMA
-      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+      fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId }
       messages: [ { template: 1, msg_type: TRADE }, { template: 2, msg_type: QUOTE }, { template: 100, admin: HEARTBEAT } ]
     heartbeat_timeout_ms: 2000"
 config good <<YAML
@@ -71,6 +71,15 @@ grep -q '"name":"x.a/1",[^}]*"packets":0' <<<"$P" || fail "partition 1 got data:
 S=$(http_get "$API" /sessions)
 for s in s1 s2; do grep -q "\"name\":\"$s\",[^]]*\"published\":1000," <<<"$S" || fail "session $s did not get 1000: $S"; done
 echo "ok: partition 2 -> sessions s1 and s2"
+
+# The same records on partition 1 too (a second publisher of the topic): the
+# instrument sequence drops every copy, so each session still has 1000.
+"$PUB" --port "$P1" --count 1000 --rate 10000 > "$TMP/pub1.log" 2>&1 || fail "publisher on partition 1 failed"
+for _ in $(seq 1 50); do P=$(http_get "$API" /partitions); grep -q '"name":"x.a/1".*"inst_dups":1000' <<<"$P" && break; sleep 0.1; done
+grep -q '"name":"x.a/1",[^}]*"messages":1000,[^}]*"inst_gaps":0,"inst_dups":1000' <<<"$P" || fail "partition 1 copies not dropped: $P"
+S=$(http_get "$API" /sessions)
+for s in s1 s2; do grep -q "\"name\":\"$s\",[^]]*\"published\":1000," <<<"$S" || fail "session $s got copies: $S"; done
+echo "ok: copies on partition 1 dropped by instrument sequence"
 
 # An edit to topics is reported by /reload, not silently dropped.
 sed -i "s/port: $P3/port: $((P3 + 10))/" "$TMP/good.yaml"

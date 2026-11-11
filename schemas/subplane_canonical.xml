@@ -6,8 +6,12 @@
   plus the root offset), so `subplane schema -views` emits a plain struct for every
   message and the same bytes are a C++ struct, a Python dataclass / NumPy dtype
   and a q record. Prices and quantities are int64 with a fixed exponent of -9
-  (1.0 = 1000000000). Every data message starts with the same 32-byte prefix
-  (InstrumentId, VenueId, Flags, Sequence, ExchangeTs, RecvTs). Symbols are ids;
+  (1.0 = 1000000000). Every data message starts with the same 40-byte prefix
+  (InstrumentId, VenueId, Flags, Sequence, InstrumentSeq, ExchangeTs, RecvTs).
+  Sequence counts the stream (one per partition); InstrumentSeq counts this
+  instrument across the whole topic (1, 2, 3 ... with no holes), so a reader can
+  order, de-duplicate and find gaps per instrument whichever partition carried
+  it. 0 = not counted. Symbols are ids;
   names arrive as InstrumentDefinition messages.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
@@ -50,116 +54,124 @@
     </enum>
   </types>
 
-  <!-- Common prefix, root offsets 0..32 (payload 8..40): identical in every data message. -->
-  <sbe:message name="Trade" id="1" blockLength="64" description="One trade">
+  <!-- Common prefix, root offsets 0..40 (payload 8..48): identical in every data message. -->
+  <sbe:message name="Trade" id="1" blockLength="72" description="One trade">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="Price"        id="10" type="Price" offset="32"/>
-    <field name="Qty"          id="11" type="Qty"   offset="40"/>
-    <field name="TradeId"      id="12" type="uint64" offset="48"/>
-    <field name="Aggressor"    id="13" type="Side"  offset="56"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="Price"        id="10" type="Price" offset="40"/>
+    <field name="Qty"          id="11" type="Qty"   offset="48"/>
+    <field name="TradeId"      id="12" type="uint64" offset="56"/>
+    <field name="Aggressor"    id="13" type="Side"  offset="64"/>
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="Quote" id="2" blockLength="64" description="Best bid and offer">
+  <sbe:message name="Quote" id="2" blockLength="72" description="Best bid and offer">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="BidPx"        id="10" type="Price" offset="32"/>
-    <field name="BidQty"       id="11" type="Qty"   offset="40"/>
-    <field name="AskPx"        id="12" type="Price" offset="48"/>
-    <field name="AskQty"       id="13" type="Qty"   offset="56"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="BidPx"        id="10" type="Price" offset="40"/>
+    <field name="BidQty"       id="11" type="Qty"   offset="48"/>
+    <field name="AskPx"        id="12" type="Price" offset="56"/>
+    <field name="AskQty"       id="13" type="Qty"   offset="64"/>
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="BookUpdate" id="3" blockLength="56" description="One price level changed">
+  <sbe:message name="BookUpdate" id="3" blockLength="64" description="One price level changed">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="Price"        id="10" type="Price" offset="32"/>
-    <field name="Qty"          id="11" type="Qty"   offset="40" description="0 on Delete"/>
-    <field name="Side"         id="12" type="Side"  offset="48"/>
-    <field name="Action"       id="13" type="BookAction" offset="49"/>
-    <field name="Level"        id="14" type="uint8" offset="50" description="0-based level, 255 if unknown"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="Price"        id="10" type="Price" offset="40"/>
+    <field name="Qty"          id="11" type="Qty"   offset="48" description="0 on Delete"/>
+    <field name="Side"         id="12" type="Side"  offset="56"/>
+    <field name="Action"       id="13" type="BookAction" offset="57"/>
+    <field name="Level"        id="14" type="uint8" offset="58" description="0-based level, 255 if unknown"/>
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="BookSnapshot" id="4" blockLength="360" description="Top ten levels per side, best first">
+  <sbe:message name="BookSnapshot" id="4" blockLength="368" description="Top ten levels per side, best first">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="BidPx"        id="10" type="Price10" offset="32"/>
-    <field name="BidQty"       id="11" type="Qty10"   offset="112"/>
-    <field name="AskPx"        id="12" type="Price10" offset="192"/>
-    <field name="AskQty"       id="13" type="Qty10"   offset="272"/>
-    <field name="Depth"        id="14" type="uint8"   offset="352" description="levels populated per side, 0..10"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="BidPx"        id="10" type="Price10" offset="40"/>
+    <field name="BidQty"       id="11" type="Qty10"   offset="120"/>
+    <field name="AskPx"        id="12" type="Price10" offset="200"/>
+    <field name="AskQty"       id="13" type="Qty10"   offset="280"/>
+    <field name="Depth"        id="14" type="uint8"   offset="360" description="levels populated per side, 0..10"/>
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="Ohlcv" id="5" blockLength="80" description="Bar">
+  <sbe:message name="Ohlcv" id="5" blockLength="88" description="Bar">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16" description="bar open time"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="Open"         id="10" type="Price" offset="32"/>
-    <field name="High"         id="11" type="Price" offset="40"/>
-    <field name="Low"          id="12" type="Price" offset="48"/>
-    <field name="Close"        id="13" type="Price" offset="56"/>
-    <field name="Volume"       id="14" type="Qty"   offset="64"/>
-    <field name="IntervalSec"  id="15" type="uint32" offset="72"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24" description="bar open time"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="Open"         id="10" type="Price" offset="40"/>
+    <field name="High"         id="11" type="Price" offset="48"/>
+    <field name="Low"          id="12" type="Price" offset="56"/>
+    <field name="Close"        id="13" type="Price" offset="64"/>
+    <field name="Volume"       id="14" type="Qty"   offset="72"/>
+    <field name="IntervalSec"  id="15" type="uint32" offset="80"/>
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="Status" id="6" blockLength="40" description="Trading status change">
+  <sbe:message name="Status" id="6" blockLength="48" description="Trading status change">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="TradingStatus" id="10" type="TradingStatus" offset="32"/>
-    <field name="Reason"       id="11" type="uint8" offset="33" description="venue-specific"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="TradingStatus" id="10" type="TradingStatus" offset="40"/>
+    <field name="Reason"       id="11" type="uint8" offset="41" description="venue-specific"/>
   </sbe:message>
 
-  <sbe:message name="InstrumentDefinition" id="10" blockLength="136" description="Maps an instrument id to its names">
+  <sbe:message name="InstrumentDefinition" id="10" blockLength="144" description="Maps an instrument id to its names">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="Symbol"       id="10" type="Symbol32" offset="32" description="venue symbol, NUL padded"/>
-    <field name="Exchange"     id="11" type="Name16"   offset="64"/>
-    <field name="Base"         id="12" type="Name16"   offset="80" description="base asset or underlying"/>
-    <field name="Quote"        id="13" type="Name16"   offset="96" description="quote currency"/>
-    <field name="TickSize"     id="14" type="Price"    offset="112"/>
-    <field name="LotSize"      id="15" type="Qty"      offset="120"/>
-    <field name="Status"       id="16" type="TradingStatus" offset="128"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="Symbol"       id="10" type="Symbol32" offset="40" description="venue symbol, NUL padded"/>
+    <field name="Exchange"     id="11" type="Name16"   offset="72"/>
+    <field name="Base"         id="12" type="Name16"   offset="88" description="base asset or underlying"/>
+    <field name="Quote"        id="13" type="Name16"   offset="104" description="quote currency"/>
+    <field name="TickSize"     id="14" type="Price"    offset="120"/>
+    <field name="LotSize"      id="15" type="Qty"      offset="128"/>
+    <field name="Status"       id="16" type="TradingStatus" offset="136"/>
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="Heartbeat" id="100" blockLength="40" description="Publisher liveness, InstrumentId 0; StreamId names the stream it is sent on (topic_id &lt;&lt; 16 | partition_num, 0 = unstamped)">
+  <sbe:message name="Heartbeat" id="100" blockLength="48" description="Publisher liveness, InstrumentId 0; StreamId names the stream it is sent on (topic_id &lt;&lt; 16 | partition_num, 0 = unstamped)">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
-    <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-    <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
-    <field name="StreamId"     id="7" type="int32"  offset="32"/>
+    <field name="InstrumentSeq" id="8" type="uint64" offset="16"/>
+    <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+    <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
+    <field name="StreamId"     id="7" type="int32"  offset="40"/>
   </sbe:message>
 </sbe:messageSchema>

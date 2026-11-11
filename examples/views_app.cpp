@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
 
     uint64_t trades = 0, quotes = 0, books = 0, snapshots = 0, other = 0, heartbeats = 0, bad = 0, seen = 0, unordered = 0;
     LogHistogram gw_to_app, agent_to_app, gw_to_agent;   // static-sized, no allocation
-    constexpr size_t kRecvTsOff = offsetof(Trade, RecvTs);  // the 32-byte prefix is the same on every canonical message
+    constexpr size_t kRecvTsOff = offsetof(Trade, RecvTs);  // the 40-byte prefix is the same on every canonical message
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
     RecordView rv;
     while (count == 0 || seen < count) {

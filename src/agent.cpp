@@ -455,6 +455,8 @@ AgentStatus Agent::get_status() const {
         ps.transport_up = c.transport_up;
         ps.stream_mismatch = c.stream_mismatch;
         ps.last_stream_stamp = static_cast<int32_t>(c.last_stream_stamp);
+        ps.inst_gaps = c.inst_gaps;
+        ps.inst_dups = c.inst_dups;
         if (p->has_recap()) ps.recap_json = p->recap_counters.to_json();
         if (const RingWriter* tap = p->tap) {
             ps.tap_ring = p->tap_path();

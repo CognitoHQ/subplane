@@ -32,13 +32,13 @@ assert hdr.symbol_id == 424242 and hdr.payload_len == 47 and msg == t, (hdr, msg
 hdr2, msg2 = v.parse(rec[:51] + b'\x01' + rec[52:])    # kind 1 (control) at byte 51: no message
 assert hdr2.kind == 1 and msg2 is None
 import subplane_canonical_views as c
-snap = struct.pack(c.BookSnapshot.FORMAT, 360, 4, c.SCHEMA_ID, 1, 7, 3, 0, 55, 0, 0, *range(100, 110), *range(10), *range(200, 210), *range(10), 10)
+snap = struct.pack(c.BookSnapshot.FORMAT, 368, 4, c.SCHEMA_ID, 1, 7, 3, 0, 55, 12, 0, 0, *range(100, 110), *range(10), *range(200, 210), *range(10), 10)
 bs = c.BookSnapshot.from_bytes(snap)
-assert len(snap) == 368 and bs.InstrumentId == 7 and bs.Depth == 10 and bs.BidPx == tuple(range(100, 110)) and bs.AskPx[9] == 209, bs
-tr = c.Trade.from_bytes(struct.pack(c.Trade.FORMAT, 64, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 0, 0, 65432100000000, 250000000, 99, 2))
-assert tr.Price == 65432100000000 and tr.Aggressor == 2 and c.message_from_bytes(snap) == bs
-old = bytearray(struct.pack(c.Trade.FORMAT, 64, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 0, 0, 65432100000000, 250000000, 99, 2))[:8 + 56]
-old[0:2] = (56).to_bytes(2, 'little')                      # an older sender's 56-byte block: no Aggressor
+assert len(snap) == 376 and bs.InstrumentId == 7 and bs.InstrumentSeq == 12 and bs.Depth == 10 and bs.BidPx == tuple(range(100, 110)) and bs.AskPx[9] == 209, bs
+tr = c.Trade.from_bytes(struct.pack(c.Trade.FORMAT, 72, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 4, 0, 0, 65432100000000, 250000000, 99, 2))
+assert tr.Price == 65432100000000 and tr.InstrumentSeq == 4 and tr.Aggressor == 2 and c.message_from_bytes(snap) == bs
+old = bytearray(struct.pack(c.Trade.FORMAT, 72, 1, c.SCHEMA_ID, 1, 7, 3, 0, 1001, 4, 0, 0, 65432100000000, 250000000, 99, 2))[:8 + 64]
+old[0:2] = (64).to_bytes(2, 'little')                      # an older sender's 64-byte block: no Aggressor
 ot = c.message_from_bytes(bytes(old))
 assert ot is not None and ot.TradeId == 99 and ot.Aggressor == 0, ot
 assert c.message_from_bytes(bytes(old[:-1])) is None       # block longer than the bytes
@@ -55,7 +55,7 @@ col = np.frombuffer(raw * 3, dtype=v.Trade.DTYPE)
 assert col.shape == (3,) and int(col['Qty'].sum()) == 1500
 h = np.frombuffer(rec, dtype=v.RECORD_HEADER, count=1)[0]
 assert h['payload_len'] == 47 and h['template_id'] == 1
-assert c.BookSnapshot.DTYPE['BidPx'].shape == (10,) and c.BookSnapshot.DTYPE.itemsize == 368
+assert c.BookSnapshot.DTYPE['BidPx'].shape == (10,) and c.BookSnapshot.DTYPE.itemsize == 376
 arr = np.frombuffer(snap, dtype=c.BookSnapshot.DTYPE)[0]
 assert list(arr['BidPx']) == list(range(100, 110)) and arr['Depth'] == 10
 print("numpy views ok")
