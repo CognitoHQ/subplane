@@ -4,7 +4,12 @@ jobs:
   build-2604-gcc16:
     runs-on: ubuntu-latest
     # The base of docker/Dockerfile (INV-007); scripts/dev.sh runs the same deps script locally.
-    container: ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+    container:
+      image: ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+      # INTENT: from 2026-11-11 the runner's DNS stopped answering inside the job container
+      # ("Could not resolve archive.ubuntu.com" on every run, no GitHub incident), while the same
+      # job with explicit resolvers passed. Without this line deps fails before anything builds.
+      options: --dns 1.1.1.1 --dns 8.8.8.8
     steps:
       - uses: actions/checkout@v4
       - name: deps
