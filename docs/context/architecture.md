@@ -43,7 +43,7 @@ topics:
       - transport: { group: 239.1.1.2 }   # partition 2: deep-merged over the topic's keys
 ```
 
-Each `partitions:` entry is deep-merged over the topic's keys: maps merge, anything else replaces, and `{}` means no overrides. A partition entry has no `name`; its number is its position, from 1. An Aeron transport without `stream_id` gets the derived `stream_id`; an explicit one is kept. Two partitions on the same transport address are refused (`read the same stream`). The limit of 64 partitions per agent still holds.
+Each `partitions:` entry is deep-merged over the topic's keys: maps merge, anything else replaces, and `{}` means no overrides. A partition entry has no `name`; its number is its position, from 1. An Aeron transport without `stream_id` gets the derived `stream_id`; an explicit one is kept. A topic-level `transport.driver` (embedded media driver) goes to partition 1 only, and the other partitions use that driver; a partition entry may still set its own `driver:` for a different `aeron_dir`. Two partitions on the same transport address are refused (`read the same stream`). The limit of 64 partitions per agent still holds.
 
 **Thread groups.** `agent.thread_groups[].topics` lists topic names; `partitions:` there is an error. A topic's partitions always share one group, and each topic must be in exactly one group.
 

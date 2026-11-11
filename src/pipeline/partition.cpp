@@ -133,6 +133,11 @@ YAML::Node topic_partition_node(const YAML::Node& tn, size_t index) {
         const std::string k = kv.first.as<std::string>();
         if (k != "name" && k != "partitions") base[k] = YAML::Clone(kv.second);
     }
+    // INTENT: a topic-level `transport.driver` starts one embedded media driver
+    // for the topic, so only partition 1 inherits it; the others use that driver.
+    // Inherited by every partition, partition 2 would ask for a second driver on
+    // the same directory and the agent would refuse to start.
+    if (index != 0 && base["transport"].IsMap() && base["transport"]["driver"].IsDefined()) base["transport"].remove("driver");
     YAML::Node entry(YAML::NodeType::Map);
     if (const auto ps = tn["partitions"]; ps.IsDefined()) {
         if (!ps.IsSequence() || index >= ps.size()) return YAML::Node(YAML::NodeType::Undefined);

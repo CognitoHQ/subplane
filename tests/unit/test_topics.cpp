@@ -85,13 +85,13 @@ TEST_CASE("topics expand into numbered partitions, entries merged over the topic
     const TopicRegistry reg = registry("[ { id: 11, name: crypto.binance }, { id: 20, name: eq.us } ]");
     const YAML::Node topics = YAML::Load(R"(
 - name: crypto.binance
-  transport: { type: aeron, channel: "aeron:ipc" }
+  transport: { type: aeron, channel: "aeron:ipc", driver: { embedded: true } }
   decoder: { type: sbe_routing, schema: schemas/subplane_canonical.xml, fields: { symbol: InstrumentId } }
   heartbeat_timeout_ms: 5000
   partitions:
     - {}
     - { heartbeat_timeout_ms: 100 }
-    - transport: { stream_id: 4242 }
+    - transport: { stream_id: 4242, driver: { embedded: true } }
 - name: eq.us
   transport: { type: udp_multicast, port: 30001, group: 239.1.1.1 }
   decoder: { type: sbe_routing, schema: schemas/subplane_canonical.xml }
@@ -108,6 +108,9 @@ TEST_CASE("topics expand into numbered partitions, entries merged over the topic
     CHECK(out[0].transport_cfg["stream_id"].as<int32_t>() == 720897);   // derived Aeron stream id
     CHECK(out[0].transport_cfg["channel"].as<std::string>() == "aeron:ipc");
     CHECK(out[0].heartbeat_timeout_ms == 5000);
+    CHECK(out[0].transport_cfg["driver"].IsDefined());                  // the topic's one driver: partition 1
+    CHECK_FALSE(out[1].transport_cfg["driver"].IsDefined());            // the rest use it
+    CHECK(out[2].transport_cfg["driver"].IsDefined());                  // unless a partition asks itself
     CHECK(out[1].name == "crypto.binance/2");
     CHECK(out[1].stream_id == 720898);
     CHECK(out[1].heartbeat_timeout_ms == 100);                          // scalar override
