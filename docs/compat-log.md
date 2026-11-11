@@ -46,6 +46,7 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 | 2026-10-13 | subplane-feeds cc137b3 | Gateway binary renamed `subplane-gateway` → `spwsgw` | operator | breaking for scripts | Rename in scripts. |
 | 2026-10-13 | subplane-feeds | Gateway `Sequence` is one counter per process, starting at 1 on each start, consumed even by dropped offers | feeds-output | baseline fact (recap needs `SourceEpoch` to detect restarts) | n/a |
 | 2026-10-13 | subplane bc58c3a | `aeron` transport added | config | additive | n/a |
+| 2026-11-11 | subplane (readme-validate) | A second partition with `driver: { embedded: true }` on the same Aeron directory is refused at start-up (it used to replace the first partition's driver, which then received nothing) | config | behaviour (a config that silently lost a partition now fails to start) | Keep `driver:` on one partition per Aeron directory. |
 
 ## Known upcoming entries (from the active plans)
 - **Recap:**
@@ -64,4 +65,3 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 - Capability flags in `HELLO`/`/status`, so clients detect features without version bumps.
 - How long deprecations last (for example `SYMBOL_MAPPED` once names exist).
 - `CHANGELOG.md` per repo, generated from this log.
-| 2026-11-11 | subplane (readme-validate) | A second partition with `driver: { embedded: true }` on the same Aeron directory is refused at start-up (it used to replace the first partition's driver, which then received nothing) | config | behaviour (a config that silently lost a partition now fails to start) | Keep `driver:` on one partition per Aeron directory. |
