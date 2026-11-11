@@ -12,4 +12,4 @@ jobs:
       - name: build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
       - name: test
-        run: cd build && ctest --output-on-failure
+        run: cd build && ctest --output-on-failure --timeout 300   # a hung test fails in 5 min, not at the 6 h job limit
