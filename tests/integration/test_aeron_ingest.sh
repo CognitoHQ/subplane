@@ -79,4 +79,14 @@ if [ "$MODE" = ipc ]; then
   grep -aq "TRANSPORT_DOWN .* reason=source_lost last_seq=1010" "$TMP/tail.log" || fail "no TRANSPORT_DOWN when the publisher went away"
 fi
 kill $AGENT_PID; wait $AGENT_PID 2>/dev/null
+# Two partitions that each embed a driver on one directory: the second would replace
+# the first's driver and the first partition would go silent, so the agent refuses.
+if [ "$MODE" = ipc ]; then
+  sed -e 's/partitions: \[aer0\] } \] }/partitions: [aer0, aer1] } ] }/' "$TMP/config.yaml" > "$TMP/two.yaml"
+  awk '/^  - name: aer0$/{p=1} p&&/^sessions:/{p=0} p{b=b $0 "\n"} {print} /^    heartbeat_timeout_ms/&&p{gsub("aer0","aer1",b); gsub("stream_id: 1001","stream_id: 1011",b); printf "%s", b; p=0}' "$TMP/two.yaml" > "$TMP/two2.yaml"
+  grep -c 'driver: { embedded: true' "$TMP/two2.yaml" | grep -q '^2$' || fail "test setup: two embedded drivers expected"
+  timeout 20 "$AGENT" --config "$TMP/two2.yaml" > "$TMP/two.log" 2>&1 && fail "agent started with two embedded drivers on one directory"
+  grep -q "embedded media driver for .* is already started by another partition" "$TMP/two.log" || fail "no clear error for a second embedded driver: $(tail -3 "$TMP/two.log")"
+  echo "second embedded driver refused"
+fi
 echo "PASS"

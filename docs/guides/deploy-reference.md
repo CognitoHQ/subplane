@@ -23,7 +23,7 @@ Follow `GETTING_STARTED.md`. It runs the agent on `config.yaml` with plain UDP, 
 ## B. Crypto exchanges
 
 ```
-exchange (WebSocket) -> spwsgw (one per exchange) -> Aeron IPC stream 1001 -> subplaned -> one ring per session -> your apps
+exchange (WebSocket) -> spwsgw (one per exchange) -> its own Aeron IPC stream (1001, 1011, ...) -> subplaned (one partition per stream) -> one ring per session -> your apps
 ```
 
 **1. Build the gateway** (repo `subplane-feeds`; it also needs `libboost-dev` and `libssl-dev`):
@@ -40,12 +40,14 @@ sudo mkdir -p /run/subplane && sudo chown $USER /run/subplane   # control socket
 build/subplaned --config deploy/crypto/agent.yaml
 ```
 
-**3. Start one gateway per exchange.** Each publishes into the same stream; `--http` gives it metrics:
+**3. Start one gateway per exchange.** The reference config has one partition, `crypto`, on stream 1001, for the first gateway; `--http` gives it metrics:
 
 ```bash
 cd subplane-feeds
 build/spwsgw --pack packs/binance-spot.yaml --symbols BTCUSDT,ETHUSDT --channel aeron:ipc --stream-id 1001 --http 127.0.0.1:9101
 ```
+
+**Each further gateway needs its own stream and its own partition.** A partition tracks one publisher's sequence; two gateways on one stream interleave their sequences and the agent reports gaps that are not there. For a second exchange: copy the `crypto` partition in `agent.yaml` under a new name (`coinbase`), set its `stream_id` to 1011, delete its `driver:` line (the first partition's embedded driver serves every stream; the agent refuses a second one on the same directory), add the name to `thread_groups[0].partitions` and to the session's `partitions`, and start the gateway with `--stream-id 1011`. Leave a gap of ten between gateways: a snapshot service uses the next stream id for its state stream (`spwsgw-snap --data-stream 1011 --state-stream 1012`).
 
 `--symbols` numbers instruments 1, 2, … in order. For stable ids across gateways and restarts, give each venue's instruments ids in one file and pass `--instruments site.yaml` (template: `site/instruments.example.yaml`). Other packs: `coinbase-exchange`, `kraken`, `okx`, `bitstamp`.
 

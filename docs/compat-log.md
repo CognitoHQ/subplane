@@ -64,3 +64,4 @@ Everything up to and including the canonical schema v1 (b8ab03a, 2026-10-12) and
 - Capability flags in `HELLO`/`/status`, so clients detect features without version bumps.
 - How long deprecations last (for example `SYMBOL_MAPPED` once names exist).
 - `CHANGELOG.md` per repo, generated from this log.
+| 2026-11-11 | subplane (readme-validate) | A second partition with `driver: { embedded: true }` on the same Aeron directory is refused at start-up (it used to replace the first partition's driver, which then received nothing) | config | behaviour (a config that silently lost a partition now fails to start) | Keep `driver:` on one partition per Aeron directory. |
