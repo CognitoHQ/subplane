@@ -35,7 +35,7 @@ A partition, publisher, or reader failure never affects the writer or the other 
 - **Unknown template.** Counted (`unknown_templates`) and the message skipped when its length is known; when the length cannot be computed, the rest of the packet is dropped and counted (`undecodable_tail`). Never guessed, never propagated as corrupt data.
 - **Malformed, truncated, wrong-schema data** is counted (`malformed`, `truncated`, `decode_errors`, `schema_mismatch`) and skipped.
 - **Gaps are never silent.** A forward sequence jump emits an in-band `GAP_DETECTED` event and increments `gaps`. Duplicates are counted and dropped.
-- **Publisher restarts.** A backward sequence jump larger than `dup_window` is treated as a restart (`seq_resets`, in-band `GAP_DETECTED` with `received < expected`), and a `SEQ_RESET` admin message resets the expected sequence. A silent publisher degrades the partition after `heartbeat_timeout_ms` (`PARTITION_DEGRADED`) and it recovers on the next packet.
+- **Publisher restarts.** A backward sequence jump larger than `dup_window` is treated as a restart (`seq_resets`, in-band `GAP_DETECTED` with `received < expected`), and a `SEQ_RESET` admin message resets the expected sequence. A silent publisher degrades the partition after `heartbeat_timeout_ms` (in-band `TOPIC_DEGRADED`) and it recovers on the next packet (`TOPIC_RECOVERED` when none of the topic's partitions is degraded).
 - **Slow or dead readers.** Readers map rings read-only and never delay the writer. A lapped reader detects it itself and resyncs. A reader that disconnects or crashes costs the writer nothing.
 - **Oversize payload.** A record larger than the session's `max_payload` is not published and is counted (`publish_failed`); other sessions are unaffected.
 - **Transport errors** are counted (`transport_errors`) and the loop continues.
@@ -73,7 +73,7 @@ The app SDK (`include/subplane/client/`, `control/control_proto.h`, `shm/`, `cor
 
 ## INV-008: Config changes must not require recompilation
 
-Adding a bus partition, changing its group, port, framing or schema mapping, adding or changing sessions, pinning threads, or enabling and disabling the API must be achievable by editing `config.yaml` alone. If a feature requires a code change to configure, it is missing a config path. (Adding a new kind of component, such as a new transport, is a code change by design.)
+Adding a topic or a partition of one, changing its group, port, framing or schema mapping, adding or changing sessions, pinning threads, or enabling and disabling the API must be achievable by editing `config.yaml` alone. If a feature requires a code change to configure, it is missing a config path. (Adding a new kind of component, such as a new transport, is a code change by design.)
 
 **Rationale**: operational changes should not require a build cycle. The activation model is pointless if you have to recompile to use it.
 
@@ -129,7 +129,7 @@ subplane must not require publishers to add headers, framing bytes or a particul
 
 ## INV-015: The app contract is transport-agnostic
 
-Nothing an app can observe through a ring or the control channel identifies the bus transport. A new transport (Aeron, Kafka, replay) must map its failure modes and liveness onto the existing control vocabulary (gap, degraded, recovered, heartbeat, sequence reset) and its per-partition ordering onto `TickHeader::sequence`. Transport-specific control codes, header fields or flags are not added; if a transport cannot be expressed, the vocabulary is extended once, for every transport, with a `RECORD_VERSION` bump.
+Nothing an app can observe through a ring or the control channel identifies the bus transport. A new transport (Aeron, Kafka, replay) must map its failure modes and liveness onto the existing control vocabulary (gap, degraded, recovered, heartbeat, sequence reset) and its per-stream (per-partition) ordering onto `TickHeader::sequence`. Transport-specific control codes, header fields or flags are not added; if a transport cannot be expressed, the vocabulary is extended once, for every transport, with a `RECORD_VERSION` bump.
 
 **Rationale**: the decoupling of apps from the bus is the durable value of the agent. Bus migration without an app release, mixed buses on one box and a single recovery path in every app all depend on it. One transport-specific leak into the contract re-couples every app.
 

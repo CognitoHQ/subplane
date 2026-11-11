@@ -30,6 +30,7 @@ if(SUBPLANE_WITH_AERON)
     subplane_unit_test(test_recap_aeron unit/test_recap_aeron.cpp)
 endif()
 subplane_unit_test(test_session_manager unit/test_session_manager.cpp)
+subplane_unit_test(test_topics unit/test_topics.cpp)
 # M6 control channel
 subplane_unit_test(test_control unit/test_control.cpp)
 # DBN decoder, TCP stream transport, DBN through the pipeline

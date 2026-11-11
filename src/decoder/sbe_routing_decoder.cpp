@@ -91,6 +91,7 @@ bool parse_decoder_config(const YAML::Node& node, DecoderConfig& out, std::strin
                 else if (k == "sequence") out.fields.sequence = v;
                 else if (k == "exchange_ts") out.fields.exchange_ts = v;
                 else if (k == "venue") out.fields.venue = v;
+                else if (k == "stream_id") out.fields.stream_id = v;
                 else { err = "decoder.fields: unknown routing field '" + k + "'"; return false; }
             }
         }
@@ -188,7 +189,8 @@ bool SbeRoutingDecoder::init(const DecoderConfig& cfg, const SbeSchema& schema, 
         const Map maps[] = {{cfg.fields.symbol, "symbol", &e.symbol},
                             {cfg.fields.sequence, "sequence", &e.sequence},
                             {cfg.fields.exchange_ts, "exchange_ts", &e.exchange_ts},
-                            {cfg.fields.venue, "venue", &e.venue}};
+                            {cfg.fields.venue, "venue", &e.venue},
+                            {cfg.fields.stream_id, "stream_id", &e.stream_id}};
         for (const auto& m : maps) {
             if (m.name.empty()) continue;
             const FieldDef* f = schema.find_field(*md, m.name);
@@ -198,7 +200,7 @@ bool SbeRoutingDecoder::init(const DecoderConfig& cfg, const SbeSchema& schema, 
                           " is inside a group/data; only root-block fields can be routing fields";
                     return false;
                 }
-                if (!tm.is_admin)
+                if (!tm.is_admin && m.ref != &e.stream_id)
                     warnings_.push_back("message " + md->name + " has no field " + m.name + " (" + m.role + " left 0)");
                 continue;
             }
@@ -261,6 +263,8 @@ DecodeResult SbeRoutingDecoder::decode(const uint8_t* msg, uint32_t avail, TickH
     out.sequence = field_ok(e.sequence) ? sbe_read_uint(root + e.sequence.offset, e.sequence.size, little_) : 0;
     out.exchange_ts = field_ok(e.exchange_ts) ? sbe_read_uint(root + e.exchange_ts.offset, e.exchange_ts.size, little_) : 0;
     out.venue_id = field_ok(e.venue) ? static_cast<uint16_t>(sbe_read_uint(root + e.venue.offset, e.venue.size, little_)) : 0;
+    if (e.admin && field_ok(e.stream_id))
+        r.stream_stamp = static_cast<int32_t>(sbe_read_uint(root + e.stream_id.offset, e.stream_id.size, little_));
     out.symbol_id = 0;
     if (field_ok(e.symbol)) {
         if (e.symbol.is_str) {

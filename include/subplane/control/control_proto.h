@@ -15,15 +15,15 @@
 // body is the op's response struct; status != OK means the body is a UTF-8
 // error message (not NUL-terminated).
 //
-// Names (sessions, partitions, agent) are NUL-padded char[32], at most 31
-// chars, [A-Za-z0-9_-] for session names. Symbol names are char[24], NUL-padded
-// unless exactly 24 chars long.
+// Names (sessions, agent) are NUL-padded char[32], at most 31 chars,
+// [A-Za-z0-9_-] for session names. Symbol names are char[24], topic names and
+// patterns char[48], NUL-padded unless exactly that long.
 //
 // Op bodies (request -> reply):
-//   HELLO            (empty)            -> CtlHelloResp + partition_count * CtlPartitionEntry
+//   HELLO            (empty)            -> CtlHelloResp + topic_count * CtlTopicEntry
 //   ATTACH           CtlNameReq         -> CtlAttachResp
-//   CREATE_SESSION   CtlSessionReq + symbol_count * CtlSymbolName -> CtlAttachResp
-//   SET_FILTER       CtlSessionReq + symbols (ring fields ignored) -> CtlSetFilterResp
+//   CREATE_SESSION   CtlSessionReq + symbol_count * CtlSymbolName + topic_count * CtlTopicPattern -> CtlAttachResp
+//   SET_FILTER       CtlSessionReq + symbols + topics (ring fields ignored; topics must be unchanged) -> CtlSetFilterResp
 //   DESTROY_SESSION  CtlNameReq         -> (empty)
 //   PING             CtlPingReq         -> CtlPingResp
 //   SYMBOLS          CtlSymbolsReq      -> CtlSymbolsResp + count * CtlSymbolEntry
@@ -61,6 +61,7 @@ inline constexpr uint16_t CONTROL_PROTO_VERSION = 1;
 inline constexpr uint32_t CTL_MAX_DATAGRAM      = 64 * 1024;  // header + body
 inline constexpr uint32_t CTL_NAME_LEN          = 32;
 inline constexpr uint32_t CTL_SYMBOL_LEN        = 24;
+inline constexpr uint32_t CTL_TOPIC_LEN         = 48;         // topic_name / pattern, NUL-padded
 inline constexpr uint32_t CTL_SYMBOLS_PAGE_MAX  = 1024;       // entries per SYMBOLS reply
 
 enum class CtlOp : uint16_t {
@@ -116,14 +117,17 @@ struct CtlHelloResp {
     uint32_t proto_version;
     uint32_t symbol_count;
     uint32_t max_symbols;
-    uint16_t schema_id;       // of the first partition (0 if none)
+    uint16_t schema_id;       // of the first topic (0 if none)
     uint16_t schema_version;
-    uint16_t partition_count; // CtlPartitionEntry records follow
+    uint16_t topic_count;     // CtlTopicEntry records follow
     uint16_t pad;
 };
-struct CtlPartitionEntry {
-    uint16_t id;
-    char     name[32];
+// A topic this agent reads. Partitions are a publishing construct; the count
+// is for information only, and records never name a partition.
+struct CtlTopicEntry {
+    uint16_t topic_id;        // site registry, 1..32767
+    uint16_t partitions;      // how many of the topic's partitions this agent reads
+    char     name[48];        // topic_name, NUL-padded (48 chars stored unterminated)
 };
 
 // ATTACH / DESTROY_SESSION / SNAPSHOT request.
@@ -143,13 +147,16 @@ struct CtlAttachResp {
     uint32_t filter_generation;
 };
 
-// CREATE_SESSION / SET_FILTER request; followed by symbol_count CtlSymbolName.
+// CREATE_SESSION / SET_FILTER request; followed by symbol_count CtlSymbolName,
+// then topic_count CtlTopicPattern.
 struct CtlSessionReq {
     char     name[32];
     uint64_t ring_capacity_bytes; // power of two >= 64 KiB (ignored by SET_FILTER)
     uint32_t max_payload;         // 1..capacity/4 (ignored by SET_FILTER)
     uint64_t msg_type_mask;       // bit i = data msg_type i (MsgType); 0 = all data types
-    uint64_t partition_mask;      // bit i = partition id i; 0 = all
+    uint16_t topic_count;         // CtlTopicPattern records after the symbols; 0 = all topics
+    uint16_t reserved0;
+    uint32_t reserved1;
     uint8_t  all_symbols;
     uint8_t  bus_admin;
     uint8_t  agent_control;
@@ -158,6 +165,10 @@ struct CtlSessionReq {
 };
 struct CtlSymbolName {
     char name[24];
+};
+// `*` matches one `.` segment, a final `>` the rest.
+struct CtlTopicPattern {
+    char pattern[48];
 };
 
 struct CtlSetFilterResp {
@@ -207,7 +218,8 @@ struct CtlIdentifyReq {
 static_assert(sizeof(CtlIdentifyReq) == 32);
 static_assert(sizeof(CtlHeader) == 16);
 static_assert(sizeof(CtlHelloResp) == 64);
-static_assert(sizeof(CtlPartitionEntry) == 34);
+static_assert(sizeof(CtlTopicEntry) == 52);
+static_assert(sizeof(CtlTopicPattern) == 48);
 static_assert(sizeof(CtlNameReq) == 32);
 static_assert(sizeof(CtlAttachResp) == 292);
 static_assert(sizeof(CtlSessionReq) == 68);

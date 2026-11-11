@@ -30,8 +30,14 @@ struct Session;
 class RecapState;
 
 struct PartitionConfig {
-    std::string name;
+    std::string name;                 // "<topic_name>/<partition_num>", for logs, metrics and HTTP
+    // INTENT: agent-local index (0..63), the bit of every internal mask. Never
+    // in a contract: records, events and HELLO carry topic_id instead.
     uint16_t    id = 0;
+    std::string topic_name;
+    uint16_t    topic_id = 0;         // from the site registry
+    uint16_t    partition_num = 0;    // 1..n within the topic
+    int32_t     stream_id = 0;        // topic_id << 16 | partition_num
     std::string transport_type;
     YAML::Node  transport_cfg;
     YAML::Node  framing_node;
@@ -53,10 +59,29 @@ struct PartitionConfig {
     // carries it so the data can be read without the config file.
     std::string yaml;
 
-    // Parses one entry of the `partitions:` sequence. `id` is the index.
+    // Parses one partition's merged node (expand_topics builds it). `id` is
+    // the agent-local index.
     static bool parse(const YAML::Node& node, uint16_t id, const std::string& base_dir,
                       PartitionConfig& out, std::string& err);
+    // Places the partition in its topic; stream_id follows from the two numbers.
+    void set_topic(std::string topic, uint16_t tid, uint16_t num);
 };
+
+class TopicRegistry;
+
+// Cold. Partition `index` (0-based) of one `topics:` entry, merged over the
+// topic's keys and named "<topic>/<index+1>": what expand_topics hands to
+// PartitionConfig::parse, for tools that read one partition of a config.
+// Undefined node when the topic has no such partition.
+YAML::Node topic_partition_node(const YAML::Node& topic, size_t index);
+
+// Cold. Expands the `topics:` sequence into one PartitionConfig per partition,
+// in order, with agent-local ids from `first_id`. Each `partitions:` entry is
+// deep-merged over the topic's own keys (maps merge, anything else replaces);
+// no `partitions:` means one partition. The topic_id comes from `registry`.
+// An Aeron transport without `stream_id` gets the derived one.
+bool expand_topics(const YAML::Node& topics, const TopicRegistry& registry, const std::string& base_dir,
+                   std::vector<PartitionConfig>& out, std::string& err);
 
 // What the agent knows that a partition's tap context needs (Agent::start).
 struct TapSetup {
@@ -96,7 +121,11 @@ public:
 
     // Cold accessors.
     const std::string& name() const noexcept { return cfg_.name; }
-    uint16_t id() const noexcept { return cfg_.id; }
+    uint16_t id() const noexcept { return cfg_.id; }               // agent-local index
+    const std::string& topic_name() const noexcept { return cfg_.topic_name; }
+    uint16_t topic_id() const noexcept { return cfg_.topic_id; }
+    uint16_t partition_num() const noexcept { return cfg_.partition_num; }
+    int32_t stream_id() const noexcept { return cfg_.stream_id; }
     uint64_t heartbeat_timeout_ns() const noexcept { return static_cast<uint64_t>(cfg_.heartbeat_timeout_ms) * 1'000'000ull; }
     DecoderType decoder_type() const noexcept { return decoder_type_; }
     // SBE only: nullptr for other decoders.

@@ -18,7 +18,9 @@
 
 namespace subplane {
 
-struct RoutingFieldMap { std::string symbol, sequence, exchange_ts, venue; }; // empty = unmapped
+// empty = unmapped. `stream_id` is read from admin messages only (the
+// canonical Heartbeat's StreamId): the publisher's own name for its stream.
+struct RoutingFieldMap { std::string symbol, sequence, exchange_ts, venue, stream_id; };
 
 struct TemplateMapping {
     uint16_t template_id = 0;
@@ -45,7 +47,7 @@ public:
     // Cold. Builds the dense by-template table and the walker.
     bool init(const DecoderConfig& cfg, const SbeSchema& schema, std::string& err);
 
-    // Hot. No heap, no exceptions. Does not touch payload_len/ingest_ts/partition_id/seq_tag/flags.
+    // Hot. No heap, no exceptions. Does not touch payload_len/ingest_ts/topic_id/seq_tag/flags.
     DecodeResult decode(const uint8_t* msg, uint32_t avail, TickHeader& out, SymbolResolver& syms) const noexcept;
 
     // Cold side of the recap merge (not the live hot path). Reads a marker's
@@ -79,7 +81,7 @@ private:
         uint8_t  msg_type = 0;
         RecapMarker marker = RecapMarker::NONE;
         const WalkProgram* prog = nullptr;
-        FieldRef symbol, sequence, exchange_ts, venue;
+        FieldRef symbol, sequence, exchange_ts, venue, stream_id;
         FieldRef recap[kRecapFields];
     };
 

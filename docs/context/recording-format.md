@@ -19,7 +19,7 @@ A file is one or more sections. Each section starts with a Section Header Block.
 | Block | Use |
 |---|---|
 | Section Header (SHB) | `shb_userappl` names the writer (`subplane record <version>`), `shb_os` the host OS. |
-| Interface Description (IDB) | One per recorded partition. LINKTYPE_ETHERNET (1), snaplen 65535, `if_name` = partition name, `if_tsresol` = 9 (nanoseconds). |
+| Interface Description (IDB) | One per recorded partition. LINKTYPE_ETHERNET (1), snaplen 65535, `if_name` = the partition's name, `<topic>/<n>` (for example `crypto.binance-spot/1`), `if_tsresol` = 9 (nanoseconds). |
 | Enhanced Packet (EPB) | One per received unit. The timestamp is the agent's receive time (`recv_ts`, CLOCK_REALTIME). Captured length = original length. |
 | Custom (copyable, type `0x00000BAD`) | subplane's own blocks, below. Tools that rewrite files keep copyable custom blocks. |
 
@@ -31,7 +31,7 @@ The agent sees UDP payloads, Aeron messages and TCP stream records, not frames. 
 
 - **Destination:**
   - for `udp` and `udp_multicast`, the partition's group (or 127.0.0.1) and port;
-  - for `aeron`, port = the stream id;
+  - for `aeron`, the 32-bit stream id over address and port: 127.0.x.y with x.y its high 16 bits, port its low 16 (for the default `stream_id`, `topic_id << 16 | partition_num`, that is 127.0.x.y for the topic id and the partition number as the port), so no two streams share an address;
   - for `tcp_stream`, the configured port.
 - **Source:** 0.0.0.0, because the agent does not learn the sender.
 - **MAC addresses:** a multicast destination gets its `01:00:5e` MAC; any other address gets a locally administered one (`02:...`).
@@ -69,7 +69,7 @@ A list of `{u16 tag, u16 reserved, u32 length, value, padding to 4}`. Unknown ta
 | 2 | AGENT_NAME | text |
 | 3 | AGENT_VERSION | text |
 | 4 | AGENT_EPOCH | u64 ns: the agent start this segment came from |
-| 5 | PARTITION | text: the partition name (the IDB's `if_name`) |
+| 5 | PARTITION | text: the partition name, `<topic>/<n>` (the IDB's `if_name`) |
 | 6 | PARTITION_YAML | text: the partition's configuration as the agent loaded it |
 | 7 | SCHEMA_XML | bytes: the schema the decoder loaded (`sbe_routing` only) |
 | 8 | PARTITION_SHA256 | 32 bytes, of PARTITION_YAML |

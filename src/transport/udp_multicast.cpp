@@ -190,7 +190,7 @@ int UdpMulticastTransport::poll(PacketBatch& out) noexcept {
     }
     // INTENT: UDP has no connection; the first datagram, or the first after a
     // socket error, is what "up" means. A silent sender is the heartbeat
-    // timeout's job (PARTITION_DEGRADED), not a transport state.
+    // timeout's job (TOPIC_DEGRADED), not a transport state.
     if (n > 0) report_up();
     // INTENT: one clock read per batch, not per packet, unless the kernel
     // stamped each datagram. Keeps the per-packet cost to the memcpy the

@@ -1,4 +1,5 @@
 #include "subplane/control/control_server.h"
+#include "subplane/pipeline/topic_registry.h"
 
 #include "subplane/core/clock.h"
 #include "subplane/logging/log_registry.h"
@@ -411,8 +412,9 @@ bool ControlServer::to_spec(const CtlHeader& h, const uint8_t* body, bool check_
     CtlSessionReq r {};
     std::memcpy(&r, body, sizeof(r));
     if (r.symbol_count > (h.len - sizeof(CtlSessionReq)) / sizeof(CtlSymbolName) ||
-        h.len != sizeof(CtlSessionReq) + static_cast<size_t>(r.symbol_count) * sizeof(CtlSymbolName)) {
-        err = "symbol_count does not match body length";
+        h.len != sizeof(CtlSessionReq) + static_cast<size_t>(r.symbol_count) * sizeof(CtlSymbolName) +
+                 static_cast<size_t>(r.topic_count) * sizeof(CtlTopicPattern)) {
+        err = "symbol_count and topic_count do not match body length";
         return false;
     }
     out = SessionSpec {};
@@ -446,18 +448,6 @@ bool ControlServer::to_spec(const CtlHeader& h, const uint8_t* body, bool check_
         }
         out.msg_types.emplace_back(name);
     }
-    for (uint32_t bit = 0; bit < 64; ++bit) {
-        if (!((r.partition_mask >> bit) & 1u)) continue;
-        const Partition* found = nullptr;
-        for (const Partition* p : partitions_) {
-            if (p->id() == bit) { found = p; break; }
-        }
-        if (!found) {
-            err = "partition_mask bit " + std::to_string(bit) + ": no such partition";
-            return false;
-        }
-        out.partitions.push_back(found->name());
-    }
     out.all_symbols = r.all_symbols != 0;
     out.bus_admin = r.bus_admin != 0;
     out.agent_control = r.agent_control != 0;
@@ -472,6 +462,14 @@ bool ControlServer::to_spec(const CtlHeader& h, const uint8_t* body, bool check_
             return false;
         }
         out.symbols.emplace_back(s);
+    }
+    const uint8_t* tops = syms + static_cast<size_t>(r.symbol_count) * sizeof(CtlSymbolName);
+    for (uint32_t i = 0; i < r.topic_count; ++i) {
+        CtlTopicPattern tp {};
+        std::memcpy(&tp, tops + static_cast<size_t>(i) * sizeof(tp), sizeof(tp));
+        std::string pat(get_name(tp.pattern));
+        if (!valid_topic_pattern(pat, err)) return false;
+        out.topics.push_back(std::move(pat));
     }
     return true;
 }
@@ -527,17 +525,23 @@ bool ControlServer::op_hello(Client& c, const CtlHeader& h) {
             r.schema_version = s->version();
         }
     }
-    r.partition_count = static_cast<uint16_t>(partitions_.size());
-    std::vector<uint8_t> body(sizeof(r) + partitions_.size() * sizeof(CtlPartitionEntry));
-    std::memcpy(body.data(), &r, sizeof(r));
-    size_t off = sizeof(r);
+    std::vector<CtlTopicEntry> topics;
     for (const Partition* p : partitions_) {
-        CtlPartitionEntry e {};
-        e.id = p->id();
-        set_name(e.name, std::string_view(p->name()).substr(0, CTL_NAME_LEN - 1));
-        std::memcpy(body.data() + off, &e, sizeof(e));
-        off += sizeof(e);
+        bool known = false;
+        for (auto& t : topics) {
+            if (t.topic_id == p->topic_id()) { ++t.partitions; known = true; break; }
+        }
+        if (known) continue;
+        CtlTopicEntry e {};
+        e.topic_id = p->topic_id();
+        e.partitions = 1;
+        set_name(e.name, p->topic_name());
+        topics.push_back(e);
     }
+    r.topic_count = static_cast<uint16_t>(topics.size());
+    std::vector<uint8_t> body(sizeof(r) + topics.size() * sizeof(CtlTopicEntry));
+    std::memcpy(body.data(), &r, sizeof(r));
+    if (!topics.empty()) std::memcpy(body.data() + sizeof(r), topics.data(), topics.size() * sizeof(CtlTopicEntry));
     return reply(c, h, CtlStatus::OK, body.data(), body.size());
 }
 

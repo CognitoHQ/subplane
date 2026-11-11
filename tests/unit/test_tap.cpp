@@ -55,6 +55,7 @@ struct TapHarness {
         REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE)}, 256, err));
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto ft = std::make_unique<FakeTransport>(8, 1500);
         fake = ft.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft)), err);

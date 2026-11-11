@@ -62,6 +62,7 @@ struct Harness {
         REQUIRE(lvc.init(1u << 20, {static_cast<uint8_t>(MsgType::TRADE), static_cast<uint8_t>(MsgType::QUOTE)}, 256, err));
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(partition_yaml), 0, "", cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto ft = std::make_unique<FakeTransport>(8, 1500);
         fake = ft.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft)), err);
@@ -74,7 +75,7 @@ struct Harness {
         FilterSpec spec;
         spec.symbol_ids.assign(ids.begin(), ids.end());
         spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
-        spec.partition_ids = {0};
+        spec.topic_ids = {1};
         s->filter_owned = build_filter(spec, 1u << 20, 1, err);
         REQUIRE_MESSAGE(s->filter_owned, err);
         s->filter.store(s->filter_owned.get());

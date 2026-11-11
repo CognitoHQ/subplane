@@ -28,8 +28,8 @@ Lint: `--routing InstrumentId,VenueId,Sequence,ExchangeTs --admin 100` reports n
 
 ## Mapping a new template in the agent (before any gateway sends it)
 ```yaml
-partitions:
-  - name: binance
+topics:
+  - name: crypto.binance-spot
     decoder:
       type: sbe_routing
       schema: schemas/subplane_canonical.xml

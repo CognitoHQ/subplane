@@ -9,8 +9,11 @@
 namespace subplane {
 
 struct PartitionStatus {
-    std::string name;
-    uint16_t    id = 0;
+    std::string name;           // "<topic>/<partition_num>"
+    std::string topic;
+    uint16_t    topic_id = 0;
+    uint16_t    partition_num = 0;
+    int32_t     stream_id = 0;
     std::string state;          // "init", "active", "degraded", "gap"
     uint64_t    last_sequence = 0;
     uint64_t    packets = 0;
@@ -21,6 +24,8 @@ struct PartitionStatus {
     std::string transport;      // "unknown", "up", "down"
     uint64_t    transport_down = 0;
     uint64_t    transport_up = 0;
+    uint64_t    stream_mismatch = 0;    // heartbeats stamped with another stream_id
+    int32_t     last_stream_stamp = 0;  // the last such stamp
     std::string recap_json;     // recap counters as JSON; empty without a recap block
     // tap: (empty tap_ring without one): the ring a recorder reads, what went
     // into it, and the slowest reader's lag behind the head.
@@ -68,7 +73,7 @@ struct SessionStatus {
     uint64_t    ring_head = 0;          // bytes written to the ring since it opened
     uint64_t    ring_capacity = 0;
     uint64_t    heartbeat_ns = 0;       // the writer's last ring heartbeat (CLOCK_REALTIME), 0 if none
-    std::vector<std::string> partitions; // names of the partitions it is attached to
+    std::vector<std::string> topics;     // its topic patterns, as given (empty = all)
     std::vector<ReaderReport> readers;   // claimed reader slots
     uint32_t    reader_flags = 0;        // ring-wide flags (READER_FLAG_*)
     uint32_t    reader_sample_every = 0;

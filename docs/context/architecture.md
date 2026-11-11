@@ -9,10 +9,53 @@ Three words, three lifecycles. They are never interchangeable.
 | Term | What it is | Lifecycle |
 |---|---|---|
 | **component** | Code compiled into the binary and registered in a static table: a transport, a framer, a decoder, a fan-out. | Fixed at build time. |
-| **activation** | One entry under `partitions:` in YAML. It selects components by `type:` and parameterizes them: transport subscription, framing block, decoder model and schema file. | Chosen at startup. Changing it requires a restart. |
+| **activation** | One partition of a topic in YAML (an entry under a topic's `partitions:`, or the topic itself when it has none). It selects components by `type:` and parameterizes them: transport subscription, framing block, decoder model and schema file. | Chosen at startup. Changing it requires a restart. |
 | **session** | A runtime app subscription: a filter table plus a shared-memory ring. | Created and destroyed at runtime, by YAML (`owner=config`) or by an app over the control channel (`owner=client`). Reloadable. |
 
-Operators may still say "plugin" for an activation. In code, a "partition" is one activation.
+Operators may still say "plugin" for an activation. In code, a "partition" is one activation. A partition belongs to a **topic**, the name apps subscribe by; see "Topics and partitions".
+
+## Topics and partitions
+
+A **topic** is a named feed; it holds one or more **partitions**, numbered from 1. Each partition is one stream with one publisher and one sequence. Partition is a publishing construct, not a data-model one: apps see topics and never partitions. Partition detail (streams, sequences, gaps, transport) is for the operator, in `/partitions`, the metrics and `/topology`.
+
+| Term | Form | Who assigns it |
+|---|---|---|
+| `topic_name` | string of `[A-Za-z0-9._-]`, 1 to 48 characters, `.` between segments (Kafka-legal) | The site (policy). |
+| `topic_id` | u16, 1 to 32767; 0 is reserved | The site, once, in the registry file. Never reused or renumbered. |
+| `partition_num` | u16, 1 to 65535, within a topic | The publisher's config. |
+| `stream_id` | i32 = `topic_id << 16 \| partition_num`, always positive | Derived. It is the default Aeron stream id. |
+
+The agent's name for a partition, in logs, metrics and HTTP, is `<topic_name>/<partition_num>`.
+
+**Registry.** `topic_name` to `topic_id` is a site-wide file that every agent and every publisher reads, so an id means the same on every box, in every record and in every recording. `registry:` in the agent config is the file's path (relative to the config file) or the entries inline, a sequence of `{id, name}`. A bad name, an id outside 1 to 32767 or a duplicate id or name stops the agent at startup, as does a topic that is not in the registry, listed twice, or given an `id:` key. `site/topics.example.yaml` is the example the repository's `config.yaml` uses.
+
+**Config shape.** Top-level `partitions:` no longer exists; the agent refuses it with an error naming `topics:`.
+
+```yaml
+registry: site/topics.yaml           # or inline: [ { id: 11, name: crypto.binance-spot } ]
+topics:
+  - name: eq.sample                  # the id comes from the registry; a topic has no `id:` key
+    transport: { type: udp_multicast, group: 239.1.1.1, port: 30001 }
+    framing: { ... }                 # keys at the topic level are shared by its partitions
+    decoder: { ... }
+    partitions:                      # optional; omitted means one partition (number 1)
+      - {}                           # partition 1: no overrides
+      - transport: { group: 239.1.1.2 }   # partition 2: deep-merged over the topic's keys
+```
+
+Each `partitions:` entry is deep-merged over the topic's keys: maps merge, anything else replaces, and `{}` means no overrides. A partition entry has no `name`; its number is its position, from 1. An Aeron transport without `stream_id` gets the derived `stream_id`; an explicit one is kept. Two partitions on the same transport address are refused (`read the same stream`). The limit of 64 partitions per agent still holds.
+
+**Thread groups.** `agent.thread_groups[].topics` lists topic names; `partitions:` there is an error. A topic's partitions always share one group, and each topic must be in exactly one group.
+
+**Session patterns.** A session's `topics:` lists patterns that match topic names by `.` segment: `*` matches exactly one segment, a final `>` matches one or more, anything else matches itself (`crypto.*`, `crypto.>`). An omitted or empty list means all topics. A pattern that matches no topic is an error at session create, and a session's topics cannot change after creation (`SET_FILTER` refuses). A session `partitions:` key is an error. As before, a session configuration error is logged and the agent keeps running.
+
+**In the data path.** The record header carries `topic_id` (offset 48), `sequence` is the stream's own, one per partition, and the session filter accepts by `topic_id` (a 32768-bit bitmap). Until the per-instrument sequence lands (planned), sequences in events are the stream's own.
+
+**Stream identity in band.** The canonical `Heartbeat` (template 100) carries `StreamId` (int32, root offset 32, 0 = unstamped). The decoder routing field `stream_id` (`fields: { ..., stream_id: StreamId }`) reads it from admin messages only. When a heartbeat's stamp is non-zero and differs from the partition's `stream_id`, the partition counts `stream_mismatch` and records `last_stream_stamp`; data is not dropped. It catches a publisher stamped for one stream sending on another.
+
+**Restart rule.** Only `sessions:` is reloaded. `POST /reload` answers `{"status":"reloaded","ignored":["topics"]}` when `registry`, `topics` or `agent.thread_groups` changed, and logs `RELOAD_IGNORED`; those edits take effect on restart. Adding a partition therefore takes a restart; the weekend practice is to add partitions on the primary and the DR agent, then move tickers.
+
+**Planned, not built:** the per-instrument sequence (a 40-byte canonical prefix with an `InstrumentSeq`), a resolver (the SPP `Resolve` op served by the snapshot service), make-before-break intraday moves of a ticker between partitions, a gateway publishing one topic over several partitions, and a Kafka ingest transport.
 
 ## Deployment
 
@@ -84,7 +127,7 @@ transport:
 transport:
   type: aeron
   channel: "aeron:ipc"          # or aeron:udp?endpoint=0.0.0.0:40456 | aeron:udp?endpoint=239.1.1.1:40456|interface=10.0.0.1
-  stream_id: 1001
+  stream_id: 720897             # optional: defaults to the partition's stream_id (topic_id << 16 | partition_num)
   aeron_dir: ""                 # media driver directory; empty = Aeron's default (/dev/shm/aeron-<user>)
   batch: 32                     # fragments per poll, 1 to 64
   max_message: 65536            # arena slot bytes; a larger message is counted (oversize) and dropped
@@ -167,6 +210,7 @@ What it decodes, from the message root block only:
 - `symbol` (integer field, or a `char[N]` field) interned to a dense `symbol_id`. Mode `table` (default) maps through the lock-free `SymbolTable`; mode `passthrough` uses the raw integer as the id and requires an integer field.
 - `symbol_scope` (`global` default | `venue`): with `venue`, an integer symbol is interned together with the message's venue, so instrument 1 from venue 10 and instrument 1 from venue 20 are two symbols. Needs `symbol_id_mode: table`, an integer symbol and a mapped venue (the same option exists for `dbn`, where the venue is `publisher_id`, and for `flatbuffers`, where every message with an integer symbol needs a venue path). Session filters, `SYMBOL_MAPPED` names and `GET /lvc/{symbol}` then spell these symbols `<venue>:<id>` (`10:1`). Opt-in because it changes how filters are written; with globally unique ids (a site instrument master) `global` is enough.
 - `sequence`, `exchange_ts`, `venue` (integer fields; venue is truncated to 16 bits).
+- `stream_id` (integer field, read from admin messages only): the stream identity a publisher stamps in its heartbeat; see "Topics and partitions".
 - Template id, schema id and schema version from the SBE header, and `msg_type` from the config mapping.
 
 What it does not do:
@@ -179,7 +223,7 @@ What it does not do:
 
 ## Pipeline threading
 
-One pipeline (`Pipeline`) per **thread group**. A group is one busy-polling thread, optionally pinned to a CPU, that owns a disjoint set of partitions and the sessions that subscribe only to them. A session whose partitions span two groups is rejected. Default is one group containing every partition. Why: rings are single-writer, last-value slots are single-writer seqlocks, and control events must be ordered relative to data on each ring.
+One pipeline (`Pipeline`) per **thread group**. A group is one busy-polling thread, optionally pinned to a CPU, that owns a disjoint set of topics (all of each topic's partitions) and the sessions that subscribe only to them. A session whose topics span two groups is rejected. Default is one group containing every topic. Why: rings are single-writer, last-value slots are single-writer seqlocks, and control events must be ordered relative to data on each ring.
 
 The cold side (config, control channel, HTTP) never touches pipeline state directly. It posts commands to the group through a fixed-capacity SPSC queue (1024 entries) and waits for the ack:
 
@@ -200,7 +244,7 @@ Per partition, `expected_seq` (0 = unknown). The first sequence seen seeds it; n
 - `seq < expected` by more than `dup_window`: treated as a publisher restart without an admin message. Count `seq_resets`, emit `GAP_DETECTED` with `received < expected`, resync and accept.
 - `SEQ_RESET` admin message: set `expected_seq = 0` so the next sequence is accepted as a fresh start. The admin record is published in-band.
 
-**Heartbeat timeout.** A partition starts `INIT`, becomes `ACTIVE` on its first packet, and goes `DEGRADED` when no packet has arrived for `heartbeat_timeout_ms` (default 2000). Entering `DEGRADED` counts `degraded_events` and emits `PARTITION_DEGRADED` (reason `HEARTBEAT_TIMEOUT`). The next packet of any kind returns it to `ACTIVE` and emits `PARTITION_RECOVERED`. Any bus packet counts as liveness; a bus heartbeat message is just one.
+**Heartbeat timeout.** A partition starts `INIT`, becomes `ACTIVE` on its first packet, and goes `DEGRADED` when no packet has arrived for `heartbeat_timeout_ms` (default 2000). Entering `DEGRADED` counts `degraded_events` and emits `TOPIC_DEGRADED` (reason `HEARTBEAT_TIMEOUT`). The next packet of any kind returns it to `ACTIVE`; the topic emits `TOPIC_RECOVERED` once none of its partitions is degraded. Any bus packet counts as liveness; a bus heartbeat message is just one.
 
 ## Ring and record format
 
@@ -246,7 +290,7 @@ Every record is two parts: a fixed header tuple that the agent fills from wherev
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | `seq_tag` | u64 | On a ring: absolute byte position of this record, written last with release. 0 elsewhere. |
-| 8 | `sequence` | u64 | Bus sequence per partition. 0 if the bus has none. |
+| 8 | `sequence` | u64 | The stream's sequence (one per partition). 0 if the bus has none. |
 | 16 | `exchange_ts` | u64 | ns since epoch from the mapped schema field. 0 if unmapped. |
 | 24 | `ingest_ts` | u64 | ns since epoch at packet receive. Never 0 on a delivered record. |
 | 32 | `symbol_id` | u32 | Dense interned id (or passthrough per config). |
@@ -255,7 +299,7 @@ Every record is two parts: a fixed header tuple that the agent fills from wherev
 | 42 | `schema_id` | u16 | SBE schemaId. |
 | 44 | `schema_version` | u16 | SBE version. |
 | 46 | `venue_id` | u16 | Venue from the mapped field, 0 if unmapped. |
-| 48 | `partition_id` | u16 | Partition (activation) that produced the record. |
+| 48 | `topic_id` | u16 | Topic that produced the record (registry id); 0 on agent-wide control records. |
 | 50 | `msg_type` | u8 | `MsgType` for DATA, `ControlCode` otherwise. |
 | 51 | `kind` | u8 | 0 DATA, 1 BUS_ADMIN, 2 AGENT_CONTROL, 3 PAD, 4 RAW (tap rings only: one received unit; see "Tap"). |
 | 52 | `wire_format` | u8 | 30 = SBE. |
@@ -275,27 +319,27 @@ Payloads of AGENT_CONTROL records are packed little-endian PODs in `shm/control_
 | 0x82 | BUS_SNAPSHOT_START | BUS_ADMIN | SBE bytes |
 | 0x83 | BUS_SNAPSHOT_END | BUS_ADMIN | SBE bytes |
 | 0x84 | BUS_TRADING_STATUS | BUS_ADMIN | SBE bytes |
-| 0xA0 | GAP_DETECTED | AGENT_CONTROL | `GapEvent` {partition_id, expected_seq, received_seq, detected_ns}; `received < expected` means a publisher restart |
-| 0xA1 | PARTITION_DEGRADED | AGENT_CONTROL | `PartitionStateEvent` {partition_id, reason, last_seq, changed_ns} |
-| 0xA2 | PARTITION_RECOVERED | AGENT_CONTROL | `PartitionStateEvent` |
+| 0xA0 | GAP_DETECTED | AGENT_CONTROL | `GapEvent` {topic_id, expected_seq, received_seq, detected_ns}; `received < expected` means a publisher restart |
+| 0xA1 | TOPIC_DEGRADED | AGENT_CONTROL | `TopicStateEvent` {u16 topic_id; u8 degraded; u8 partitions; u32 reason (`TopicReason`); u64 last_seq; u64 changed_ns}, 24 bytes. Sent each time the count of the topic's degraded partitions changes and is not zero. `partitions` is how many of the topic's partitions this agent reads. |
+| 0xA2 | TOPIC_RECOVERED | AGENT_CONTROL | `TopicStateEvent`; sent when the count of degraded partitions reaches zero |
 | 0xA3 | FILTER_RELOADED | AGENT_CONTROL | `FilterReloadedEvent` {session_id, generation} |
 | 0xA4 | AGENT_RESTARTED | AGENT_CONTROL | `AgentRestartedEvent` {epoch, prev_epoch}; `prev_epoch` is currently always 0 |
 | 0xA5 | SESSION_CLOSING | AGENT_CONTROL | `SessionClosingEvent` {session_id, reason: 0 shutdown, 1 destroyed or linger expired, 2 removed by reload} |
 | 0xA6 | SYMBOL_MAPPED | AGENT_CONTROL | `SymbolMappedEvent` {symbol_id, venue_id, name_len, name[24]} |
-| 0xA7 | TRANSPORT_DOWN | AGENT_CONTROL | `TransportStateEvent` {partition_id, reason, last_seq, changed_ns}, 24 bytes. Reasons are transport-neutral (INV-015): 1 source lost (the last Aeron image went away, a TCP peer closed, reset or refused), 2 local failure (Aeron driver or client timeout, socket error, a misframed TCP stream). Reported once per change: a transport already down reports nothing more. `last_seq` is the last sequence accepted before the change. |
-| 0xA8 | TRANSPORT_UP | AGENT_CONTROL | `TransportStateEvent`; reason 0, or 3 publisher restart: a new Aeron session replaced the previous one. After a restart, on every partition, the next sequence is accepted as a fresh start, as after `BUS_SEQ_RESET`: the new publisher's numbering is not compared with the old one's, so it is neither reported as a gap or reset nor dropped as duplicates when it starts within `dup_window` below the old sequence. A restart is reported even without a DOWN before it (over Aeron UDP the old image outlives its publisher by the image liveness timeout). It is written ahead of the records of the batch that brought the source back; on Aeron, when a poll sees a new image before the client has announced it, a plain UP comes first and the restart UP follows on the next poll, possibly after a few records. Over UDP multicast "up" is the first datagram, or the first after a socket error; a silent sender is `PARTITION_DEGRADED`, not a transport state. Both events go to every session of the partition that takes `agent_control`. `/partitions` shows the state (`unknown`, `up`, `down`) and the counts. |
-| 0xA9 | SYMBOL_STALE | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id u32, partition_id u16, reason u16, last_seq u64, changed_ns u64}, 24 bytes. The session's view of the symbol is no longer exact and a recap of it has started. `reason`: 1 sequence gap, 3 publisher restart, 4 sequence reset (`BUS_SEQ_RESET` or a backward jump beyond `dup_window`); 2 (transport down) is reserved and never sent. `last_seq` is the partition's last sequence before the change. Written only to recap sessions, once per symbol of theirs on the partition. |
-| 0xAA | RECAP_PENDING | AGENT_CONTROL | `RecapEvent` {request_id u64, symbol_id u32, partition_id u16, status u8, reserved u8, attempt u32, record_count u32, as_of_seq u64}, 32 bytes. The symbol is waiting for a snapshot; `request_id` and `attempt` are 0. |
+| 0xA7 | TRANSPORT_DOWN | AGENT_CONTROL | `TransportStateEvent` {topic_id, reason, last_seq, changed_ns}, 24 bytes. Reasons are transport-neutral (INV-015): 1 source lost (the last Aeron image went away, a TCP peer closed, reset or refused), 2 local failure (Aeron driver or client timeout, socket error, a misframed TCP stream). Reported once per change: a transport already down reports nothing more. `last_seq` is the last sequence accepted before the change. |
+| 0xA8 | TRANSPORT_UP | AGENT_CONTROL | `TransportStateEvent`; reason 0, or 3 publisher restart: a new Aeron session replaced the previous one. After a restart, on every partition, the next sequence is accepted as a fresh start, as after `BUS_SEQ_RESET`: the new publisher's numbering is not compared with the old one's, so it is neither reported as a gap or reset nor dropped as duplicates when it starts within `dup_window` below the old sequence. A restart is reported even without a DOWN before it (over Aeron UDP the old image outlives its publisher by the image liveness timeout). It is written ahead of the records of the batch that brought the source back; on Aeron, when a poll sees a new image before the client has announced it, a plain UP comes first and the restart UP follows on the next poll, possibly after a few records. Over UDP multicast "up" is the first datagram, or the first after a socket error; a silent sender is `TOPIC_DEGRADED`, not a transport state. Both events go to every session of the partition that takes `agent_control`. `/partitions` shows the state (`unknown`, `up`, `down`) and the counts. |
+| 0xA9 | SYMBOL_STALE | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id u32, topic_id u16, reason u16, last_seq u64, changed_ns u64}, 24 bytes. The session's view of the symbol is no longer exact and a recap of it has started. `reason`: 1 sequence gap, 3 publisher restart, 4 sequence reset (`BUS_SEQ_RESET` or a backward jump beyond `dup_window`); 2 (transport down) is reserved and never sent. `last_seq` is the partition's last sequence before the change. Written only to recap sessions, once per symbol of theirs on the partition. |
+| 0xAA | RECAP_PENDING | AGENT_CONTROL | `RecapEvent` {request_id u64, symbol_id u32, topic_id u16, status u8, reserved u8, attempt u32, record_count u32, as_of_seq u64}, 32 bytes. The symbol is waiting for a snapshot; `request_id` and `attempt` are 0. |
 | 0xAB | RECAP_BEGIN | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the records in the reply, `attempt` 1 for the first request and +1 per retry |
 | 0xAC | RECAP_COMPLETE | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the snapshot records written to this ring |
 | 0xAD | RECAP_FAILED | AGENT_CONTROL | `RecapEvent`; `status`: 1 timeout, 2 rejected, 3 snapshot too old, 4 hold overflow, 5 reserved (a gap while a symbol is pending is reported as `SYMBOL_STALE`), 6 publisher identity mismatch (planned), 7 request could not be sent, 8 reply larger than `reply_slab_bytes`. The agent asks again; the symbol stays pending. |
 | 0xFE | PAD | PAD | none |
 
-Bus admin delivery is partition-scoped (the session must accept the record's partition). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `PARTITION_DEGRADED` and `PARTITION_RECOVERED` go to the sessions attached to that partition. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern; the four recap events only to the rings of the recap sessions waiting on that symbol, and `SYMBOL_STALE` only to recap sessions.
+Every event's topic field is `topic_id` (it was `partition_id`, same layout). Bus admin delivery is topic-scoped (the session must accept the record's topic). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `TOPIC_DEGRADED` and `TOPIC_RECOVERED` go to the sessions whose patterns take that topic. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern; the four recap events only to the rings of the recap sessions waiting on that symbol, and `SYMBOL_STALE` only to recap sessions.
 
 ## Filters
 
-`core/filter_table.h`. A `FilterTable` is a symbol bitset sized from `agent.max_symbols`, a `msg_type_mask`, a `partition_mask` (64 partitions per agent), a `venue_mask` (default all), flags `all_symbols`, `bus_admin`, `agent_control`, and a `generation`. `accept` is a handful of AND and shift operations with range guards. It is built on the cold path and swapped by pointer.
+`core/filter_table.h`. A `FilterTable` is a symbol bitset sized from `agent.max_symbols`, a `msg_type_mask`, a `topic_mask` (a 32768-bit bitmap over `topic_id`; an empty pattern list sets all of it), a `venue_mask` (default all), flags `all_symbols`, `bus_admin`, `agent_control`, and a `generation`. `accept` is a handful of AND and shift operations with range guards. It is built on the cold path and swapped by pointer.
 
 The venue mask is part of the table and the hot path, but neither YAML nor the control protocol can currently set it, so it is always "all venues".
 
@@ -303,9 +347,9 @@ The venue mask is part of the table and the hot path, but neither YAML nor the c
 
 A `Session` is a filter table plus a ring plus counters.
 
-- **YAML sessions** (`sessions:`) have `owner=config`. They survive client disconnects. `POST /reload` re-reads the file and reconciles by name: new names are created, changed filters are swapped, names that disappeared are destroyed (reason 2). A session's partitions cannot change after creation; destroy and recreate. Only the `sessions` section is reloaded; everything else needs a restart. There is no SIGHUP handler; reload is via HTTP.
+- **YAML sessions** (`sessions:`) have `owner=config`. They survive client disconnects. `POST /reload` re-reads the file and reconciles by name: new names are created, changed filters are swapped, names that disappeared are destroyed (reason 2). A session's topics cannot change after creation; destroy and recreate. Only the `sessions` section is reloaded; a change to `registry`, `topics` or `agent.thread_groups` is reported in the reply (`"ignored"`) and logged as `RELOAD_IGNORED`, and needs a restart. There is no SIGHUP handler; reload is via HTTP.
 - **Client sessions** (`owner=client`) are created over the control channel. They live while any connection that created or attached to them is open, plus `control.linger_ms` (default 5000) after the last holder disconnects; a new `ATTACH` before expiry keeps them. Reload never touches them. A name collision is rejected (`EXISTS`), and a YAML entry that collides with a client session is ignored with an error.
-- Session names are 1 to 31 characters of `[A-Za-z0-9_-]`. Symbols in a filter are names, decimal integer ids, or `<venue>:<id>` on `symbol_scope: venue` partitions (a bare id is rejected when every partition of the session is venue-scoped, and `<venue>:<id>` when none is), and are interned on the cold path. An empty `partitions` list means all partitions. An empty `msg_types` list means all data types.
+- Session names are 1 to 31 characters of `[A-Za-z0-9_-]`. Symbols in a filter are names, decimal integer ids, or `<venue>:<id>` on `symbol_scope: venue` partitions (a bare id is rejected when every partition of the session is venue-scoped, and `<venue>:<id>` when none is), and are interned on the cold path. An empty `topics` list means all topics; a pattern that matches no topic is an error. An empty `msg_types` list means all data types.
 
 ## Control channel
 
@@ -315,9 +359,9 @@ Every datagram is `CtlHeader {u32 len, u16 op, u16 version, u32 req_id, u32 stat
 
 | Op | Code | Request | Reply |
 |---|---|---|---|
-| HELLO | 1 | empty | agent name, epoch, record_version, proto_version, symbol count, max symbols, schema id and version of the first partition, then one entry per partition |
+| HELLO | 1 | empty | `CtlHelloResp`: agent name, epoch, record_version, proto_version, symbol count, max symbols, schema id and version of the first partition, `topic_count`; then `topic_count` × `CtlTopicEntry` {u16 topic_id; u16 partitions; char name[48]}, 52 bytes each |
 | ATTACH | 2 | session name | session id, owner, ring path, epoch, capacity, max_payload, filter generation |
-| CREATE_SESSION | 3 | name, ring capacity, max_payload, msg_type_mask (0 = all), partition_mask (0 = all), flags, then N symbol names (24 B each) | same as ATTACH |
+| CREATE_SESSION | 3 | `CtlSessionReq` (68 bytes: name, ring capacity, max_payload, msg_type_mask (0 = all), `topic_count`, two reserved fields, the `all_symbols`, `bus_admin`, `agent_control` and `recap` flag bytes, `symbol_count`; it replaces the u64 `partition_mask`, so the size and `CONTROL_PROTO_VERSION` are unchanged), then `symbol_count` × `CtlSymbolName` (24 B each), then `topic_count` × `CtlTopicPattern` {char pattern[48]}; no patterns = all topics | same as ATTACH |
 | SET_FILTER | 4 | same body (ring fields ignored) | new filter generation |
 | DESTROY_SESSION | 5 | session name | empty |
 | SNAPSHOT | 6 | session name | multi-datagram, see below |
@@ -413,10 +457,10 @@ Planned: the publisher identity check (status 6, with canonical v2's `SourceEpoc
 
 A partition with `tap:` copies every unit its transport delivers into a **tap ring**, for a recorder (`docs/context/recording-format.md`). Built: the tap ring and its context file. Planned: `subplane record`, which writes them to `.pcapng` files.
 
-- **Where:** `<fanout.ring_dir>/subplane.<agent>.tap.<partition>.ring`, an ordinary ring (same layout, reader slots, heartbeat, `CLOSED` on shutdown) whose records are:
+- **Where:** `<fanout.ring_dir>/subplane.<agent>.tap.<topic>.<n>.ring`, an ordinary ring (same layout, reader slots, heartbeat, `CLOSED` on shutdown) whose records are:
   - `Kind::RAW` records: one per received unit, before framing, so malformed, duplicate and unknown units are kept too. The payload is the unit's bytes (a UDP payload, a TCP stream record, an Aeron message), `ingest_ts` is its receive time, and `sequence` counts every unit offered to the tap from 1: a gap means units the recording lacks.
   - `TRANSPORT_UP`/`TRANSPORT_DOWN` control records, as sessions get them.
-- **The context file:** `subplane.<agent>.tap.<partition>.ctx`, beside the ring and written before it (atomically), holds the CONTEXT TLVs of the recording format: agent name, version and epoch, the partition's YAML as loaded, the schema XML (`sbe_routing`), their SHA-256, the timestamp source and the synthetic UDP destination. A recorder checks its epoch against the ring's.
+- **The context file:** `subplane.<agent>.tap.<topic>.<n>.ctx`, beside the ring and written before it (atomically), holds the CONTEXT TLVs of the recording format: agent name, version and epoch, the partition's YAML as loaded, the schema XML (`sbe_routing`), their SHA-256, the timestamp source and the synthetic UDP destination. A recorder checks its epoch against the ring's.
 - **Cost:** off, one predictable branch per packet. On, one copy of each unit into the ring, which never blocks: a slow recorder is lapped, and a unit larger than `max_payload` is counted in `tap_dropped`. Measured (`subplane replay --bench --tap`, 3 messages per packet, pinned): about 30 to 40 ns per message more with the tap on.
 - `/partitions` shows the tap's ring, counts and the slowest reader's lag; `/topology` lists the ring downstream with role `record`.
 
@@ -504,9 +548,9 @@ The Python module defines one frozen dataclass per message (standard library `st
 | 5 | `Ohlcv` | `Open`, `High`, `Low`, `Close`, `Volume`, `IntervalSec u32` | 88 |
 | 6 | `Status` | `TradingStatus`, `Reason u8` | 48 |
 | 10 | `InstrumentDefinition` | `Symbol char[32]`, `Exchange`, `Base`, `Quote` (`char[16]`), `TickSize`, `LotSize`, `Status` | 144 |
-| 100 | `Heartbeat` | prefix only, `InstrumentId` 0 | 40 |
+| 100 | `Heartbeat` | prefix only, `InstrumentId` 0; `StreamId i32` at offset 32 (0 = unstamped) | 48 |
 
-A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` and templates 1..6 mapped to the matching `MsgType`, 10 to `DEFINITION`, 100 to `admin: HEARTBEAT` (the commented `canonical` partition in `config.yaml`). `subplane send --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views (`--spin` busy-polls; `--latency` prints histograms of canonical `RecvTs` to app read, ring `ingest_ts` to app read, and `RecvTs` to `ingest_ts`, all CLOCK_REALTIME on one box, so a gateway, the agent and an app measure end to end with no probes); `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
+A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` (plus `stream_id: StreamId` to check the stream identity) and templates 1..6 mapped to the matching `MsgType`, 10 to `DEFINITION`, 100 to `admin: HEARTBEAT` (the commented `canonical.sample` topic in `config.yaml`). `subplane send --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views (`--spin` busy-polls; `--latency` prints histograms of canonical `RecvTs` to app read, ring `ingest_ts` to app read, and `RecvTs` to `ingest_ts`, all CLOCK_REALTIME on one box, so a gateway, the agent and an app measure end to end with no probes); `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
 
 ```cpp
 // Trade: template 1, 72 bytes. Constant fields omitted: PriceExponent (PriceExponent).
@@ -554,15 +598,16 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 | Method and path | Returns |
 |---|---|
 | `GET /health` | `{"status":"ok"}` |
-| `GET /status` | name, version, uptime, epoch, partitions, sessions |
-| `GET /partitions` | per partition: name, id, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts; with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
-| `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation, ring-wide `reader_flags`, and `readers` (slot, pid, name, lag bytes, records, overruns, heartbeat, tracing) |
+| `GET /status` | name, version, uptime, epoch, partitions, sessions, topics |
+| `GET /topics` | per topic: name, `topic_id`, `degraded` (the count of its degraded partitions), `partitions` [{`partition_num`, `stream_id`, `state`}] and `sessions` (names of the sessions whose patterns take it); also inside `/status` as `topics` |
+| `GET /partitions` | per partition: name (`<topic>/<n>`), `topic`, `topic_id`, `partition_num`, `stream_id`, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts, `stream_mismatch` and `last_stream_stamp`; with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
+| `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation, ring-wide `reader_flags`, `topics` (its patterns, as given) and `readers` (slot, pid, name, lag bytes, records, overruns, heartbeat, tracing) |
 | `POST /sessions/<name>/trace?on=1\|0[&pid=N][&sample=N]` | latency tracing for the session's readers: every reader, or the slots of one pid; trace 1 record in `sample` |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |
-| `GET /topology` | what the agent consumes (one `data` entry per partition, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it; one `record` entry per tap ring), each by canonical endpoint key: `docs/context/observability.md` |
+| `GET /topology` | what the agent consumes (one `data` entry per partition, local `{topic, partition, stream_id}`, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it; one `record` entry per tap ring), each by canonical endpoint key: `docs/context/observability.md` |
 | `GET /metrics` | Prometheus text exposition (`docs/context/observability.md`: every partition, transport, recap, group and session counter, state gauges, the `recv_to_publish` histogram, `subplane_service_info`); `?format=json` for the JSON form |
-| `POST /reload` | re-reads the config file and reconciles the `sessions` section |
+| `POST /reload` | re-reads the config file and reconciles the `sessions` section; the reply lists `ignored` sections that changed (`registry`, `topics`, `agent.thread_groups`) |
 
 Anything else is 404 with a JSON error body. There is no per-session detail path; `/sessions/<name>/trace` is the only per-session action.
 
@@ -570,7 +615,7 @@ Anything else is 404 with a JSON error body. There is no per-session detail path
 
 Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
-- Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `tap_records`, `tap_dropped`, plus `last_unknown_template`.
+- Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `stream_mismatch`, `tap_records`, `tap_dropped`, plus `last_unknown_template`.
 - Per session: `published`, `filtered`, `publish_failed`, `ring_overruns` (reserved; the writer cannot observe reader overruns, so it stays 0: each reader reports its own through its reader slot, `subplane_app_overruns_total`).
 - Histogram: one `LogHistogram` per thread group, `recv_to_publish` in ns (receive timestamp to after the packet is published, recorded per packet). 64 power-of-two buckets by 4 sub-buckets (256 total), relative error up to 25%, single writer with relaxed load and store, snapshotted cold for p50, p90, p99, p99.9, min, max, mean. Per-stage histograms are planned.
 - Transports keep their own one-writer counters (`aeron`: fragments, oversize, image events, client errors; `tcp_stream`: connects, disconnects, framing errors), exported through the cold `Transport::counters()`.
@@ -578,27 +623,32 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
 ## Configuration reference
 
-`config.yaml`, walked section by section. Relative schema paths resolve against the config file's directory. Only `sessions` is reloadable.
+`config.yaml`, walked section by section. Relative schema paths resolve against the config file's directory. Only `sessions` is reloadable. The top level also has `registry` and `topics`; see "Topics and partitions".
 
 `agent`
 - `name` (default `subplane`): used in ring file names, the default control socket path and logs.
 - `version`: informational.
 - `max_symbols` (default 65536): size of the symbol table, filter bitsets and last-value cache.
 - `ring_mode` (default `"0644"`, octal): ring file mode. Readers of another uid need group write (`"0660"`) to claim a reader slot; without it they read but do not report.
-- `thread_groups[]`: `name`, `cpu` (pin core, -1 = unpinned), `partitions` (names). Omitted means one group `g0` with every partition. Each partition must be in exactly one group.
+- `thread_groups[]`: `name`, `cpu` (pin core, -1 = unpinned), `topics` (names; `partitions:` is an error). Omitted means one group `g0` with every topic. Each topic must be in exactly one group, and its partitions run in that group.
 
-`partitions[]` (one activation each; order defines the partition id, at most 64)
-- `name`: required, unique.
+`registry`
+- The path of the site's topic registry file (relative to the config file), or the entries inline as a sequence of `{id, name}`. Required.
+
+`topics[]` (each partition is one activation; at most 64 partitions per agent)
+- `name`: required, unique, in the registry. No `id:` key.
+- `partitions[]`: optional; each entry is deep-merged over the keys below (maps merge, anything else replaces; `{}` = no overrides). Omitted means one partition. A partition entry has no `name`.
+- The keys below are shared by the topic's partitions unless a partition overrides them.
 - `transport`: `type` (`udp_multicast` or `udp`), `group` (empty = unicast), `port`, `interface` (local address, empty = any), `rcvbuf` (bytes), `busy_poll_us` (0 = off), `mtu`, `batch` (1 to 64), `kernel_timestamps` (default false), `multicast_loop` (default true), `reuse_port` (default true). `type: tcp_stream` and `type: aeron` take the keys shown under Transport.
 - `framing`: the block described above. Absent means bare concatenation with length from the schema and no sequence.
-- `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`; recap markers also take `fields`).
+- `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, and `stream_id`, read from admin messages only; each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`; recap markers also take `fields`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
 - `lvc` (`on` default | `off`): whether this partition's data feeds the last-value cache. Turn it off for partitions whose values are built from many messages (book updates, accumulated volume), where the last single update would mislead; their state comes from recap (planned) instead.
 - `recap`: the snapshot service for this partition; see "Recap" (config, component and manager implemented; the merge planned).
 - `tap`: `{capacity_mb: 256, max_payload: 65536}` (both optional; the block's presence turns it on): copy every received unit into the partition's tap ring for `subplane record`; see "Tap".
 
 `sessions[]` (reloadable)
-- `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `partitions` (names), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true), `recap` (default false; see "Recap").
+- `name`, optional `owner` (config), `ring.capacity_mb` (or `ring.capacity_bytes`; power of two, at least 64 KiB), `ring.max_payload` (default 4096, at most capacity / 4), `topics` (patterns; omitted = all topics; `partitions` is an error), `symbols` (`["*"]` or names or numeric ids), `msg_types` (names), `deliver.bus_admin`, `deliver.agent_control` (both default true), `recap` (default false; see "Recap").
 
 `fanout`
 - `ring_dir` (default `/dev/shm`). Only the `shm_ring` fan-out exists; there is no `type` key yet. `aeron_ipc` is planned.
@@ -633,7 +683,7 @@ include/subplane/
   recap/       recap_transport.h aeron_recap.h recap_config.h recap_manager.h
   framing/     framing.h sbe_length.h
   decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h sbe_codec.h
-  pipeline/    pipeline.h partition.h session.h session_manager.h lvc.h symbol_resolver.h recap_state.h
+  pipeline/    pipeline.h partition.h topic_registry.h session.h session_manager.h lvc.h symbol_resolver.h recap_state.h
   shm/         ring_layout.h control_events.h        (shared with apps)
   fanout/      ring_writer.h
   control/     control_proto.h control_server.h      (proto shared with apps)

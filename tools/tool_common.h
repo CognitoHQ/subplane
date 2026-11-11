@@ -20,6 +20,7 @@
 
 #include "subplane/decoder/sbe_schema.h"
 #include "subplane/framing/framing.h"
+#include "subplane/pipeline/partition.h"
 #include "subplane/framing/sbe_length.h"
 
 namespace sptool {
@@ -88,9 +89,10 @@ inline bool load_framing(const std::string& arg, subplane::FramingConfig& out, s
         if (r.IsMap()) {
             if (r["framing"]) {
                 node = r["framing"];
-            } else if (r["partitions"] && r["partitions"].IsSequence() && r["partitions"].size() > 0 &&
-                       r["partitions"][0]["framing"]) {
-                node = r["partitions"][0]["framing"];
+            } else if (r["topics"] && r["topics"].IsSequence() && r["topics"].size() > 0) {
+                // An agent config: the first partition of its first topic.
+                const YAML::Node p = subplane::topic_partition_node(r["topics"][0], 0);
+                if (p.IsDefined() && p["framing"]) node = p["framing"];
             }
         }
     } catch (const YAML::Exception& e) {

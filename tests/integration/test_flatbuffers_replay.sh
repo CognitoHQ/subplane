@@ -26,8 +26,9 @@ PORT=$(( 20000 + (RANDOM % 30000) ))
 API=$(( 20000 + (RANDOM % 30000) ))
 SOCK="$TMP/ctl.sock"
 cat > "$TMP/config.yaml" <<YAML
-agent: { name: $NAME, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [fb0] } ] }
-partitions:
+agent: { name: $NAME, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, topics: [fb0] } ] }
+registry: [ { id: 1, name: fb0 } ]
+topics:
   - name: fb0
     transport: { type: udp, group: "", port: $PORT, interface: "", rcvbuf: 4194304 }
     framing: { message_prefix: [ { name: size, type: u32le } ], length: message_prefix.size, keep_prefix: true }
@@ -41,7 +42,7 @@ partitions:
     heartbeat_timeout_ms: 2000
     tap: { capacity_mb: 8 }
 sessions:
-  - { name: three, ring: { capacity_mb: 8, max_payload: 4096 }, partitions: [fb0], symbols: ["1000", "1006", "1031"], msg_types: [TRADE], deliver: { bus_admin: true, agent_control: true } }
+  - { name: three, ring: { capacity_mb: 8, max_payload: 4096 }, topics: [fb0], symbols: ["1000", "1006", "1031"], msg_types: [TRADE], deliver: { bus_admin: true, agent_control: true } }
 fanout: { ring_dir: /dev/shm }
 control: { socket_path: $SOCK, fallback_socket_path: $SOCK, linger_ms: 1000 }
 lvc: { max_payload: 512 }
@@ -86,8 +87,8 @@ QUOTES=$(grep -c " QUOTE " "$TMP/tail.log")
 echo "ring ok: trades=$DATA heartbeats=$HB"
 
 # The tap: every datagram, as it arrived, for a recorder.
-TAP=/dev/shm/subplane.$NAME.tap.fb0.ring
-[ -f "$TAP" ] && [ -f "/dev/shm/subplane.$NAME.tap.fb0.ctx" ] || fail "tap ring or context missing"
+TAP=/dev/shm/subplane.$NAME.tap.fb0.1.ring
+[ -f "$TAP" ] && [ -f "/dev/shm/subplane.$NAME.tap.fb0.1.ctx" ] || fail "tap ring or context missing"
 TAPJ=$(sed -n 's/.*"tap":{\([^}]*\)}.*/\1/p' <<<"$PART")
 [ "$(json_num records "{$TAPJ}")" = 120 ] || fail "tap records: $TAPJ"
 [ "$(json_num dropped "{$TAPJ}")" = 0 ] || fail "tap dropped: $TAPJ"

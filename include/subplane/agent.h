@@ -9,6 +9,7 @@
 
 #include "subplane/status_types.h"
 #include "subplane/core/message.h"
+#include "subplane/pipeline/topic_registry.h"
 
 #include <atomic>
 #include <chrono>
@@ -49,7 +50,10 @@ public:
     AgentStatus get_status() const;
 
     // Re-reads the `sessions` section of the config and applies it. Safe from any thread.
-    bool reload_sessions(std::string& err);
+    // Applies the config file's `sessions:` section. Sections that need a
+    // restart (registry, topics, thread groups) are compared with what the
+    // agent started with; each one edited is named in `ignored`.
+    bool reload_sessions(std::string& err, std::vector<std::string>* ignored = nullptr);
 
     // Last-value cache lookup by symbol name (or numeric id string) and msg type name.
     bool lvc_read(const std::string& symbol, const std::string& msg_type, TickHeader& hdr,
@@ -115,6 +119,8 @@ private:
     std::string name_;
     std::string version_;
     std::string config_dir_;
+    TopicRegistry registry_;
+    std::vector<std::pair<std::string, std::string>> restart_sections_;  // name -> YAML as started
     uint32_t    max_symbols_ = 65536;
     // `observability:` identity (docs/context/observability.md).
     std::string host_;

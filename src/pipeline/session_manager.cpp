@@ -1,4 +1,5 @@
 #include "subplane/pipeline/session_manager.h"
+#include "subplane/pipeline/topic_registry.h"
 
 #include "subplane/core/clock.h"
 #include "subplane/logging/log_registry.h"
@@ -44,34 +45,37 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
     partition_mask = 0;
     group = nullptr;
 
-    if (spec.partitions.empty()) {
+    // Topic patterns resolve here, on the cold path, to the partitions the
+    // session is attached to and the topic ids its filter accepts.
+    for (const auto& pat : spec.topics) {
+        bool any = false;
         for (const Partition* p : partitions_) {
-            partition_mask |= 1ull << p->id();
-            fs.partition_ids.push_back(p->id());
+            if (topic_matches(pat, p->topic_name())) { any = true; break; }
         }
-    } else {
-        for (const auto& pname : spec.partitions) {
-            const Partition* found = nullptr;
-            for (const Partition* p : partitions_) {
-                if (p->name() == pname) { found = p; break; }
-            }
-            if (!found) {
-                err = "session " + spec.name + ": unknown partition " + pname;
-                return false;
-            }
-            partition_mask |= 1ull << found->id();
-            fs.partition_ids.push_back(found->id());
+        if (!any) {
+            err = "session " + spec.name + ": topic pattern " + pat + " matches no topic";
+            return false;
         }
     }
+    for (const Partition* p : partitions_) {
+        bool want = spec.topics.empty();
+        for (const auto& pat : spec.topics) {
+            if (topic_matches(pat, p->topic_name())) { want = true; break; }
+        }
+        if (!want) continue;
+        partition_mask |= 1ull << p->id();
+        if (std::find(fs.topic_ids.begin(), fs.topic_ids.end(), p->topic_id()) == fs.topic_ids.end())
+            fs.topic_ids.push_back(p->topic_id());
+    }
     if (partition_mask == 0) {
-        err = "session " + spec.name + ": no partitions configured";
+        err = "session " + spec.name + ": no topics configured";
         return false;
     }
     for (Pipeline* g : groups_) {
         if ((g->partition_mask() & partition_mask) == partition_mask) { group = g; break; }
     }
     if (!group) {
-        err = "session " + spec.name + ": its partitions span more than one thread group";
+        err = "session " + spec.name + ": its topics span more than one thread group";
         return false;
     }
 
@@ -87,7 +91,7 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
         if (p->symbol_venue_scope()) ++n_vscope;
     }
     if (n_pass != 0 && n_pass != n_part) {
-        err = "session " + spec.name + ": mixes passthrough and table symbol partitions";
+        err = "session " + spec.name + ": mixes topics with passthrough and table symbol ids";
         return false;
     }
     const bool passthrough = n_pass != 0;
@@ -245,7 +249,7 @@ bool SessionManager::set_filter(const SessionSpec& spec, std::string& err) {
     Pipeline* group = nullptr;
     if (!resolve(want, fs, mask, group, err)) return false;
     if (mask != e->session->partition_mask) {
-        err = "session " + spec.name + ": partitions cannot change after creation; destroy and recreate";
+        err = "session " + spec.name + ": topics cannot change after creation; destroy and recreate";
         return false;
     }
     if (!check_recap_locked(want, fs, mask, e, err)) return false;
@@ -335,7 +339,7 @@ bool SessionManager::check_recap_locked(const SessionSpec& spec, const FilterSpe
 }
 
 bool SessionManager::specs_differ(const SessionSpec& a, const SessionSpec& b) const {
-    return a.partitions != b.partitions || a.symbols != b.symbols || a.all_symbols != b.all_symbols ||
+    return a.topics != b.topics || a.symbols != b.symbols || a.all_symbols != b.all_symbols ||
            a.msg_types != b.msg_types || a.bus_admin != b.bus_admin || a.agent_control != b.agent_control;
 }
 
@@ -421,9 +425,7 @@ std::vector<SessionStatus> SessionManager::status() const {
         s.ring_head = e.session->ring.published_head();
         s.ring_capacity = e.session->ring.capacity();
         s.heartbeat_ns = e.session->ring.heartbeat_ns();
-        for (const Partition* p : partitions_) {
-            if ((e.session->partition_mask >> p->id()) & 1ull) s.partitions.push_back(p->name());
-        }
+        s.topics = e.spec.topics;
         s.reader_flags = e.session->ring.reader_flags();
         s.reader_sample_every = e.session->ring.reader_sample_every();
         if (const ReaderSlot* slots = e.session->ring.reader_slots()) {

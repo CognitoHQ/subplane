@@ -153,12 +153,13 @@
     <field name="PriceExponent" id="99" type="PriceExponent"/>
   </sbe:message>
 
-  <sbe:message name="Heartbeat" id="100" blockLength="32" description="Publisher liveness; prefix only, InstrumentId 0">
+  <sbe:message name="Heartbeat" id="100" blockLength="40" description="Publisher liveness, InstrumentId 0; StreamId names the stream it is sent on (topic_id &lt;&lt; 16 | partition_num, 0 = unstamped)">
     <field name="InstrumentId" id="1" type="uint32" offset="0"/>
     <field name="VenueId"      id="2" type="uint16" offset="4"/>
     <field name="Flags"        id="3" type="uint16" offset="6"/>
     <field name="Sequence"     id="4" type="uint64" offset="8"/>
     <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
     <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
+    <field name="StreamId"     id="7" type="int32"  offset="32"/>
   </sbe:message>
 </sbe:messageSchema>

@@ -1,4 +1,5 @@
 #include "subplane/pipeline/partition.h"
+#include "subplane/pipeline/topic_registry.h"
 
 #include "subplane/record/pcapng.h"
 #include "subplane/record/sha256.h"
@@ -43,7 +44,7 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
     try {
         out.name = node["name"].as<std::string>("");
         if (out.name.empty()) {
-            err = "partitions[" + std::to_string(id) + "].name is required";
+            err = "partition " + std::to_string(id) + ": name is required";
             return false;
         }
         if (!node["transport"].IsDefined() || !node["transport"].IsMap()) {
@@ -98,6 +99,116 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
         out.yaml = e.c_str();
     } catch (const YAML::Exception& e) {
         err = "partition " + out.name + ": " + e.what();
+        return false;
+    }
+    return true;
+}
+
+void PartitionConfig::set_topic(std::string topic, uint16_t tid, uint16_t num) {
+    topic_name = std::move(topic);
+    topic_id = tid;
+    partition_num = num;
+    stream_id = stream_id_of(tid, num);
+}
+
+namespace {
+// Deep merge for topic expansion: maps merge key by key, anything else in
+// `over` replaces what `base` has.
+YAML::Node merge_nodes(const YAML::Node& base, const YAML::Node& over) {
+    if (!over.IsDefined() || over.IsNull()) return YAML::Clone(base);
+    if (!base.IsDefined() || !base.IsMap() || !over.IsMap()) return YAML::Clone(over);
+    YAML::Node out = YAML::Clone(base);
+    for (const auto& kv : over) {
+        const std::string k = kv.first.as<std::string>();
+        out[k] = merge_nodes(base[k], kv.second);
+    }
+    return out;
+}
+} // namespace
+
+YAML::Node topic_partition_node(const YAML::Node& tn, size_t index) {
+    if (!tn.IsMap()) return YAML::Node(YAML::NodeType::Undefined);
+    YAML::Node base(YAML::NodeType::Map);
+    for (const auto& kv : tn) {
+        const std::string k = kv.first.as<std::string>();
+        if (k != "name" && k != "partitions") base[k] = YAML::Clone(kv.second);
+    }
+    YAML::Node entry(YAML::NodeType::Map);
+    if (const auto ps = tn["partitions"]; ps.IsDefined()) {
+        if (!ps.IsSequence() || index >= ps.size()) return YAML::Node(YAML::NodeType::Undefined);
+        entry = ps[index];
+    } else if (index != 0) {
+        return YAML::Node(YAML::NodeType::Undefined);
+    }
+    YAML::Node merged = merge_nodes(base, entry);
+    merged["name"] = tn["name"].as<std::string>("") + "/" + std::to_string(index + 1);
+    return merged;
+}
+
+bool expand_topics(const YAML::Node& topics, const TopicRegistry& registry, const std::string& base_dir,
+                   std::vector<PartitionConfig>& out, std::string& err) {
+    out.clear();
+    if (!topics.IsSequence()) {
+        err = "topics must be a sequence";
+        return false;
+    }
+    try {
+        for (const auto& tn : topics) {
+            const std::string tname = tn["name"].as<std::string>("");
+            if (!valid_topic_name(tname, err)) return false;
+            const TopicEntry* te = registry.find(tname);
+            if (te == nullptr) {
+                err = "topic " + tname + " is not in the topic registry (`registry:`)";
+                return false;
+            }
+            for (const auto& pc : out) {
+                if (pc.topic_name == tname) {
+                    err = "topic " + tname + " is listed twice";
+                    return false;
+                }
+            }
+            if (tn["id"].IsDefined()) {
+                err = "topic " + tname + ": the id comes from the registry; remove `id:` here";
+                return false;
+            }
+            size_t count = 1;
+            if (const auto ps = tn["partitions"]; ps.IsDefined()) {
+                if (!ps.IsSequence() || ps.size() == 0) {
+                    err = "topic " + tname + ": partitions is a non-empty sequence (one entry per partition, from 1)";
+                    return false;
+                }
+                for (const auto& e : ps) {
+                    if (!e.IsMap() && !e.IsNull()) {
+                        err = "topic " + tname + ": each partitions entry is a map ({} for no overrides)";
+                        return false;
+                    }
+                    if (e.IsMap() && e["name"].IsDefined()) {
+                        err = "topic " + tname + ": a partition has no name of its own (it is " + tname + "/<n>)";
+                        return false;
+                    }
+                }
+                count = ps.size();
+            }
+            if (count > 65535) {
+                err = "topic " + tname + ": at most 65535 partitions";
+                return false;
+            }
+            for (size_t i = 0; i < count; ++i) {
+                const auto num = static_cast<uint16_t>(i + 1);
+                YAML::Node merged = topic_partition_node(tn, i);
+                const int32_t sid = stream_id_of(te->id, num);
+                if (merged["transport"].IsMap() && merged["transport"]["type"].as<std::string>("") == "aeron" &&
+                    !merged["transport"]["stream_id"].IsDefined()) {
+                    merged["transport"]["stream_id"] = sid;
+                }
+                PartitionConfig cfg;
+                if (!PartitionConfig::parse(merged, static_cast<uint16_t>(out.size()), base_dir, cfg, err)) return false;
+                cfg.set_topic(tname, te->id, num);
+                out.push_back(std::move(cfg));
+            }
+        }
+    } catch (const YAML::Exception& e) {
+        err = std::string("topics: ") + e.what();
         return false;
     }
     return true;
@@ -264,18 +375,23 @@ namespace {
 
 // Where a recorder puts this partition's units in their synthetic UDP header
 // (recording-format.md): the group or host when it is an IPv4 address, else
-// 127.0.0.1; the port, or the Aeron stream id.
+// 127.0.0.1, and the port. An Aeron stream has neither: its 32-bit stream id
+// (topic_id << 16 | partition_num by default) is spread over both, 127.0.x.y
+// with x.y its high 16 bits and the port its low 16, so no two streams share
+// an address.
 void tap_wrap(const std::string& type, const YAML::Node& t, uint32_t& ip, uint16_t& port) {
     ip = 0x7F000001u;
     port = 0;
     std::string addr;
     try {
         if (type == "aeron") {
-            port = static_cast<uint16_t>(t["stream_id"].as<int32_t>(0));
-        } else {
-            port = static_cast<uint16_t>(t["port"].as<int>(0));
-            addr = t[type == "tcp_stream" ? "host" : "group"].as<std::string>("");
+            const auto sid = static_cast<uint32_t>(t["stream_id"].as<int32_t>(0));
+            ip = 0x7F000000u | (sid >> 16);
+            port = static_cast<uint16_t>(sid & 0xFFFFu);
+            return;
         }
+        port = static_cast<uint16_t>(t["port"].as<int>(0));
+        addr = t[type == "tcp_stream" ? "host" : "group"].as<std::string>("");
     } catch (const YAML::Exception&) {
     }
     in_addr a{};
@@ -309,7 +425,11 @@ bool write_file_atomic(const std::string& path, const std::vector<uint8_t>& byte
 bool Partition::open_tap(const TapSetup& setup, std::string& err) {
     if (!cfg_.tap) return true;
     using namespace record;
-    const std::string base = setup.ring_dir + "/subplane." + setup.agent_name + ".tap." + cfg_.name;
+    // INTENT: the file name spells "<topic>/<n>" as "<topic>.<n>": a '/' would
+    // be a directory. Still one name per partition: the last segment is the number.
+    std::string file_name = cfg_.name;
+    std::replace(file_name.begin(), file_name.end(), '/', '.');
+    const std::string base = setup.ring_dir + "/subplane." + setup.agent_name + ".tap." + file_name;
     tap_path_ = base + ".ring";
     tap_ctx_path_ = base + ".ctx";
 
@@ -350,7 +470,7 @@ bool Partition::open_tap(const TapSetup& setup, std::string& err) {
     RingConfig rc;
     rc.capacity_bytes = cfg_.tap_capacity_bytes;
     rc.max_payload = cfg_.tap_max_payload;
-    rc.session_name = ("tap." + cfg_.name).substr(0, sizeof(RingHeader::session_name) - 1);
+    rc.session_name = ("tap." + file_name).substr(0, sizeof(RingHeader::session_name) - 1);
     rc.mode = setup.ring_mode;
     tap_ring_ = std::make_unique<RingWriter>();
     if (!tap_ring_->open(rc, tap_path_, setup.epoch, err)) {

@@ -9,8 +9,9 @@ http_get() ( trap '' PIPE; exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return
 http_post() ( trap '' PIPE; exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return 1; printf 'POST %s HTTP/1.0\r\nContent-Length: 0\r\n\r\n' "$2" >&3 || return 1; tr -d '\r' <&3 | sed '1,/^$/d'; exec 3<&- )
 PORT=$(( 20000 + (RANDOM % 30000) )); API=$(( 20000 + (RANDOM % 30000) )); SOCK="$TMP/ctl.sock"
 cat > "$TMP/config.yaml" <<YAML
-agent: { name: pubtest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [can0] } ] }
-partitions:
+agent: { name: pubtest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, topics: [can0] } ] }
+registry: [ { id: 1, name: can0 } ]
+topics:
   - name: can0
     transport: { type: udp, group: "", port: $PORT, interface: "", rcvbuf: 4194304 }
     framing: {packet_header: [{name: seq, type: u64le}, {name: count, type: u16le}], message_prefix: [{name: len, type: u16le}], sequence: packet_header.seq, length: message_prefix.len}
@@ -22,7 +23,7 @@ partitions:
       messages: [ { template: 1, msg_type: TRADE }, { template: 2, msg_type: QUOTE }, { template: 100, admin: HEARTBEAT } ]
     heartbeat_timeout_ms: 2000
 sessions:
-  - { name: all, ring: { capacity_mb: 8, max_payload: 4096 }, partitions: [can0], symbols: ["*"], msg_types: [], deliver: { bus_admin: true, agent_control: true } }
+  - { name: all, ring: { capacity_mb: 8, max_payload: 4096 }, topics: [can0], symbols: ["*"], msg_types: [], deliver: { bus_admin: true, agent_control: true } }
 fanout: { ring_dir: /dev/shm }
 control: { socket_path: $SOCK, fallback_socket_path: $SOCK, linger_ms: 1000 }
 lvc: { max_payload: 512 }
@@ -61,7 +62,7 @@ done
 for want in '"schema":"subplane.topology/1"' \
   '"id":"'"$(hostname)"'/subplaned/pubtest"' \
   '"key":"udp://'"$H"':'"$PORT"'","role":"data"' \
-  '"key":"shm-ring://'"$H"'/dev/shm/subplane.pubtest.all.ring","role":"data","state":"up","local":{"session":"all","owner":"config","partitions":["can0"]}' \
+  '"key":"shm-ring://'"$H"'/dev/shm/subplane.pubtest.all.ring","role":"data","state":"up","local":{"session":"all","owner":"config","topics":["can0"]}' \
   '"comm":"views_app","name":"views-test"' '"via":["mapping","slot"],"reader":{"slot":0,"lag_bytes":0' \
   '"tracing":true,"trace_requested":true,"sdk_version":1,"capabilities":1}'; do
   case "$TOPO" in *"$want"*) ;; *) fail "topology missing: $want in $TOPO" ;; esac
@@ -87,7 +88,7 @@ SUMMARY=$(tail -1 "$TMP/app.log"); echo "$SUMMARY"
 http_get "$API" /metrics > "$TMP/metrics.txt" || fail "GET /metrics"
 for want in \
   '# TYPE subplane_partition_messages_total counter' \
-  'subplane_partition_messages_total{service="subplaned",instance="pubtest",host="'"$(hostname)"'",partition="can0"} 1000' \
+  'subplane_partition_messages_total{service="subplaned",instance="pubtest",host="'"$(hostname)"'",topic="can0",partition="can0/1"} 1000' \
   'subplane_session_published_total{service="subplaned",instance="pubtest",host="'"$(hostname)"'",session="all"}' \
   '# TYPE subplane_recv_to_publish_seconds histogram' \
   'subplane_recv_to_publish_seconds_count{service="subplaned",instance="pubtest",host="'"$(hostname)"'",group="g0"} 500' \

@@ -19,8 +19,9 @@ else
   CHANNEL="aeron:udp?endpoint=127.0.0.1:$PORT"; PUB_ARGS=(--aeron-dir "$PUB_DIR" --embedded-driver)
 fi
 cat > "$TMP/config.yaml" <<YAML
-agent: { name: aerontest_$MODE, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [aer0] } ] }
-partitions:
+agent: { name: aerontest_$MODE, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, topics: [aer0] } ] }
+registry: [ { id: 1, name: aer0 }, { id: 2, name: aer1 } ]
+topics:
   - name: aer0
     transport: { type: aeron, channel: "$CHANNEL", stream_id: 1001, aeron_dir: "$AGENT_DIR", driver: { embedded: true, threading_mode: shared } }
     framing: { length: packet, sequence: message.Sequence }
@@ -32,7 +33,7 @@ partitions:
       messages: [ { template: 1, msg_type: TRADE }, { template: 2, msg_type: QUOTE }, { template: 100, admin: HEARTBEAT } ]
     heartbeat_timeout_ms: 2000
 sessions:
-  - { name: all, ring: { capacity_mb: 8, max_payload: 4096 }, partitions: [aer0], symbols: ["*"], msg_types: [], deliver: { bus_admin: true, agent_control: true } }
+  - { name: all, ring: { capacity_mb: 8, max_payload: 4096 }, topics: [aer0], symbols: ["*"], msg_types: [], deliver: { bus_admin: true, agent_control: true } }
 fanout: { ring_dir: /dev/shm }
 control: { socket_path: $SOCK, fallback_socket_path: $SOCK, linger_ms: 1000 }
 lvc: { max_payload: 512 }
@@ -56,7 +57,7 @@ grep -q "aeron $CHANNEL stream 1001 (embedded driver)" "$TMP/agent.log" || fail 
 H=$(hostname | tr 'A-Z' 'a-z')
 if [ "$MODE" = ipc ]; then KEY="aeron-ipc://$H$AGENT_DIR#1001"; else KEY="aeron-udp://$H:$PORT#1001"; fi
 http_get "$API" /topology | grep -qF '"key":"'"$KEY"'","role":"data"' || fail "topology key: want $KEY in $(http_get "$API" /topology)"
-http_get "$API" /metrics | grep -q '^subplane_transport_fragments_total{.*partition="aer0"} 1010$' || fail "aeron fragments metric: $(http_get "$API" /metrics | grep fragments)"
+http_get "$API" /metrics | grep -q '^subplane_transport_fragments_total{.*partition="aer0/1"} 1010$' || fail "aeron fragments metric: $(http_get "$API" /metrics | grep fragments)"
 # Transport state events. IPC: the image goes within about a second of the
 # publisher exiting (TRANSPORT_DOWN, source lost). UDP: the image outlives the
 # publisher, so only the restart is seen. Either way a second publisher run is
@@ -79,10 +80,10 @@ if [ "$MODE" = ipc ]; then
   grep -aq "TRANSPORT_DOWN .* reason=source_lost last_seq=1010" "$TMP/tail.log" || fail "no TRANSPORT_DOWN when the publisher went away"
 fi
 kill $AGENT_PID; wait $AGENT_PID 2>/dev/null
-# Two partitions that each embed a driver on one directory: the second would replace
+# Two topics whose partitions each embed a driver on one directory: the second would replace
 # the first's driver and the first partition would go silent, so the agent refuses.
 if [ "$MODE" = ipc ]; then
-  sed -e 's/partitions: \[aer0\] } \] }/partitions: [aer0, aer1] } ] }/' "$TMP/config.yaml" > "$TMP/two.yaml"
+  sed -e 's/topics: \[aer0\] } \] }/topics: [aer0, aer1] } ] }/' "$TMP/config.yaml" > "$TMP/two.yaml"
   awk '/^  - name: aer0$/{p=1} p&&/^sessions:/{p=0} p{b=b $0 "\n"} {print} /^    heartbeat_timeout_ms/&&p{gsub("aer0","aer1",b); gsub("stream_id: 1001","stream_id: 1011",b); printf "%s", b; p=0}' "$TMP/two.yaml" > "$TMP/two2.yaml"
   grep -c 'driver: { embedded: true' "$TMP/two2.yaml" | grep -q '^2$' || fail "test setup: two embedded drivers expected"
   timeout 20 "$AGENT" --config "$TMP/two2.yaml" > "$TMP/two.log" 2>&1 && fail "agent started with two embedded drivers on one directory"

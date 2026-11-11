@@ -31,7 +31,7 @@ Every subplane service serves the same observability surface on its HTTP port, s
   - `service`: `subplaned`, `spwsgw`, …;
   - `instance`: `agent.name` for the agent;
   - `host`: from `gethostname()`.
-- **Object labels:** `partition`, `session`, `group`, `state`; later `venue` and `endpoint`.
+- **Object labels:** `topic`, `partition`, `session`, `group`, `state`; later `venue` and `endpoint`. A topic is a named feed that holds numbered partitions; a partition is one stream with one publisher and one sequence. Every series labelled `partition` also carries `topic`, and the `partition` value is `<topic>/<n>` (for example `crypto.binance-spot/1`). A service that has no topics (a gateway) may omit `topic`.
 - **Identity:** `subplane_service_info{service, instance, host, version, epoch, site, env, <labels>} 1`. It carries the deployment labels, so a dashboard joins on it rather than repeating them on every series. `epoch` changes on every agent restart.
 - **Histograms:** a `LogHistogram` (in ns) is exported as a Prometheus histogram in seconds.
   - There is one bucket per power-of-two major, at `le` = (2^(m+1) - 1) ns for m = 0..39 (1 ns up to about 18 minutes), plus `+Inf`. That makes 43 series per histogram instead of 256.
@@ -58,16 +58,16 @@ Label names must match `[a-zA-Z_][a-zA-Z0-9_]*` and must not start with `__`; ot
 | `subplane_control_clients` | gauge | | clients on the control socket |
 | `subplane_symbols`, `subplane_symbols_capacity` | gauge | | symbol table use and size (`agent.max_symbols`) |
 | `subplane_lvc_writes_total` | counter | | last-value cache writes |
-| `subplane_partition_<counter>_total` | counter | partition | every partition counter: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `transport_down`, `transport_up`, `recap_markers`, `tap_records`, `tap_dropped` (units copied to, or too large for, the tap ring) |
-| `subplane_partition_tap_readers` | gauge | partition | with `tap:`, readers (recorders) attached to the partition's tap ring |
-| `subplane_partition_tap_lag_bytes` | gauge | partition | with `tap:`, how far the slowest tap reader is behind the ring head |
-| `subplane_partition_state` | gauge | partition, state | 1 for the current state (`init`, `active`, `degraded`), 0 for the others |
-| `subplane_partition_last_sequence` | gauge | partition | last sequence accepted |
-| `subplane_partition_last_receive_age_seconds` | gauge | partition | seconds since the last packet (0 before the first) |
-| `subplane_transport_state` | gauge | partition, state | 1 for the current state (`unknown`, `up`, `down`) |
-| `subplane_transport_<counter>_total` | counter | partition | the transport's own counters: `aeron` has `fragments`, `oversize`, `images_available`, `images_unavailable`, `client_errors`; `tcp_stream` has `connects`, `disconnects`, `framing_errors`; UDP has none |
-| `subplane_recap_<counter>_total` | counter | partition | recap counters (architecture.md, "Recap"), without their `recap_` prefix; recap partitions only |
-| `subplane_recap_inflight`, `subplane_recap_queued` | gauge | partition | recap requests in flight, and waiting |
+| `subplane_partition_<counter>_total` | counter | topic, partition | every partition counter: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `stream_mismatch` (a heartbeat stamped with a stream id other than the partition's), `transport_down`, `transport_up`, `recap_markers`, `tap_records`, `tap_dropped` (units copied to, or too large for, the tap ring) |
+| `subplane_partition_tap_readers` | gauge | topic, partition | with `tap:`, readers (recorders) attached to the partition's tap ring |
+| `subplane_partition_tap_lag_bytes` | gauge | topic, partition | with `tap:`, how far the slowest tap reader is behind the ring head |
+| `subplane_partition_state` | gauge | topic, partition, state | 1 for the current state (`init`, `active`, `degraded`), 0 for the others |
+| `subplane_partition_last_sequence` | gauge | topic, partition | last sequence accepted |
+| `subplane_partition_last_receive_age_seconds` | gauge | topic, partition | seconds since the last packet (0 before the first) |
+| `subplane_transport_state` | gauge | topic, partition, state | 1 for the current state (`unknown`, `up`, `down`) |
+| `subplane_transport_<counter>_total` | counter | topic, partition | the transport's own counters: `aeron` has `fragments`, `oversize`, `images_available`, `images_unavailable`, `client_errors`; `tcp_stream` has `connects`, `disconnects`, `framing_errors`; UDP has none |
+| `subplane_recap_<counter>_total` | counter | topic, partition | recap counters (architecture.md, "Recap"), without their `recap_` prefix; recap partitions only |
+| `subplane_recap_inflight`, `subplane_recap_queued` | gauge | topic, partition | recap requests in flight, and waiting |
 | `subplane_group_loops_total` | counter | group | pipeline loop iterations |
 | `subplane_recv_to_publish_seconds` | histogram | group | packet receive timestamp to after its last publish |
 | `subplane_session_published_total`, `_filtered_total`, `_publish_failed_total` | counter | session | records published, filtered out, and not fitting the ring |
@@ -76,9 +76,9 @@ Label names must match `[a-zA-Z_][a-zA-Z0-9_]*` and must not start with `__`; ot
 | `subplane_session_ring_heartbeat_age_seconds` | gauge | session | seconds since the writer's last heartbeat |
 | `subplane_session_filter_generation` | gauge | session | generation of the current filter |
 | `subplane_session_consumers` | gauge | session | processes reading the ring (Topology, "Consumers") |
-| `subplane_topology_edge` | gauge | direction, role, key, partition or session | 1 when the edge is up |
+| `subplane_topology_edge` | gauge | direction, role, key, topic and partition, or session | 1 when the edge is up |
 | `subplane_topology_scan_unreadable` | gauge | | processes the consumer scan could not read |
-| `subplane_recap_connected` | gauge | partition | 1 while the recap component is connected to its service |
+| `subplane_recap_connected` | gauge | topic, partition | 1 while the recap component is connected to its service |
 | `subplane_app_lag_bytes` | gauge | session, app, pid | ring bytes the app has not read (head minus its reader's position) |
 | `subplane_app_heartbeat_age_seconds` | gauge | session, app, pid | seconds since the app's reader last reported |
 | `subplane_app_records_total`, `subplane_app_overruns_total` | counter | session, app, pid | records the reader returned; times it was lapped |
@@ -173,13 +173,13 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
   "node": { "id": "box1/subplaned/prod-box1", "service": "subplaned", "instance": "prod-box1", "host": "box1",
             "pid": 4242, "version": "...", "epoch": 1792..., "site": "ny4", "env": "prod" },
   "upstream": [
-    { "key": "aeron-ipc://box1/dev/shm/aeron-feeds#1001", "role": "data", "state": "up",
-      "local": { "partition": "binance" }, "describe": "aeron aeron:ipc stream 1001 connected",
+    { "key": "aeron-ipc://box1/dev/shm/aeron-feeds#720897", "role": "data", "state": "up",
+      "local": { "topic": "crypto.binance-spot", "partition": "crypto.binance-spot/1", "stream_id": 720897 }, "describe": "aeron aeron:ipc stream 720897 connected",
       "publisher": { "aeron_session": 1234 } },
-    { "key": "aeron-udp://snap-host:40500#1101", "role": "recap", "state": "up", "local": { "partition": "binance" } } ],
+    { "key": "aeron-udp://snap-host:40500#1101", "role": "recap", "state": "up", "local": { "topic": "crypto.binance-spot", "partition": "crypto.binance-spot/1", "stream_id": 720897 } } ],
   "downstream": [
     { "key": "shm-ring://box1/dev/shm/subplane.prod-box1.mm.ring", "role": "data", "state": "up",
-      "local": { "session": "mm", "owner": "config", "partitions": ["binance"] },
+      "local": { "session": "mm", "owner": "config", "topics": ["crypto.>"] },
       "consumers": [ { "pid": 777, "start_time": 6619238, "uid": 1000, "comm": "mm_engine", "name": "market-maker",
                        "unit": "mm-engine.service", "via": ["control", "mapping", "slot"],
                        "reader": { "slot": 0, "lag_bytes": 0, "heartbeat_age_seconds": 0.004, "records": 81234, "overruns": 0,
@@ -192,7 +192,7 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 - **`role`:** what is lost if the edge breaks:
   - `data`: the live stream;
   - `recap`: recovery only;
-  - `record`: a recording only (a partition's tap ring, read by `subplane record`);
+  - `record`: a recording only (a partition's tap ring, read by `subplane record`; its `local` has `topic` and `partition`);
   - `control`: a request path, for example a gateway's republish input (planned).
 - **`state`:**
   - for a `data` edge, the transport state: `up`, `down` or `unknown`;
@@ -250,7 +250,7 @@ A key names one stream. One service's downstream key equals the next service's u
 
 ### Topology as metrics
 `/metrics` carries the same edges, so PromQL and alerts work without a collector:
-- **`subplane_topology_edge{direction, role, key, partition|session}`:** 1 when up, 0 when not.
+- **`subplane_topology_edge{direction, role, key, topic, partition|session}`:** 1 when up, 0 when not.
 - **`subplane_session_consumers{session}`:** the processes reading each ring.
 - **`subplane_topology_scan_unreadable`:** the processes whose maps the consumer scan could not read.
 

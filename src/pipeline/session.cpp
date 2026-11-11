@@ -1,4 +1,5 @@
 #include "subplane/pipeline/session.h"
+#include "subplane/pipeline/topic_registry.h"
 
 namespace subplane {
 
@@ -57,7 +58,18 @@ bool SessionSpec::parse(const YAML::Node& node, SessionSpec& out, std::string& e
             out.max_payload = r["max_payload"].as<uint32_t>(out.max_payload);
         }
         if (node["partitions"].IsDefined()) {
-            for (const auto& p : node["partitions"]) out.partitions.push_back(p.as<std::string>());
+            err = "session " + out.name + ": subscribe by `topics:` (patterns), not partitions";
+            return false;
+        }
+        if (node["topics"].IsDefined()) {
+            for (const auto& t : node["topics"]) {
+                std::string v = t.as<std::string>();
+                if (!valid_topic_pattern(v, err)) {
+                    err = "session " + out.name + ": " + err;
+                    return false;
+                }
+                out.topics.push_back(std::move(v));
+            }
         }
         if (node["symbols"].IsDefined()) {
             for (const auto& s : node["symbols"]) {

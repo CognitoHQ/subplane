@@ -136,7 +136,7 @@ Planned: the agent binds the publisher id to the human name it reads from defini
 
 ### Last-value cache
 
-The cache holds the newest record per instrument and message type. That record is the whole state only for self-contained values: instrument definition, trading status, last quote, last trade. A late joiner reads it over the control channel (`SNAPSHOT`, or `GET /lvc/{symbol}?type=` for an operator), seeds its state, and tails the ring. For a book or an accumulated value such as session volume the newest message is only the last change: that state is built from many messages with the publisher's rules, and comes from the publisher's snapshot service through recap. A partition carrying such state can set `lvc: off`.
+The cache holds the newest record per instrument and message type. That record is the whole state only for self-contained values: instrument definition, trading status, last quote, last trade. A late joiner reads it over the control channel (`SNAPSHOT`, or `GET /lvc/{symbol}?type=` for an operator), seeds its state, and tails the ring. For a book or an accumulated value such as session volume the newest message is only the last change: that state is built from many messages with the publisher's rules, and comes from the publisher's snapshot service through recap. A topic carrying such state can set `lvc: off`.
 
 ## Deployment patterns
 
@@ -176,7 +176,7 @@ flowchart LR
 
 ### 3. Exchanges through gateways
 
-A gateway holds the one exchange connection, maps the venue's JSON to the canonical SBE schema, keeps books in sync, and publishes on Aeron. The agent treats it like any other bus partition. Gateways live in the sister repository `subplane-feeds` (`spwsgw`, with packs for Binance, Coinbase, Kraken, Bitstamp and OKX).
+A gateway holds the one exchange connection, maps the venue's JSON to the canonical SBE schema, keeps books in sync, and publishes on Aeron. The agent treats it like any other bus feed: each exchange is a topic (`crypto.binance-spot`), published on its own Aeron stream. Gateways live in the sister repository `subplane-feeds` (`spwsgw`, with packs for Binance, Coinbase, Kraken, Bitstamp and OKX).
 
 ```mermaid
 flowchart LR
@@ -189,7 +189,7 @@ flowchart LR
 
 ### 4. Mixed sources, one contract
 
-Transport, framing and encoding are per-partition configuration. One agent can take UDP multicast SBE, Aeron, a TCP DBN stream and FlatBuffers at once, and every app reads rings the same way.
+Transport, framing and encoding are per-topic configuration (a topic's partitions share it unless one overrides a key). Apps subscribe to topics by name or pattern (`crypto.>`) and never see partitions; those are the operator's view of one stream with one publisher and one sequence (`docs/context/architecture.md`, "Topics and partitions"). One agent can take UDP multicast SBE, Aeron, a TCP DBN stream and FlatBuffers at once, and every app reads rings the same way.
 
 ```mermaid
 flowchart LR
@@ -264,7 +264,7 @@ scripts/dev.sh test       # build ./build and run ctest, in the image
 scripts/dev.sh shell      # the binaries need 26.04's glibc: run the rest inside it (or prefix each with scripts/dev.sh run)
 
 # Local demo config: unicast instead of multicast, so no network setup is needed.
-sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/subplane-demo.yaml
+sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" -e "s#^registry: site#registry: $PWD/site#" config.yaml > /tmp/subplane-demo.yaml
 
 build/subplaned --config /tmp/subplane-demo.yaml &
 
@@ -322,11 +322,11 @@ Everything in the docs is implemented unless marked "(planned)".
 
 `scripts/fetch-cme-sample.sh` downloads 27 publicly posted CME MDP 3.0 packets (from open-source repositories and a Databento sample) and CME's schema (v9 and v13), and `ctest -R cme_probe` replays them through the production framer and schema walker with a framing block written from CME's documentation. With the v9 schema every template is known and every message length from the schema walk matches the wire; v13 no longer has two of the sample's templates (32 and 35), and the test checks that too. The test skips when the sample has not been fetched.
 
-A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/subplane dbn-sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `db-p0` partition in `config.yaml` is the configuration.
+A second encoding over a second transport: `decoder: {type: dbn}` with `transport: {type: tcp_stream}` consumes Databento DBN records (Databento's live gateway framing: prelude, metadata, records). `build/tools/subplane dbn-sim --port 9550 --synthetic` serves synthetic records, or `--file x.dbn` replays a real file; `ctest -R dbn_sim` runs the synthetic version end to end. The commented `dbn.sample` topic in `config.yaml` is the configuration.
 
-A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc", stream_id: 1001}` subscribes to an Aeron stream (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/subplane aeron-pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `canonical_aeron` partition in `config.yaml` is the configuration.
+A third transport, Aeron: `transport: {type: aeron, channel: "aeron:ipc"}` subscribes to an Aeron stream (the stream id defaults to the partition's `stream_id`, `topic_id << 16 | partition_num`; `stream_id:` overrides it) (IPC, UDP unicast or multicast) and treats each message as a packet; `driver: {embedded: true}` runs the media driver inside the agent, or point `aeron_dir` at a running `aeronmd`. `build/tools/subplane aeron-pub` publishes canonical messages; `ctest -R aeron` runs it through the agent over IPC and over UDP loopback. The commented `crypto.binance-spot` topic in `config.yaml` is the configuration.
 
-A third encoding with no library: `decoder: {type: flatbuffers}` routes FlatBuffers by field id straight off the wire and delivers the whole buffer, size prefix included. `ctest -R flatbuffers` runs real `flatc` output (`tests/fixtures/flatbuffers/`) through the decoder and over UDP through the agent. The commented `fb-p0` partition in `config.yaml` is the configuration.
+A third encoding with no library: `decoder: {type: flatbuffers}` routes FlatBuffers by field id straight off the wire and delivers the whole buffer, size prefix included. `ctest -R flatbuffers` runs real `flatc` output (`tests/fixtures/flatbuffers/`) through the decoder and over UDP through the agent. The commented `fb.sample` topic in `config.yaml` is the configuration.
 
 ## Typed views without a codec
 
@@ -417,7 +417,7 @@ Unsigned fields widen to the signed q type of the same width; char arrays are cu
 
 The sample schema's views are regenerated and compiled at every build (`ctest -R sbe_views`), so a layout regression fails the build. Little-endian schemas only.
 
-**The canonical schema.** `schemas/subplane_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a partition carrying it today is ordinary `sbe_routing` configuration (the commented `canonical` partition in `config.yaml`), and `ctest -R canonical_views_app` runs `subplane send`, the agent and `views_app` end to end on it. `examples/canonical_pub.cpp` is the other side: the smallest publisher the agent can ingest, generated structs plus a socket, the file to copy when writing a gateway.
+**The canonical schema.** `schemas/subplane_canonical.xml` is the normalized tick shape shipped with the agent: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat, all flat and naturally aligned so every message is a plain struct, with a common 32-byte prefix (instrument, venue, flags, sequence, exchange and receive timestamps) and `int64` prices scaled by 10^-9. Its views are generated into `build/generated/` at every build. It is the target of the planned normalization mode and of the feeds package; a topic carrying it today is ordinary `sbe_routing` configuration (the commented `canonical.sample` topic in `config.yaml`), and `ctest -R canonical_views_app` runs `subplane send`, the agent and `views_app` end to end on it. `examples/canonical_pub.cpp` is the other side: the smallest publisher the agent can ingest, generated structs plus a socket, the file to copy when writing a gateway.
 
 ## Licence
 

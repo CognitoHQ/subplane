@@ -66,6 +66,7 @@ private:
     HttpResponse handle_metrics(const HttpRequest& request);
     HttpResponse handle_trace(const HttpRequest& request, const StringType& path);
     HttpResponse handle_topology(const HttpRequest& request);
+    HttpResponse handle_topics(const HttpRequest& request);
     HttpResponse handle_partitions(const HttpRequest& request);
     HttpResponse handle_sessions(const HttpRequest& request);
     HttpResponse handle_reload(const HttpRequest& request);
@@ -75,6 +76,7 @@ private:
     static HttpResponse error_response(int code, const StringType& message);
     static StringType json_escape(const StringType& s);
     static StringType serialize_status(const AgentStatus& status);
+    static StringType serialize_topics(const AgentStatus& status);
     static StringType serialize_partitions(const std::vector<PartitionStatus>& parts);
     static StringType serialize_sessions(const std::vector<SessionStatus>& sessions);
 };

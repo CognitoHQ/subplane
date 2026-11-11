@@ -45,8 +45,8 @@ const char* code_name(const TickHeader& h) {
         case ControlCode::BUS_SNAPSHOT_END: return "BUS_SNAPSHOT_END";
         case ControlCode::BUS_TRADING_STATUS: return "BUS_TRADING_STATUS";
         case ControlCode::GAP_DETECTED: return "GAP_DETECTED";
-        case ControlCode::PARTITION_DEGRADED: return "PARTITION_DEGRADED";
-        case ControlCode::PARTITION_RECOVERED: return "PARTITION_RECOVERED";
+        case ControlCode::TOPIC_DEGRADED: return "TOPIC_DEGRADED";
+        case ControlCode::TOPIC_RECOVERED: return "TOPIC_RECOVERED";
         case ControlCode::FILTER_RELOADED: return "FILTER_RELOADED";
         case ControlCode::AGENT_RESTARTED: return "AGENT_RESTARTED";
         case ControlCode::SESSION_CLOSING: return "SESSION_CLOSING";
@@ -68,7 +68,7 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
         case ControlCode::GAP_DETECTED: {
             if (len < sizeof(GapEvent)) return;
             GapEvent e; std::memcpy(&e, p, sizeof(e));
-            std::printf(" partition=%u expected=%llu received=%llu", e.partition_id,
+            std::printf(" topic=%u expected=%llu received=%llu", e.topic_id,
                         static_cast<unsigned long long>(e.expected_seq), static_cast<unsigned long long>(e.received_seq));
             break;
         }
@@ -90,12 +90,12 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             std::printf(" session=%u generation=%u", e.session_id, e.generation);
             break;
         }
-        case ControlCode::PARTITION_DEGRADED:
-        case ControlCode::PARTITION_RECOVERED: {
-            if (len < sizeof(PartitionStateEvent)) return;
-            PartitionStateEvent e; std::memcpy(&e, p, sizeof(e));
-            std::printf(" partition=%u reason=%u last_seq=%llu", e.partition_id, e.reason,
-                        static_cast<unsigned long long>(e.last_seq));
+        case ControlCode::TOPIC_DEGRADED:
+        case ControlCode::TOPIC_RECOVERED: {
+            if (len < sizeof(TopicStateEvent)) return;
+            TopicStateEvent e; std::memcpy(&e, p, sizeof(e));
+            std::printf(" topic=%u degraded=%u/%u reason=%u last_seq=%llu", e.topic_id, e.degraded, e.partitions,
+                        e.reason, static_cast<unsigned long long>(e.last_seq));
             break;
         }
         case ControlCode::TRANSPORT_DOWN:
@@ -103,7 +103,7 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             if (len < sizeof(TransportStateEvent)) return;
             TransportStateEvent e; std::memcpy(&e, p, sizeof(e));
             static const char* const kReason[] = {"none", "source_lost", "local_failure", "publisher_restart"};
-            std::printf(" partition=%u reason=%s last_seq=%llu", e.partition_id,
+            std::printf(" topic=%u reason=%s last_seq=%llu", e.topic_id,
                         e.reason < 4 ? kReason[e.reason] : "?", static_cast<unsigned long long>(e.last_seq));
             break;
         }
@@ -111,7 +111,7 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             if (len < sizeof(SymbolStaleEvent)) return;
             SymbolStaleEvent e; std::memcpy(&e, p, sizeof(e));
             static const char* const kReason[] = {"none", "gap", "transport_down", "publisher_restart", "sequence_reset"};
-            std::printf(" partition=%u symbol=%u reason=%s last_seq=%llu", e.partition_id, e.symbol_id,
+            std::printf(" topic=%u symbol=%u reason=%s last_seq=%llu", e.topic_id, e.symbol_id,
                         e.reason < 5 ? kReason[e.reason] : "?", static_cast<unsigned long long>(e.last_seq));
             break;
         }
@@ -123,7 +123,7 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             RecapEvent e; std::memcpy(&e, p, sizeof(e));
             static const char* const kStatus[] = {"ok", "timeout", "rejected", "too_old", "hold_overflow",
                                                   "gap_while_held", "identity", "send_failed", "reply_too_large"};
-            std::printf(" partition=%u symbol=%u request=%llu attempt=%u records=%u as_of=%llu", e.partition_id, e.symbol_id,
+            std::printf(" topic=%u symbol=%u request=%llu attempt=%u records=%u as_of=%llu", e.topic_id, e.symbol_id,
                         static_cast<unsigned long long>(e.request_id), e.attempt, e.record_count,
                         static_cast<unsigned long long>(e.as_of_seq));
             if (h.msg_type == static_cast<uint8_t>(ControlCode::RECAP_FAILED)) std::printf(" status=%s", e.status < 9 ? kStatus[e.status] : "?");
@@ -178,7 +178,7 @@ int cmd_tail(int argc, char** argv) {
             const TickHeader& h = *v.hdr;
             std::printf("%llu %s kind=%u sym=%u seq=%llu part=%u tmpl=%u len=%u ingest=%llu",
                         static_cast<unsigned long long>(v.pos), code_name(h), h.kind, h.symbol_id,
-                        static_cast<unsigned long long>(h.sequence), h.partition_id, h.template_id,
+                        static_cast<unsigned long long>(h.sequence), h.topic_id, h.template_id,
                         v.payload_len, static_cast<unsigned long long>(h.ingest_ts));
             if (h.kind == static_cast<uint8_t>(Kind::AGENT_CONTROL)) print_control_detail(h, v.payload, v.payload_len);
             if (h.flags & FLAG_SNAPSHOT_ORIGIN) std::printf(" snapshot");

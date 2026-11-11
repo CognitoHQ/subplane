@@ -143,7 +143,7 @@ int Pipeline::run_once() noexcept {
     TickHeader h{};
     h.kind = static_cast<uint8_t>(Kind::RAW);
     h.ingest_ts = pkt.recv_ts_ns;
-    h.partition_id = p.id();
+    h.topic_id = p.topic_id();
     h.sequence = ++p.tap_seq;
     if (p.tap->publish(h, pkt.data, pkt.len)) inc(p.counters.tap_records);
     else inc(p.counters.tap_dropped);
@@ -157,14 +157,7 @@ void Pipeline::process_packet(Partition& p, const PacketView& pkt) noexcept {
         const bool was_degraded = p.state == PartitionState::DEGRADED;
         p.state = PartitionState::ACTIVE;
         publish_partition_state(p);
-        if (was_degraded) {
-            PartitionStateEvent ev{};
-            ev.partition_id = p.id();
-            ev.reason = static_cast<uint32_t>(PartitionReason::NONE);
-            ev.last_seq = p.last_seq;
-            ev.changed_ns = pkt.recv_ts_ns;
-            emit_control(p, ControlCode::PARTITION_RECOVERED, &ev, sizeof(ev), pkt.recv_ts_ns);
-        }
+        if (was_degraded) emit_topic_state(p, TopicReason::NONE, pkt.recv_ts_ns);
     }
 
     FrameInfo info;
@@ -204,7 +197,7 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
                                const FrameInfo& info) noexcept {
     TickHeader h{};
     h.ingest_ts = recv_ts;
-    h.partition_id = p.id();
+    h.topic_id = p.topic_id();
     h.payload_len = len;
 
     const DecodeResult r = p.decode(msg, len, h, resolver_);
@@ -247,6 +240,15 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
         publish_data(p, h, msg, len);
     } else {
         inc(p.counters.admin);
+        // INTENT: the publisher stamps its stream_id (topic_id << 16 |
+        // partition_num) on heartbeats; a different one means this partition
+        // is wired to another publisher's stream. Counted (operator view,
+        // /partitions and metrics), data is not dropped: the config is wrong,
+        // not the bytes.
+        if (r.stream_stamp != 0 && r.stream_stamp != p.stream_id()) {
+            inc(p.counters.stream_mismatch);
+            p.counters.last_stream_stamp.store(static_cast<uint32_t>(r.stream_stamp), std::memory_order_relaxed);
+        }
         const bool seq_reset = static_cast<ControlCode>(h.msg_type) == ControlCode::BUS_SEQ_RESET;
         // INTENT: the bus restarted its sequence. Accept whatever comes
         // next rather than flagging a gap against the old stream.
@@ -278,7 +280,7 @@ bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept
     if (seq > p.expected_seq) {
         inc(p.counters.gaps);
         GapEvent ev{};
-        ev.partition_id = p.id();
+        ev.topic_id = p.topic_id();
         ev.expected_seq = p.expected_seq;
         ev.received_seq = seq;
         ev.detected_ns = now;
@@ -303,7 +305,7 @@ bool Pipeline::check_sequence(Partition& p, uint64_t seq, uint64_t now) noexcept
         // in-band as a GAP with received < expected, and resynced.
         inc(p.counters.seq_resets);
         GapEvent ev{};
-        ev.partition_id = p.id();
+        ev.topic_id = p.topic_id();
         ev.expected_seq = p.expected_seq;
         ev.received_seq = seq;
         ev.detected_ns = now;
@@ -355,8 +357,24 @@ void Pipeline::emit_control(Partition& p, ControlCode code, const void* body, ui
         Session& s = *sp;
         const FilterTable* f = s.filter.load(std::memory_order_acquire);
         if (f == nullptr || !f->agent_control) continue;
-        if (!s.ring.publish_control(code, p.id(), now, body, len)) inc(s.counters.publish_failed);
+        if (!s.ring.publish_control(code, p.topic_id(), now, body, len)) inc(s.counters.publish_failed);
     }
+}
+
+// Cold-ish (state changes only). A topic's partitions all live in this
+// pipeline (thread groups list topics), so the count is exact here.
+void Pipeline::emit_topic_state(Partition& p, TopicReason reason, uint64_t now) noexcept {
+    TopicStateEvent ev{};
+    ev.topic_id = p.topic_id();
+    for (const Partition* q : partitions_) {
+        if (q->topic_id() != p.topic_id()) continue;
+        ++ev.partitions;
+        if (q->state == PartitionState::DEGRADED) ++ev.degraded;
+    }
+    ev.reason = static_cast<uint32_t>(reason);
+    ev.last_seq = p.last_seq;
+    ev.changed_ns = now;
+    emit_control(p, ev.degraded != 0 ? ControlCode::TOPIC_DEGRADED : ControlCode::TOPIC_RECOVERED, &ev, sizeof(ev), now);
 }
 
 void Pipeline::emit_control_all(ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept {
@@ -375,12 +393,12 @@ void Pipeline::apply_transport_changes(Partition& p, Transport& t) noexcept {
         const bool up = c.state == TransportState::UP;
         inc(up ? p.counters.transport_up : p.counters.transport_down);
         TransportStateEvent ev{};
-        ev.partition_id = p.id();
+        ev.topic_id = p.topic_id();
         ev.reason = static_cast<uint32_t>(c.reason);
         ev.last_seq = p.last_seq;
         ev.changed_ns = now;
         emit_control(p, up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, &ev, sizeof(ev), now);
-        if (p.tap != nullptr) p.tap->publish_control(up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, p.id(), now, &ev, sizeof(ev));
+        if (p.tap != nullptr) p.tap->publish_control(up ? ControlCode::TRANSPORT_UP : ControlCode::TRANSPORT_DOWN, p.topic_id(), now, &ev, sizeof(ev));
         // INTENT: a new publisher instance is a new stream: its sequences say
         // nothing about the old one's, so the next sequence is accepted as a
         // fresh start (as after BUS_SEQ_RESET), on every partition. Comparing
@@ -420,12 +438,7 @@ void Pipeline::service_timeouts(uint64_t now) noexcept {
             p.state = PartitionState::DEGRADED;
             inc(p.counters.degraded_events);
             publish_partition_state(p);
-            PartitionStateEvent ev{};
-            ev.partition_id = p.id();
-            ev.reason = static_cast<uint32_t>(PartitionReason::HEARTBEAT_TIMEOUT);
-            ev.last_seq = p.last_seq;
-            ev.changed_ns = now;
-            emit_control(p, ControlCode::PARTITION_DEGRADED, &ev, sizeof(ev), now);
+            emit_topic_state(p, TopicReason::HEARTBEAT_TIMEOUT, now);
         }
     }
 }
@@ -562,7 +575,7 @@ const RecapPending* Pipeline::recap_hold(Partition& p, const TickHeader& h, cons
         e->overflowed = true;
         RecapEvent ev{};
         ev.symbol_id = e->symbol_id;
-        ev.partition_id = p.id();
+        ev.topic_id = p.topic_id();
         ev.status = static_cast<uint8_t>(RecapEventStatus::HOLD_OVERFLOW);
         recap_emit(p, *e, ControlCode::RECAP_FAILED, ev, h.ingest_ts);
     }
@@ -594,7 +607,7 @@ void Pipeline::recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, ui
     RecapState& st = *p.recap;
     RecapEvent ev{};
     ev.symbol_id = symbol_id;
-    ev.partition_id = p.id();
+    ev.topic_id = p.topic_id();
     RecapPending* e = st.find(symbol_id);
     if (e == nullptr) {
         // INTENT: the floor is the last sequence this partition delivered:
@@ -605,14 +618,14 @@ void Pipeline::recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, ui
             // Unreachable while SessionManager enforces max_pending; reported, not silent.
             inc(p.recap_counters.recap_hold_overflows);
             ev.status = static_cast<uint8_t>(RecapEventStatus::HOLD_OVERFLOW);
-            s.ring.publish_control(ControlCode::RECAP_FAILED, p.id(), now, &ev, sizeof(ev));
+            s.ring.publish_control(ControlCode::RECAP_FAILED, p.topic_id(), now, &ev, sizeof(ev));
             return;
         }
         recap_post(p, {RecapCommand::Op::REQUEST, p.id(), symbol_id});
     }
     if (e->waiters.test(s.recap_slot)) return;
     e->waiters.set(s.recap_slot);
-    if (!s.ring.publish_control(ControlCode::RECAP_PENDING, p.id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
+    if (!s.ring.publish_control(ControlCode::RECAP_PENDING, p.topic_id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
 }
 
 void Pipeline::recap_drop_waiter(Partition& p, RecapPending& e, Session& s) noexcept {
@@ -657,7 +670,7 @@ void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t no
         recap_post(p, {RecapCommand::Op::REQUEST, p.id(), e.symbol_id});
     }
     SymbolStaleEvent ev{};
-    ev.partition_id = p.id();
+    ev.topic_id = p.topic_id();
     ev.reason = static_cast<uint16_t>(reason);
     ev.last_seq = p.last_seq;
     ev.changed_ns = now;
@@ -669,7 +682,7 @@ void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t no
         for (size_t w = 0; w < f->symbol_bits.size(); ++w) {
             for (uint64_t bits = f->symbol_bits[w]; bits != 0; bits &= bits - 1) {
                 ev.symbol_id = static_cast<uint32_t>(w * 64 + static_cast<size_t>(__builtin_ctzll(bits)));
-                if (f->agent_control && !s.ring.publish_control(ControlCode::SYMBOL_STALE, p.id(), now, &ev, sizeof(ev))) {
+                if (f->agent_control && !s.ring.publish_control(ControlCode::SYMBOL_STALE, p.topic_id(), now, &ev, sizeof(ev))) {
                     inc(s.counters.publish_failed);
                 }
                 recap_add_waiter(p, s, ev.symbol_id, now); // RECAP_PENDING when it was live
@@ -732,7 +745,7 @@ void Pipeline::recap_reply(Partition& p, const RecapReply& r, uint64_t now) noex
         RecapEvent ev{};
         ev.request_id = r.request_id;
         ev.symbol_id = r.symbol_id;
-        ev.partition_id = p.id();
+        ev.topic_id = p.topic_id();
         ev.status = static_cast<uint8_t>(event_status(r.status));
         ev.attempt = r.attempt;
         recap_emit(p, *e, ControlCode::RECAP_FAILED, ev, now);
@@ -761,7 +774,7 @@ void Pipeline::recap_consider(Partition& p, RecapPending& e, const RecapReply& r
         RecapEvent ev{};
         ev.request_id = r.request_id;
         ev.symbol_id = e.symbol_id;
-        ev.partition_id = p.id();
+        ev.topic_id = p.topic_id();
         ev.status = static_cast<uint8_t>(RecapEventStatus::TOO_OLD);
         ev.attempt = r.attempt;
         ev.as_of_seq = r.as_of;
@@ -794,12 +807,12 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
     RecapEvent ev{};
     ev.request_id = r.request_id;
     ev.symbol_id = e.symbol_id;
-    ev.partition_id = p.id();
+    ev.topic_id = p.topic_id();
     ev.attempt = r.attempt;
     ev.record_count = r.messages;
     ev.as_of_seq = S;
     for (Session* s : merge_waiters_) {
-        if (!s->ring.publish_control(ControlCode::RECAP_BEGIN, p.id(), now, &ev, sizeof(ev))) inc(s->counters.publish_failed);
+        if (!s->ring.publish_control(ControlCode::RECAP_BEGIN, p.topic_id(), now, &ev, sizeof(ev))) inc(s->counters.publish_failed);
     }
 
     // INTENT: the reply records are delivered as snapshot-origin data at
@@ -816,7 +829,7 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
         at += 4 + len;
         TickHeader h{};
         h.ingest_ts = now;
-        h.partition_id = p.id();
+        h.topic_id = p.topic_id();
         h.payload_len = len;
         const DecodeResult dr = p.decode(msg, len, h, resolver_);
         if (const uint32_t nid = resolver_.take_new_id(); nid != 0) emit_symbol_mapped(nid, now);
@@ -838,7 +851,7 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
     for (Session* sp : merge_waiters_) {
         Session& s = *sp;
         ev.record_count = merge_counts_[s.recap_slot];
-        if (!s.ring.publish_control(ControlCode::RECAP_COMPLETE, p.id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
+        if (!s.ring.publish_control(ControlCode::RECAP_COMPLETE, p.topic_id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
     }
     // Then the held live messages the snapshot does not contain, in order.
     p.recap->for_each_held(e, [&](const TickHeader& h, const uint8_t* payload, uint32_t len) {
@@ -860,7 +873,7 @@ void Pipeline::recap_emit(Partition& p, const RecapPending& e, ControlCode code,
     for (Session* sp : p.sessions) {
         Session& s = *sp;
         if (!s.recap || !e.waiters.test(s.recap_slot)) continue;
-        if (!s.ring.publish_control(code, p.id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
+        if (!s.ring.publish_control(code, p.topic_id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
     }
 }
 

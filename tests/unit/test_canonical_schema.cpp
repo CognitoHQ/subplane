@@ -26,7 +26,7 @@ TEST_CASE("canonical: every message is flat, aligned, and carries the same 32-by
     CHECK(s.little_endian());
     struct Exp { uint16_t id; const char* name; uint32_t size; };
     const Exp exp[] = {{1, "Trade", 72}, {2, "Quote", 72}, {3, "BookUpdate", 64}, {4, "BookSnapshot", 368}, {5, "Ohlcv", 88},
-                       {6, "Status", 48}, {10, "InstrumentDefinition", 144}, {100, "Heartbeat", 40}};
+                       {6, "Status", 48}, {10, "InstrumentDefinition", 144}, {100, "Heartbeat", 48}};
     REQUIRE(s.messages().size() == 8);
     for (const Exp& e : exp) {
         const MessageDef* m = s.find_message(e.id);
@@ -70,7 +70,7 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
     using namespace sp_canonical;
     static_assert(Trade::kIsStruct && Quote::kIsStruct && BookUpdate::kIsStruct && BookSnapshot::kIsStruct &&
                   Ohlcv::kIsStruct && Status::kIsStruct && InstrumentDefinition::kIsStruct && Heartbeat::kIsStruct);
-    static_assert(sizeof(Trade) == 72 && sizeof(BookSnapshot) == 368 && sizeof(InstrumentDefinition) == 144 && sizeof(Heartbeat) == 40);
+    static_assert(sizeof(Trade) == 72 && sizeof(BookSnapshot) == 368 && sizeof(InstrumentDefinition) == 144 && sizeof(Heartbeat) == 48);
     static_assert(offsetof(Trade, Sequence) == 16 && offsetof(Quote, Sequence) == 16 && offsetof(BookSnapshot, Sequence) == 16);
     static_assert(offsetof(BookSnapshot, AskQty) == 280);
     static_assert(kSchemaId == 100);
@@ -156,4 +156,6 @@ TEST_CASE("canonical: generated struct views read encoded messages") {
     REQUIRE(h != nullptr);
     CHECK(h->Sequence == 5);
     CHECK(h->InstrumentId == 0);
+    CHECK(h->StreamId == 0);   // unstamped
+    static_assert(offsetof(Heartbeat, StreamId) == 8 + 32);
 }

@@ -108,6 +108,7 @@ struct CH {
         REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE), static_cast<uint8_t>(MsgType::QUOTE)}, 256, err));
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(kPartitionYaml), 0, data_dir(), cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto ft = std::make_unique<LockedTransport>();
         fake = ft.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft)), err);
@@ -210,9 +211,10 @@ TEST_CASE("control: hello, dynamic session lifecycle, snapshot, symbols, linger,
     CHECK(hi.proto_version == CONTROL_PROTO_VERSION);
     CHECK(hi.max_symbols == 1024);
     CHECK(hi.schema_id == h.part.schema()->schema_id());
-    REQUIRE(hi.partitions.size() == 1);
-    CHECK(hi.partitions[0].id == 0);
-    CHECK(hi.partitions[0].name == "p0");
+    REQUIRE(hi.topics.size() == 1);
+    CHECK(hi.topics[0].topic_id == 1);
+    CHECK(hi.topics[0].partitions == 1);
+    CHECK(hi.topics[0].name == "t");
 
     // CREATE_SESSION: TRADE only, all symbols
     SessionRequest req;
@@ -220,6 +222,7 @@ TEST_CASE("control: hello, dynamic session lifecycle, snapshot, symbols, linger,
     req.ring_capacity_bytes = 1u << 20;
     req.max_payload = 1024;
     req.msg_type_mask = bit(MsgType::TRADE);
+    req.topics = {"t"};
     AttachInfo ai;
     REQUIRE_MESSAGE(cli.create_session(req, ai), cli.last_error());
     CHECK(ai.name == "dyn");
@@ -304,10 +307,13 @@ TEST_CASE("control: hello, dynamic session lifecycle, snapshot, symbols, linger,
     CHECK(cli.last_status() == CtlStatus::BAD_REQUEST);
     bad = req;
     bad.name = "badpart";
-    bad.partition_mask = 1ull << 5;
+    bad.topics = {"no.such"};
     CHECK_FALSE(cli.create_session(bad, dup));
     CHECK(cli.last_status() == CtlStatus::BAD_REQUEST);
-    bad.partition_mask = 0;
+    bad.topics = {"bad..pattern"};
+    CHECK_FALSE(cli.create_session(bad, dup));
+    CHECK(cli.last_status() == CtlStatus::BAD_REQUEST);
+    bad.topics = {};
     bad.ring_capacity_bytes = 1000;
     CHECK_FALSE(cli.create_session(bad, dup));
     CHECK(cli.last_status() == CtlStatus::BAD_REQUEST);

@@ -60,7 +60,7 @@ void on_control(Book& b, const TickHeader& h, const uint8_t* p, uint32_t len, bo
     switch (static_cast<ControlCode>(h.msg_type)) {
         case ControlCode::GAP_DETECTED: {
             GapEvent e; if (len >= sizeof(e)) { std::memcpy(&e, p, sizeof(e));
-                std::printf("CTRL gap partition=%u expected=%llu received=%llu\n", e.partition_id,
+                std::printf("CTRL gap topic=%u expected=%llu received=%llu\n", e.topic_id,
                             static_cast<unsigned long long>(e.expected_seq), static_cast<unsigned long long>(e.received_seq)); }
             break;
         }
@@ -70,19 +70,19 @@ void on_control(Book& b, const TickHeader& h, const uint8_t* p, uint32_t len, bo
             break;
         }
         case ControlCode::FILTER_RELOADED:    std::printf("CTRL filter reloaded\n"); break;
-        case ControlCode::PARTITION_DEGRADED: std::printf("CTRL partition degraded\n"); break;
-        case ControlCode::PARTITION_RECOVERED:std::printf("CTRL partition recovered\n"); break;
+        case ControlCode::TOPIC_DEGRADED:     std::printf("CTRL topic degraded\n"); break;
+        case ControlCode::TOPIC_RECOVERED:    std::printf("CTRL topic recovered\n"); break;
         case ControlCode::AGENT_RESTARTED:    std::printf("CTRL agent restarted\n"); break;
         case ControlCode::SESSION_CLOSING:    std::printf("CTRL session closing\n"); break;
         case ControlCode::TRANSPORT_DOWN:
         case ControlCode::TRANSPORT_UP: {
             TransportStateEvent e; if (len >= sizeof(e)) { std::memcpy(&e, p, sizeof(e));
-                std::printf("CTRL transport %s partition=%u reason=%u\n",
-                            h.msg_type == static_cast<uint8_t>(ControlCode::TRANSPORT_UP) ? "up" : "down", e.partition_id, e.reason); }
+                std::printf("CTRL transport %s topic=%u reason=%u\n",
+                            h.msg_type == static_cast<uint8_t>(ControlCode::TRANSPORT_UP) ? "up" : "down", e.topic_id, e.reason); }
             break;
         }
         case ControlCode::BUS_HEARTBEAT:      break;
-        default: std::printf("CTRL code=0x%02x partition=%u\n", h.msg_type, h.partition_id); break;
+        default: std::printf("CTRL code=0x%02x topic=%u\n", h.msg_type, h.topic_id); break;
     }
 }
 
@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("# agent=%s epoch=%llu record_version=%u partitions=%zu symbols=%u\n", hi.agent_name.c_str(),
-                static_cast<unsigned long long>(hi.epoch), hi.record_version, hi.partitions.size(), hi.symbol_count);
+                static_cast<unsigned long long>(hi.epoch), hi.record_version, hi.topics.size(), hi.symbol_count);
 
     SessionRequest req;
     req.name = session;

@@ -3,7 +3,7 @@
 //   subplane replay --pcap <file> --port N [--host H] [--rate pps|0] [--timing pcap] [--loop N]
 //   subplane replay --bench --config <config.yaml> [--packets N] [--per-packet K] ...
 //
-// Bench mode builds partitions[0] of the config with an in-memory transport,
+// Bench mode builds the first partition of the config's first topic with an in-memory transport,
 // drives Pipeline::run_once() on the calling thread and reports the pipeline's
 // own recv_to_publish histogram. The recv timestamp is taken inside poll(), so
 // for a batch it covers frame + decode + filter + publish of the whole batch.
@@ -257,6 +257,8 @@ bool run_one(const BenchOpts& o, const YAML::Node& part_node, const std::string&
     using namespace subplane;
     subplane::PartitionConfig pcfg;
     if (!PartitionConfig::parse(part_node, 0, base_dir, pcfg, err)) return false;
+    // The bench reads no registry: any topic id will do, the records stay in-process.
+    pcfg.set_topic(pcfg.name.substr(0, pcfg.name.rfind('/')), 1, 1);
     if (o.tap) {
         pcfg.tap = true;
         pcfg.tap_capacity_bytes = 64ull << 20;
@@ -405,11 +407,11 @@ int run_bench(const Args& args, std::string& err) {
         err = std::string("config: ") + e.what();
         return 1;
     }
-    if (!root["partitions"] || !root["partitions"].IsSequence() || root["partitions"].size() == 0) {
-        err = "config has no partitions";
+    if (!root["topics"] || !root["topics"].IsSequence() || root["topics"].size() == 0) {
+        err = "config has no topics";
         return 1;
     }
-    const YAML::Node part_node = root["partitions"][0];
+    const YAML::Node part_node = subplane::topic_partition_node(root["topics"][0], 0);
     sptool::FramingConfig framing;
     if (!sptool::load_framing(o.config, framing, err)) return 1;
     std::filesystem::path base = std::filesystem::absolute(o.config).parent_path();

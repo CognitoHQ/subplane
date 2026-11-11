@@ -14,11 +14,14 @@ namespace subplane {
 struct FilterTable {
     std::vector<uint64_t> symbol_bits; // sized (max_symbols+63)/64 at build, never resized
     uint64_t msg_type_mask  = 0;       // bit i => MsgType i (i < 64) accepted
-    uint64_t partition_mask = 0;       // bit i => partition_id i (< 64) accepted
+    // bit i => topic_id i accepted; 512 words cover every topic_id (1..32767).
+    // INTENT: a bitmap by topic_id, not by an agent-local slot, so a record read
+    // back from the LVC (any partition, cold) is filtered the same as live data.
+    uint64_t topic_bits[512] = {};
     uint64_t venue_mask     = ~0ull;   // bit i => venue i accepted; ids >= 64 accepted iff mask == ~0ull
     bool all_symbols   = false;
-    bool bus_admin     = true;         // BUS_ADMIN is partition-scoped
-    bool agent_control = true;         // always passes partition_mask
+    bool bus_admin     = true;         // BUS_ADMIN is topic-scoped
+    bool agent_control = true;         // passes whatever the topic
     uint32_t generation = 0;
 
     // Hot. No allocation, no string compare.
@@ -29,11 +32,11 @@ struct FilterTable {
     bool accept(const TickHeader& h) const noexcept {
         switch (static_cast<Kind>(h.kind)) {
         case Kind::AGENT_CONTROL: return agent_control;
-        case Kind::BUS_ADMIN:     return bus_admin && partition_ok(h.partition_id);
+        case Kind::BUS_ADMIN:     return bus_admin && topic_ok(h.topic_id);
         case Kind::DATA: break;
         default: return false; // PAD and unknown kinds
         }
-        if (!partition_ok(h.partition_id)) return false;
+        if (!topic_ok(h.topic_id)) return false;
         if (h.msg_type >= 64 || !((msg_type_mask >> h.msg_type) & 1u)) return false;
         if (venue_mask != ~0ull && (h.venue_id >= 64 || !((venue_mask >> h.venue_id) & 1u))) return false;
         if (all_symbols) return true;
@@ -43,7 +46,7 @@ struct FilterTable {
     }
 
 private:
-    bool partition_ok(uint16_t p) const noexcept { return p < 64 && ((partition_mask >> p) & 1u); }
+    bool topic_ok(uint16_t t) const noexcept { return t < 32768 && ((topic_bits[t >> 6] >> (t & 63u)) & 1u); }
 };
 
 // Cold description used to build a FilterTable.
@@ -51,7 +54,7 @@ struct FilterSpec {
     std::vector<uint32_t> symbol_ids;
     bool all_symbols = false;
     std::vector<uint8_t> msg_types;
-    std::vector<uint16_t> partition_ids;
+    std::vector<uint16_t> topic_ids;
     std::vector<uint16_t> venue_ids; // empty = all
     bool bus_admin = true;
     bool agent_control = true;

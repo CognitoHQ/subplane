@@ -17,7 +17,7 @@ Read the reference that matches the task before you write XML:
 
 1. **Classify each message.** Ask if it is unclear.
    - **Live data:** trade, quote, book, status, definition. It travels on the bus and the agent routes it.
-   - **Bus admin:** heartbeat, sequence reset, trading status. Same bus, routed by partition.
+   - **Bus admin:** heartbeat, sequence reset, trading status. Same bus, routed by topic.
    - **Recap reply marker:** only for a firm bus whose snapshot service already speaks the bus schema. New services use SPP's `RecapBegin`/`RecapRecord`/`RecapEnd` instead.
    - **SPP core message:** a control conversation between subplane services. This is rare: it changes the protocol, so it needs a spec change.
    - **SPP extension:** app-specific control, carried in the `Extension` envelope with its own body schema.

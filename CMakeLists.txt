@@ -82,6 +82,7 @@ add_library(subplane_core STATIC
     src/pipeline/pipeline.cpp
     src/pipeline/recap_state.cpp
     src/pipeline/session_manager.cpp
+    src/pipeline/topic_registry.cpp
     src/control/control_server.cpp
 )
 target_include_directories(subplane_core PUBLIC include)

@@ -37,6 +37,16 @@ Agent::~Agent() {
     stop();
 }
 
+namespace {
+std::string emit_section(const YAML::Node& n) {
+    if (!n.IsDefined() || n.IsNull()) return {};
+    YAML::Emitter e;
+    e << n;
+    return e.c_str();
+}
+constexpr const char* kRestartSections[] = {"registry", "topics", "agent.thread_groups"};
+} // namespace
+
 bool Agent::initialize(const std::string& config_path) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -103,6 +113,7 @@ bool Agent::initialize(const std::string& config_path) {
     }
 
     std::string err;
+    for (const char* name : kRestartSections) restart_sections_.emplace_back(name, emit_section(config_manager_->get_section(name)));
     if (!build_partitions(err) || !build_groups(err)) {
         LogRegistry::instance().error("AGENT", "INIT_FAILED", err);
         std::cerr << err << std::endl;
@@ -122,72 +133,99 @@ bool Agent::initialize(const std::string& config_path) {
 }
 
 bool Agent::build_partitions(std::string& err) {
-    auto node = config_manager_->get_section("partitions");
-    if (!node.IsDefined() || node.IsNull()) {
-        LogRegistry::instance().warn("AGENT", "NO_PARTITIONS", "no partitions configured; agent will idle");
-        return true;
-    }
-    if (!node.IsSequence()) {
-        err = "partitions must be a sequence";
+    if (const auto old = config_manager_->get_section("partitions"); old.IsDefined() && !old.IsNull()) {
+        err = "`partitions:` is replaced by `topics:` (each topic holds partitions numbered from 1; architecture.md, \"Topics and partitions\")";
         return false;
     }
-    uint16_t idx = 0;
-    for (const auto& pn : node) {
-        PartitionConfig cfg;
-        if (!PartitionConfig::parse(pn, idx, config_dir_, cfg, err)) return false;
-        for (const auto& existing : partitions_) {
-            if (existing->name() == cfg.name) {
-                err = "duplicate partition name " + cfg.name;
-                return false;
-            }
-        }
+    auto node = config_manager_->get_section("topics");
+    if (!node.IsDefined() || node.IsNull()) {
+        LogRegistry::instance().warn("AGENT", "NO_TOPICS", "no topics configured; agent will idle");
+        return true;
+    }
+    // The registry is a path to the site's file, or the entries inline (tests, quick starts).
+    const auto reg = config_manager_->get_section("registry");
+    if (!reg.IsDefined() || reg.IsNull()) {
+        err = "`registry:` is required with `topics:`: the site's topic_name -> topic_id file (e.g. site/topics.yaml)";
+        return false;
+    }
+    if (reg.IsScalar()) {
+        std::string path = reg.as<std::string>();
+        if (!path.empty() && path[0] != '/') path = config_dir_ + "/" + path;
+        if (!registry_.load_file(path, err)) return false;
+    } else if (!registry_.load(reg, "registry", err)) {
+        return false;
+    }
+    std::vector<PartitionConfig> cfgs;
+    if (!expand_topics(node, registry_, config_dir_, cfgs, err)) return false;
+    for (auto& cfg : cfgs) {
         auto p = std::make_unique<Partition>();
         if (!p->build(cfg, err)) return false;
         for (const auto& w : p->decoder_warnings()) LogRegistry::instance().warn("PARTITION", cfg.name, w);
+        // INTENT: one stream, one publisher, one sequence. Two partitions on
+        // one transport address would interleave two sequences (false gaps).
+        const auto address = [](const Partition& x) {
+            if (!x.has_transport()) return std::string();
+            const std::string k = x.transport().endpoint_key("");
+            return k.empty() ? x.transport().describe() : k;
+        };
+        const std::string addr = address(*p);
+        for (const auto& q : partitions_) {
+            if (!addr.empty() && address(*q) == addr) {
+                err = "partitions " + q->name() + " and " + cfg.name + " read the same stream (" + addr + ")";
+                return false;
+            }
+        }
         partitions_.push_back(std::move(p));
-        ++idx;
     }
     return true;
 }
 
 bool Agent::build_groups(std::string& err) {
     auto node = config_manager_->get_section("agent.thread_groups");
-    std::vector<std::pair<std::string, std::vector<std::string>>> spec; // name -> partition names
+    std::vector<std::pair<std::string, std::vector<std::string>>> spec; // name -> topic names
     std::vector<int> cpus;
     if (node.IsDefined() && node.IsSequence() && node.size() > 0) {
         for (const auto& g : node) {
             std::string gname = g["name"].as<std::string>("g" + std::to_string(spec.size()));
-            std::vector<std::string> parts;
             if (g["partitions"].IsDefined()) {
-                for (const auto& p : g["partitions"]) parts.push_back(p.as<std::string>());
+                err = "thread group " + gname + ": list `topics:`, not partitions (a topic's partitions share one group)";
+                return false;
             }
-            spec.emplace_back(gname, parts);
+            std::vector<std::string> topics;
+            if (g["topics"].IsDefined()) {
+                for (const auto& t : g["topics"]) topics.push_back(t.as<std::string>());
+            }
+            spec.emplace_back(gname, topics);
             cpus.push_back(g["cpu"].as<int>(-1));
         }
     } else {
         std::vector<std::string> all;
-        for (const auto& p : partitions_) all.push_back(p->name());
+        for (const auto& p : partitions_) {
+            if (std::find(all.begin(), all.end(), p->topic_name()) == all.end()) all.push_back(p->topic_name());
+        }
         spec.emplace_back("g0", all);
         cpus.push_back(-1);
     }
     std::vector<bool> assigned(partitions_.size(), false);
+    std::vector<std::string> seen;
     for (size_t gi = 0; gi < spec.size(); ++gi) {
         auto g = std::make_unique<Pipeline>(spec[gi].first, 0, *symbols_, *lvc_);
-        for (const auto& pname : spec[gi].second) {
+        for (const auto& tname : spec[gi].second) {
+            if (std::find(seen.begin(), seen.end(), tname) != seen.end()) {
+                err = "topic " + tname + " is in more than one thread group";
+                return false;
+            }
+            seen.push_back(tname);
             bool found = false;
             for (size_t pi = 0; pi < partitions_.size(); ++pi) {
-                if (partitions_[pi]->name() == pname) {
-                    if (assigned[pi]) {
-                        err = "partition " + pname + " assigned to more than one thread group";
-                        return false;
-                    }
+                if (partitions_[pi]->topic_name() == tname) {
                     assigned[pi] = true;
                     g->add_partition(partitions_[pi].get());
                     found = true;
                 }
             }
             if (!found) {
-                err = "thread group " + spec[gi].first + ": unknown partition " + pname;
+                err = "thread group " + spec[gi].first + ": unknown topic " + tname;
                 return false;
             }
         }
@@ -196,7 +234,7 @@ bool Agent::build_groups(std::string& err) {
     }
     for (size_t pi = 0; pi < partitions_.size(); ++pi) {
         if (!assigned[pi]) {
-            err = "partition " + partitions_[pi]->name() + " is not in any thread group";
+            err = "topic " + partitions_[pi]->topic_name() + " is not in any thread group";
             return false;
         }
     }
@@ -400,7 +438,10 @@ AgentStatus Agent::get_status() const {
     for (const auto& p : partitions_) {
         PartitionStatus ps;
         ps.name = p->name();
-        ps.id = p->id();
+        ps.topic = p->topic_name();
+        ps.topic_id = p->topic_id();
+        ps.partition_num = p->partition_num();
+        ps.stream_id = p->stream_id();
         ps.state = partition_state_name(static_cast<PartitionState>(p->state_pub.load(std::memory_order_relaxed)));
         ps.last_sequence = p->last_seq_pub.load(std::memory_order_relaxed);
         const auto c = p->counters.snapshot();
@@ -412,6 +453,8 @@ AgentStatus Agent::get_status() const {
         ps.transport = p->has_transport() ? transport_state_name(p->transport().state()) : "unknown";
         ps.transport_down = c.transport_down;
         ps.transport_up = c.transport_up;
+        ps.stream_mismatch = c.stream_mismatch;
+        ps.last_stream_stamp = static_cast<int32_t>(c.last_stream_stamp);
         if (p->has_recap()) ps.recap_json = p->recap_counters.to_json();
         if (const RingWriter* tap = p->tap) {
             ps.tap_ring = p->tap_path();
@@ -434,7 +477,7 @@ AgentStatus Agent::get_status() const {
     return s;
 }
 
-bool Agent::reload_sessions(std::string& err) {
+bool Agent::reload_sessions(std::string& err, std::vector<std::string>* ignored) {
     if (!running_.load() || !sessions_) {
         err = "agent not running";
         return false;
@@ -442,6 +485,14 @@ bool Agent::reload_sessions(std::string& err) {
     if (!config_manager_->reload_config()) {
         err = "config reload failed";
         return false;
+    }
+    // INTENT: topics and partitions are fixed for the agent's life (adding
+    // partitions is a weekend restart, on primary and DR alike). An edit to
+    // them is reported, never silently dropped.
+    for (const auto& [name, was] : restart_sections_) {
+        if (emit_section(config_manager_->get_section(name)) == was) continue;
+        LogRegistry::instance().warn("AGENT", "RELOAD_IGNORED", name + " changed; it takes effect on restart");
+        if (ignored) ignored->push_back(name);
     }
     std::vector<SessionSpec> specs;
     if (!load_session_specs(specs, err)) return false;
@@ -631,7 +682,8 @@ std::string Agent::render_topology() const {
             o += first ? "" : ",";
             first = false;
             o += "{\"key\":" + jstr(p.transport().endpoint_key(host_)) + ",\"role\":\"data\",\"state\":" + jstr(ps.transport);
-            o += ",\"local\":{\"partition\":" + jstr(p.name()) + "},\"describe\":" + jstr(p.transport().describe());
+            o += ",\"local\":{\"topic\":" + jstr(p.topic_name()) + ",\"partition\":" + jstr(p.name()) +
+                 ",\"stream_id\":" + std::to_string(p.stream_id()) + "},\"describe\":" + jstr(p.transport().describe());
             const std::string pub = p.transport().publisher_json();
             if (!pub.empty()) o += ",\"publisher\":{" + pub + "}";
             o += "}";
@@ -641,7 +693,7 @@ std::string Agent::render_topology() const {
             first = false;
             const bool up = p.recap_counters.connected.load(std::memory_order_relaxed) != 0;
             o += "{\"key\":" + jstr(recap_keys_[p.id()]) + ",\"role\":\"recap\",\"state\":" + jstr(up ? "up" : "down");
-            o += ",\"local\":{\"partition\":" + jstr(p.name()) + "}}";
+            o += ",\"local\":{\"topic\":" + jstr(p.topic_name()) + ",\"partition\":" + jstr(p.name()) + "}}";
         }
     }
     o += "],\"downstream\":[";
@@ -653,14 +705,14 @@ std::string Agent::render_topology() const {
         o += first ? "" : ",";
         first = false;
         o += "{\"key\":" + jstr(observability::shm_ring_key(ps.tap_ring, host_)) + ",\"role\":\"record\",\"state\":\"up\"";
-        o += ",\"local\":{\"partition\":" + jstr(ps.name) + ",\"readers\":" + std::to_string(ps.tap_readers) + "}}";
+        o += ",\"local\":{\"topic\":" + jstr(ps.topic) + ",\"partition\":" + jstr(ps.name) + ",\"readers\":" + std::to_string(ps.tap_readers) + "}}";
     }
     for (const auto& s : st.sessions) {
         o += first ? "" : ",";
         first = false;
         o += "{\"key\":" + jstr(observability::shm_ring_key(s.ring_path, host_)) + ",\"role\":\"data\",\"state\":\"up\"";
-        o += ",\"local\":{\"session\":" + jstr(s.name) + ",\"owner\":" + jstr(s.owner) + ",\"partitions\":[";
-        for (size_t k = 0; k < s.partitions.size(); ++k) o += (k ? "," : "") + jstr(s.partitions[k]);
+        o += ",\"local\":{\"session\":" + jstr(s.name) + ",\"owner\":" + jstr(s.owner) + ",\"topics\":[";
+        for (size_t k = 0; k < s.topics.size(); ++k) o += (k ? "," : "") + jstr(s.topics[k]);
         o += "]},\"consumers\":[";
         bool fc = true;
         for (const auto& c : scan.consumers) {
@@ -746,17 +798,17 @@ std::string Agent::render_metrics(const std::string& format) const {
     for (size_t i = 0; i < partitions_.size() && i < st.partitions.size(); ++i) {
         const Partition& p = *partitions_[i];
         const PartitionStatus& ps = st.partitions[i];
-        const PromWriter::Labels l = {{"partition", p.name()}};
+        const PromWriter::Labels l = {{"topic", p.topic_name()}, {"partition", p.name()}};
         PartitionCounters::each(p.counters.snapshot(), [&](const char* n, uint64_t v) {
             w.counter("subplane_partition_" + std::string(n) + "_total", "Partition counter " + std::string(n), l, v);
         });
         for (const char* s : {"init", "active", "degraded"}) {
-            w.gauge("subplane_partition_state", "1 for the partition's current state", {{"partition", p.name()}, {"state", s}}, ps.state == s ? 1 : 0);
+            w.gauge("subplane_partition_state", "1 for the partition's current state", {{"topic", p.topic_name()}, {"partition", p.name()}, {"state", s}}, ps.state == s ? 1 : 0);
         }
         w.gauge("subplane_partition_last_sequence", "Last sequence accepted", l, static_cast<double>(ps.last_sequence));
         w.gauge("subplane_partition_last_receive_age_seconds", "Seconds since the last packet (0 before the first)", l, age_s(ps.last_rx_ns));
         for (const char* s : {"unknown", "up", "down"}) {
-            w.gauge("subplane_transport_state", "1 for the transport's current state", {{"partition", p.name()}, {"state", s}}, ps.transport == s ? 1 : 0);
+            w.gauge("subplane_transport_state", "1 for the transport's current state", {{"topic", p.topic_name()}, {"partition", p.name()}, {"state", s}}, ps.transport == s ? 1 : 0);
         }
         if (p.has_transport()) {
             p.transport().counters([&](std::string_view n, uint64_t v) {
@@ -796,21 +848,21 @@ std::string Agent::render_metrics(const std::string& format) const {
         const Partition& p = *partitions_[i];
         if (p.has_transport()) {
             w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
-                    {{"direction", "upstream"}, {"role", "data"}, {"key", p.transport().endpoint_key(host_)}, {"partition", p.name()}},
+                    {{"direction", "upstream"}, {"role", "data"}, {"key", p.transport().endpoint_key(host_)}, {"topic", p.topic_name()}, {"partition", p.name()}},
                     st.partitions[i].transport == "up" ? 1 : 0);
         }
         if (p.has_recap()) {
             w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
-                    {{"direction", "upstream"}, {"role", "recap"}, {"key", recap_keys_[p.id()]}, {"partition", p.name()}},
+                    {{"direction", "upstream"}, {"role", "recap"}, {"key", recap_keys_[p.id()]}, {"topic", p.topic_name()}, {"partition", p.name()}},
                     p.recap_counters.connected.load(std::memory_order_relaxed) != 0 ? 1 : 0);
         }
     }
     for (const PartitionStatus& ps : st.partitions) {
         if (ps.tap_ring.empty()) continue;
         w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
-                {{"direction", "downstream"}, {"role", "record"}, {"key", observability::shm_ring_key(ps.tap_ring, host_)}, {"partition", ps.name}}, 1);
-        w.gauge("subplane_partition_tap_readers", "Readers (recorders) attached to the partition's tap ring", {{"partition", ps.name}}, ps.tap_readers);
-        w.gauge("subplane_partition_tap_lag_bytes", "How far the slowest tap reader is behind the head", {{"partition", ps.name}},
+                {{"direction", "downstream"}, {"role", "record"}, {"key", observability::shm_ring_key(ps.tap_ring, host_)}, {"topic", ps.topic}, {"partition", ps.name}}, 1);
+        w.gauge("subplane_partition_tap_readers", "Readers (recorders) attached to the partition's tap ring", {{"topic", ps.topic}, {"partition", ps.name}}, ps.tap_readers);
+        w.gauge("subplane_partition_tap_lag_bytes", "How far the slowest tap reader is behind the head", {{"topic", ps.topic}, {"partition", ps.name}},
                 static_cast<double>(ps.tap_lag_bytes));
     }
     const ConsumerScan scan = consumers(st.sessions);
