@@ -94,6 +94,7 @@ private:
     AeronTransportConfig cfg_;
     aeron_driver_context_stct* driver_ctx_ = nullptr;
     aeron_driver_stct*         driver_ = nullptr;
+    std::string                driver_dir_;    // the directory this transport's embedded driver holds
     aeron_context_stct*        ctx_ = nullptr;
     aeron_stct*                client_ = nullptr;
     aeron_subscription_stct*   sub_ = nullptr;

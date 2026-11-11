@@ -11,7 +11,9 @@
 #include <aeronmd.h>
 
 #include <cstring>
+#include <mutex>
 #include <sched.h>
+#include <set>
 
 namespace subplane {
 
@@ -59,7 +61,25 @@ std::unique_ptr<Transport> AeronTransport::create(const YAML::Node& cfg, std::st
 AeronTransport::AeronTransport(AeronTransportConfig cfg) : cfg_(std::move(cfg)) {}
 AeronTransport::~AeronTransport() { close(); }
 
+namespace {
+// INTENT: one embedded media driver per Aeron directory in this process. A second
+// driver on the same directory deletes and replaces the first's files, so the
+// partition that started the first one stops receiving with no error. Copying a
+// partition block keeps its `driver:` line, so this mistake is easy to make.
+std::mutex g_driver_dirs_mu;
+std::set<std::string> g_driver_dirs;
+} // namespace
+
 bool AeronTransport::start_driver(std::string& err) {
+    const std::string dir = aeron_util::resolved_dir(cfg_.aeron_dir);
+    {
+        std::lock_guard<std::mutex> lk(g_driver_dirs_mu);
+        if (!g_driver_dirs.insert(dir).second) {
+            err = "an embedded media driver for " + dir + " is already started by another partition; omit `driver:` here (this partition uses that driver)";
+            return false;
+        }
+    }
+    driver_dir_ = dir;
     if (aeron_driver_context_init(&driver_ctx_) < 0) { err = std::string("aeron driver context: ") + aeron_errmsg(); return false; }
     if (!cfg_.aeron_dir.empty() && aeron_driver_context_set_dir(driver_ctx_, cfg_.aeron_dir.c_str()) < 0) {
         err = std::string("aeron driver dir: ") + aeron_errmsg(); return false;
@@ -189,6 +209,11 @@ void AeronTransport::close() noexcept {
     if (ctx_) { aeron_context_close(ctx_); ctx_ = nullptr; }
     if (driver_) { aeron_driver_close(driver_); driver_ = nullptr; }
     if (driver_ctx_) { aeron_driver_context_close(driver_ctx_); driver_ctx_ = nullptr; }
+    if (!driver_dir_.empty()) {
+        std::lock_guard<std::mutex> lk(g_driver_dirs_mu);
+        g_driver_dirs.erase(driver_dir_);
+        driver_dir_.clear();
+    }
 }
 
 std::string AeronTransport::endpoint_key(std::string_view host) const {
