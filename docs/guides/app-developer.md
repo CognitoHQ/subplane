@@ -3,9 +3,9 @@
 You write an application that consumes market data on a box where `subplaned` runs. This guide is all you need. The internals live in `docs/context/architecture.md`; you should not have to read it.
 
 **Your view of subplane:**
-- A **session** is your subscription: which partitions, symbols and message types you want.
+- A **session** is your subscription: which topics, symbols and message types you want. A **topic** is a named feed such as `crypto.binance-spot`; you never see the partitions behind it.
 - A **ring** is the shared-memory file the agent writes your session's records to. You read it and the agent never waits for you.
-- Each **record** is a 64-byte header (symbol, sequence, timestamps, type) followed by the publisher's bytes, unchanged. You decode them with your own codecs or with generated views.
+- Each **record** is a 64-byte header (symbol, topic, sequence, timestamps, type) followed by the publisher's bytes, unchanged. You decode them with your own codecs or with generated views.
 
 You never see the bus transport (multicast, Aeron, TCP), the publisher's protocol, or other apps.
 
@@ -25,6 +25,7 @@ if (!cc.connect("/run/subplane/agent1.sock")) { /* the agent is not running, or 
 SessionRequest req;
 req.name = "mm";
 req.symbols = {"BTCUSDT", "ETHUSDT"};
+req.topics = {"crypto.>"};            // patterns; empty = all topics
 AttachInfo info;
 cc.create_session(req, info);   // or cc.attach("mm", info)
 ```
@@ -51,11 +52,18 @@ for (;;) {
 }
 ```
 
+Topics:
+- `hdr->topic_id` says which topic a record came from (0 on agent-wide control records). `ControlClient::hello()` returns `HelloInfo::topics`, one `TopicInfo {topic_id, partitions, name}` per topic the agent reads, so you can map ids to names. `partitions` is for information only.
+- `SessionRequest::topics` takes patterns that match topic names by `.` segment: `*` is exactly one segment, a final `>` is one or more (`crypto.*`, `crypto.>`). Empty means all topics. A pattern that matches no topic is an error, and a session's topics cannot change after it is created (`SET_FILTER` refuses); create a new session instead.
+- `sequence` is the stream's own, one per partition. Two topics, or two partitions of one topic, have unrelated sequences, so do not compare them.
+- `TOPIC_DEGRADED` and `TOPIC_RECOVERED` (below) are the only partition-related events you see, and they name the topic.
+
 Rules that keep you correct:
 - `poll()` never blocks, allocates or throws. Spin or sleep between polls as your latency needs dictate.
 - The record points into shared memory. Decode it, then call `rv.valid()`; if it is false, throw away what you decoded.
 - `Overrun` means you lost data: rebuild your state (step 4).
 - Skip control codes and message types you do not know.
+- `TOPIC_DEGRADED` / `TOPIC_RECOVERED` carry a `TopicStateEvent` {`topic_id`, `degraded`, `partitions`, `reason`, `last_seq`, `changed_ns`}. `degraded` is how many of the topic's `partitions` are degraded: you get `TOPIC_DEGRADED` each time that count changes and is not zero, and `TOPIC_RECOVERED` when it reaches zero. They go to sessions that take agent-control events.
 
 Full API: `include/subplane/client/shm_reader.h` and `control_client.h` (header-only, libc and the standard library only).
 
@@ -108,4 +116,5 @@ You do not need code for operators to see your app. On `open()`, the SDK claims 
 | frequent `Overrun` | your app is too slow for the ring's size | read faster, or ask for a larger ring (`ring.capacity_mb`) |
 | `Closed`, or `writer_alive()` false | the agent restarted or your session was destroyed | reattach and rebuild state |
 | `GAP_DETECTED` or `SYMBOL_STALE` control records | the bus lost messages upstream | rebuild that symbol's state (snapshot or recap) |
+| `TOPIC_DEGRADED` control record | a publisher of that topic went silent (`reason`: heartbeat timeout) | treat the topic's data as stale until `TOPIC_RECOVERED` |
 | operators cannot see your app's lag | your app was built with an older SDK, or the ring file is not writable by your user | rebuild; ask your operator about `agent.ring_mode` |

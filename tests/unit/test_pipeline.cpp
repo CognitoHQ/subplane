@@ -81,6 +81,7 @@ struct Harness {
         REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE), static_cast<uint8_t>(MsgType::QUOTE)}, 256, err));
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto ft = std::make_unique<FakeTransport>();
         fake = ft.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft)), err);
@@ -163,7 +164,7 @@ TEST_CASE("pipeline: data flows through filter to ring with routing fields and i
     FilterSpec spec;
     spec.all_symbols = true;
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     auto s = h.make_session(spec);
     ShmReader rd;
     REQUIRE(rd.open(h.ring_path));
@@ -195,7 +196,7 @@ TEST_CASE("pipeline: data flows through filter to ring with routing fields and i
     CHECK(recs[1].hdr.exchange_ts == 555);
     CHECK(recs[1].hdr.venue_id == 3);
     CHECK(recs[1].hdr.ingest_ts == t0);
-    CHECK(recs[1].hdr.partition_id == 0);
+    CHECK(recs[1].hdr.topic_id == 1);
     CHECK(recs[1].hdr.template_id == 1);
     CHECK(recs[1].hdr.wire_format == static_cast<uint8_t>(WireFormat::SBE));
     CHECK(recs[1].payload == t1); // bit-identical bus bytes
@@ -234,7 +235,7 @@ TEST_CASE("pipeline: sequence gaps, duplicates, seq reset, heartbeat admin, unkn
     FilterSpec spec;
     spec.all_symbols = true;
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE), static_cast<uint8_t>(MsgType::QUOTE)};
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     auto s = h.make_session(spec);
     ShmReader rd;
     REQUIRE(rd.open(h.ring_path));
@@ -270,7 +271,7 @@ TEST_CASE("pipeline: sequence gaps, duplicates, seq reset, heartbeat admin, unkn
     std::memcpy(&g, recs[3].payload.data(), sizeof(g));
     CHECK(g.expected_seq == 12);
     CHECK(g.received_seq == 13);
-    CHECK(g.partition_id == 0);
+    CHECK(g.topic_id == 1);
     CHECK(recs[4].hdr.sequence == 13);
     CHECK(recs[5].hdr.kind == static_cast<uint8_t>(Kind::BUS_ADMIN));
     CHECK(recs[5].hdr.msg_type == static_cast<uint8_t>(ControlCode::BUS_HEARTBEAT));
@@ -307,7 +308,7 @@ TEST_CASE("pipeline: filter swap and session removal emit in-band events; partit
     FilterSpec spec;
     spec.all_symbols = true;
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     auto s = h.make_session(spec, 1);
     ShmReader rd;
     REQUIRE(rd.open(h.ring_path));
@@ -348,13 +349,13 @@ TEST_CASE("pipeline: filter swap and session removal emit in-band events; partit
     // iteration already degraded the partition and emitted the event after the QUOTE.
     CHECK(h.part.state == PartitionState::DEGRADED);
     REQUIRE(recs.size() == 2);
-    CHECK(recs[1].hdr.msg_type == static_cast<uint8_t>(ControlCode::PARTITION_DEGRADED));
+    CHECK(recs[1].hdr.msg_type == static_cast<uint8_t>(ControlCode::TOPIC_DEGRADED));
     // Recover on the next packet
     h.fake->push(packet({e.msg(2, {{"SecurityID", 9}, {"SeqNum", 4}})}), now_ns());
     h.pipe.run_once();
     recs = drain(rd);
     REQUIRE(recs.size() == 2);
-    CHECK(recs[0].hdr.msg_type == static_cast<uint8_t>(ControlCode::PARTITION_RECOVERED));
+    CHECK(recs[0].hdr.msg_type == static_cast<uint8_t>(ControlCode::TOPIC_RECOVERED));
     CHECK(recs[1].hdr.sequence == 4);
     CHECK(h.part.counters.snapshot().degraded_events == 1);
 
@@ -376,7 +377,7 @@ TEST_CASE("pipeline: threaded start/stop with pinned cpu off and commands applie
     Harness h;
     FilterSpec spec;
     spec.all_symbols = true;
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
     auto s = h.make_session(spec);
     std::string err;
@@ -397,7 +398,7 @@ TEST_CASE("pipeline: transport down and up reach the partition's sessions in ord
     FilterSpec spec;
     spec.all_symbols = true;
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     auto s = h.make_session(spec, 1);
     ShmReader rd;
     REQUIRE(rd.open(h.ring_path));
@@ -422,7 +423,7 @@ TEST_CASE("pipeline: transport down and up reach the partition's sessions in ord
     REQUIRE(recs.size() == 3); // UP, SYMBOL_MAPPED, trade
     CHECK(recs[0].hdr.msg_type == UP);
     CHECK(recs[0].hdr.kind == static_cast<uint8_t>(Kind::AGENT_CONTROL));
-    CHECK(recs[0].hdr.partition_id == 0);
+    CHECK(recs[0].hdr.topic_id == 1);
     CHECK(event(recs[0]).reason == static_cast<uint32_t>(TransportStateReason::NONE));
     CHECK(recs[1].hdr.msg_type == static_cast<uint8_t>(ControlCode::SYMBOL_MAPPED));
     CHECK(recs[2].hdr.kind == static_cast<uint8_t>(Kind::DATA));
@@ -465,7 +466,7 @@ TEST_CASE("pipeline: after a publisher restart the next sequence is a fresh star
     FilterSpec spec;
     spec.all_symbols = true;
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     auto s = h.make_session(spec, 1);
     ShmReader rd;
     REQUIRE(rd.open(h.ring_path));
@@ -496,7 +497,7 @@ TEST_CASE("pipeline: a session without agent_control does not see transport even
     Harness h;
     FilterSpec spec;
     spec.all_symbols = true;
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     spec.agent_control = false;
     auto s = h.make_session(spec, 1);
     ShmReader rd;
@@ -521,7 +522,7 @@ TEST_CASE("pipeline: a recap marker on the live stream is counted and dropped; l
     FilterSpec spec;
     spec.all_symbols = true;
     spec.msg_types = {static_cast<uint8_t>(MsgType::TRADE)};
-    spec.partition_ids = {0};
+    spec.topic_ids = {1};
     auto s = h.make_session(spec, 1);
     ShmReader rd;
     REQUIRE(rd.open(h.ring_path));
@@ -551,6 +552,7 @@ TEST_CASE("partition config: lvc must be on or off") {
     PartitionConfig cfg;
     std::string err;
     REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(kPartitionYaml), 0, data_dir(), cfg, err), err);
+    cfg.set_topic("t", 1, 1);
     CHECK(cfg.lvc);
     CHECK_FALSE(PartitionConfig::parse(YAML::Load(std::string(kPartitionYaml) + "lvc: sometimes\n"), 0, data_dir(), cfg, err));
     CHECK(err.find("lvc must be on or off") != std::string::npos);

@@ -78,6 +78,7 @@ private:
     void publish_admin(Partition& p, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept;
     void emit_control(Partition& p, ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept;
     void emit_control_all(ControlCode code, const void* body, uint32_t len, uint64_t now) noexcept;
+    void emit_topic_state(Partition& p, TopicReason reason, uint64_t now) noexcept;
     void emit_symbol_mapped(uint32_t id, uint64_t now) noexcept;
     void apply_transport_changes(Partition& p, Transport& t) noexcept;
     void service_timeouts(uint64_t now) noexcept;

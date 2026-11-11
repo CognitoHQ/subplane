@@ -26,12 +26,12 @@ A venue update that changes several things at once (five book levels, a trade an
 
 ## State
 - **A self-contained value** (definition, trading status, last trade, top of book quote): the newest message is the whole state. The agent's last-value cache can serve it to late joiners.
-- **Built-up state** (a book from updates, accumulated volume, VWAP): no single message is the state. A late joiner needs recap from a snapshot service, so the partition's last-value cache should be off (`lvc: off`). Design these messages so a replica built from the stream is exact. For example, send a book `Clear` and full depth after a resync.
+- **Built-up state** (a book from updates, accumulated volume, VWAP): no single message is the state. A late joiner needs recap from a snapshot service, so the topic's last-value cache should be off (`lvc: off`). Design these messages so a replica built from the stream is exact. For example, send a book `Clear` and full depth after a resync.
 
 ## Admin
-- A **heartbeat** on idle streams. It should carry the publisher's identity (`SourceEpoch`, its start time) so subscribers can tell a restart; canonical v1's `Heartbeat` does not yet, and canonical v2 adding it is planned.
+- A **heartbeat** on idle streams. It should carry the publisher's identity (`SourceEpoch`, its start time) so subscribers can tell a restart; canonical v1's `Heartbeat` does not yet, and canonical v2 adding it is planned. It should also carry `StreamId` (the canonical `Heartbeat` has it: `topic_id << 16 | partition_num` of the stream it is sent on, 0 = unstamped), so the agent can count a publisher sending on the wrong stream.
 - A **sequence reset** message when a publisher restarts its sequence on purpose.
-- Admin messages are routed by partition, not by instrument. List their template ids with `--admin` when linting.
+- Admin messages are routed by topic, not by instrument. List their template ids with `--admin` when linting.
 
 ## What the agent never needs
 - Fields beyond routing: apps decode those.

@@ -16,9 +16,14 @@ namespace subplane {
 
 #pragma pack(push, 1)
 
-// GAP_DETECTED: sequence jumped forward on a partition.
+// INTENT: events name the topic (topic_id from the site registry), never a
+// partition: partitions are a publishing construct. Until the instrument
+// sequence lands, the sequences in these events are the stream's own; a topic
+// of several partitions has one per partition.
+
+// GAP_DETECTED: a stream of the topic jumped forward.
 struct GapEvent {
-    uint16_t partition_id;
+    uint16_t topic_id;
     uint16_t reserved0;
     uint32_t reserved1;
     uint64_t expected_seq;
@@ -26,23 +31,27 @@ struct GapEvent {
     uint64_t detected_ns;
 };
 
-// PARTITION_DEGRADED / PARTITION_RECOVERED.
-enum class PartitionReason : uint32_t {
+// TOPIC_DEGRADED / TOPIC_RECOVERED. DEGRADED each time the count of the
+// topic's degraded partitions changes and is not zero; RECOVERED when it
+// reaches zero. `partitions` is how many of the topic's partitions this agent
+// reads.
+enum class TopicReason : uint32_t {
     NONE              = 0,
     HEARTBEAT_TIMEOUT = 1,
     SEQUENCE_GAP      = 2,
     DECODE_ERRORS     = 3,
     TRANSPORT_ERROR   = 4,
 };
-struct PartitionStateEvent {
-    uint16_t partition_id;
-    uint16_t reserved0;
-    uint32_t reason;      // PartitionReason
+struct TopicStateEvent {
+    uint16_t topic_id;
+    uint8_t  degraded;    // partitions of the topic degraded now
+    uint8_t  partitions;  // partitions of the topic this agent reads
+    uint32_t reason;      // TopicReason, of the change that caused this event
     uint64_t last_seq;
     uint64_t changed_ns;
 };
 
-// TRANSPORT_DOWN / TRANSPORT_UP: the partition's transport lost or regained
+// TRANSPORT_DOWN / TRANSPORT_UP: a transport of the topic lost or regained
 // its source. Reasons are transport-neutral (INV-015); the transport-specific
 // cause is in the agent log and /partitions, not here.
 enum class TransportStateReason : uint32_t {
@@ -52,7 +61,7 @@ enum class TransportStateReason : uint32_t {
     PUBLISHER_RESTART = 3, // on UP: a different publisher instance is the source now
 };
 struct TransportStateEvent {
-    uint16_t partition_id;
+    uint16_t topic_id;
     uint16_t reserved0;
     uint32_t reason;      // TransportStateReason
     uint64_t last_seq;    // last sequence accepted before the change
@@ -106,7 +115,7 @@ enum class RecapEventStatus : uint8_t {
 struct RecapEvent {
     uint64_t request_id;   // 0 on PENDING (no request yet)
     uint32_t symbol_id;
-    uint16_t partition_id;
+    uint16_t topic_id;
     uint8_t  status;       // RecapEventStatus; 0 except on FAILED
     uint8_t  reserved0;
     uint32_t attempt;      // 1 for the first request, then +1 per retry; 0 on PENDING
@@ -126,7 +135,7 @@ enum class SymbolStaleReason : uint16_t {
 };
 struct SymbolStaleEvent {
     uint32_t symbol_id;
-    uint16_t partition_id;
+    uint16_t topic_id;
     uint16_t reason;       // SymbolStaleReason
     uint64_t last_seq;     // the partition's last sequence before the change
     uint64_t changed_ns;
@@ -135,7 +144,7 @@ struct SymbolStaleEvent {
 #pragma pack(pop)
 
 static_assert(sizeof(GapEvent) == 32);
-static_assert(sizeof(PartitionStateEvent) == 24);
+static_assert(sizeof(TopicStateEvent) == 24);
 static_assert(sizeof(TransportStateEvent) == 24);
 static_assert(sizeof(FilterReloadedEvent) == 8);
 static_assert(sizeof(AgentRestartedEvent) == 16);

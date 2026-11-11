@@ -19,10 +19,10 @@ The binaries need Ubuntu 26.04's glibc and libstdc++. On any other host, put `sc
 `config.yaml` subscribes to multicast group 239.1.1.1. For a local run, switch to unicast (empty `group`) and make the schema path absolute:
 
 ```bash
-sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" config.yaml > /tmp/subplane-demo.yaml
+sed -e 's/group: 239.1.1.1/group: ""/' -e "s#schema: schemas#schema: $PWD/schemas#" -e "s#^registry: site#registry: $PWD/site#" config.yaml > /tmp/subplane-demo.yaml
 ```
 
-The config defines one partition `eq-p0` (UDP port 30001, framed as an 8-byte sequence plus 2-byte count packet header and a 2-byte length prefix per message) and one session `alpha` that wants TRADE and QUOTE for all symbols.
+The config defines one topic `eq.sample` (topic id 1 in `site/topics.example.yaml`) with one partition, `eq.sample/1` (UDP port 30001, framed as an 8-byte sequence plus 2-byte count packet header and a 2-byte length prefix per message) and one session `alpha` that wants TRADE and QUOTE for all symbols.
 
 ## 3. Start the agent (terminal 1)
 
@@ -58,6 +58,7 @@ build/tools/subplane send --port 30001 --framing "$FRAMING" --rate 1000 --per-pa
 
 ```bash
 curl -s localhost:8080/status
+curl -s localhost:8080/topics
 curl -s localhost:8080/partitions
 curl -s localhost:8080/sessions
 curl -s localhost:8080/symbols
@@ -65,7 +66,7 @@ curl -s 'localhost:8080/lvc/1?type=TRADE'     # last value for symbol "1"
 curl -s localhost:8080/metrics                # counters and the recv_to_publish histogram
 ```
 
-The partition should be `active` with a growing packet count. `published` on session `alpha` counts records written to its ring; `filtered` counts records its filter rejected (here BOOK_UPDATE, which `alpha` does not subscribe to).
+`/topics` lists the topic, its partition and the sessions on it. The partition should be `active` with a growing packet count. `published` on session `alpha` counts records written to its ring; `filtered` counts records its filter rejected (here BOOK_UPDATE, which `alpha` does not subscribe to).
 
 ## 7. Tail the ring
 
@@ -94,7 +95,7 @@ curl -s -X POST localhost:8080/reload
 build/tools/subplane tail /dev/shm/subplane.subplane.alpha.ring --follow    # a FILTER_RELOADED event appears in line with the data
 ```
 
-Only the `sessions` section is reloadable; partitions, framing and decoder changes need a restart.
+Only the `sessions` section is reloadable; changes to the registry, topics (framing, decoder, partitions) or thread groups need a restart, and `POST /reload` names them in `ignored`.
 
 ## 10. Benchmark the pipeline in-process
 

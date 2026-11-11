@@ -17,7 +17,7 @@ TEST_CASE("TickHeader is a frozen 64-byte ABI") {
 TEST_CASE("make_control_header classifies bus admin vs agent control") {
     auto bus = make_control_header(ControlCode::BUS_HEARTBEAT, 3, 123, 0);
     CHECK(bus.kind == static_cast<uint8_t>(Kind::BUS_ADMIN));
-    CHECK(bus.partition_id == 3);
+    CHECK(bus.topic_id == 3);
     CHECK(bus.ingest_ts == 123);
     CHECK(is_control(bus));
     CHECK_FALSE(is_data(bus));

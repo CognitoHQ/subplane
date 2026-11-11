@@ -25,7 +25,7 @@ struct SessionSpec {
     std::string owner = "config";          // "config" | "client"
     uint64_t    ring_capacity_bytes = 64ull << 20;
     uint32_t    max_payload = 4096;
-    std::vector<std::string> partitions;   // partition names; empty = all
+    std::vector<std::string> topics;       // topic patterns (`*` one segment, final `>` the rest); empty = all
     std::vector<std::string> symbols;      // names; "*" = all
     bool        all_symbols = false;
     std::vector<std::string> msg_types;    // TRADE, QUOTE, ...; empty = all data types
@@ -47,7 +47,7 @@ struct Session {
     uint32_t    id = 0;
     std::string name;
     std::string owner;
-    uint64_t    partition_mask = 0;        // partitions this session is attached to
+    uint64_t    partition_mask = 0;        // agent-local: the partitions of its topics it is attached to
     bool        recap = false;             // fixed at creation (SessionSpec::recap)
     uint16_t    recap_slot = 0;            // pipeline thread: this session's waiter bit (RecapWaiters)
 

@@ -48,7 +48,7 @@ The same applies one layer up. Aeron standardized how bytes move between process
 - A published contract (two headers, a documented record, a versioned ring layout, a control protocol) that anyone can implement in any language without linking our code.
 - Publisher requirements near zero (INV-014). A standard that demands publishers change loses before it starts.
 - Transport independence (above). No single shop's custom layer bothers to do this, and it is what lets a firm migrate buses without touching apps.
-- An operational surface in one place: gaps, degraded partitions, per-session drops, snapshots and filter reloads, visible over HTTP. Custom layers almost never have this because each app team built only what it needed.
+- An operational surface in one place: gaps, degraded topics and partitions, per-session drops, snapshots and filter reloads, visible over HTTP. Custom layers almost never have this because each app team built only what it needed.
 - A licence a firm can run it under without asking: FSL-1.1-ALv2 allows any use except a competing commercial product, internal production use included, and each release becomes Apache-2.0 two years after it ships.
 
 ## Consumption models
@@ -69,7 +69,7 @@ The equivalent static session in YAML, for apps that should not have to create t
 sessions:
   - name: pricer
     ring: { capacity_mb: 64, max_payload: 4096 }
-    partitions: [eq-p0]
+    topics: [eq.sample]          # patterns: `*` one segment, a final `>` the rest
     symbols: ["1", "2", "3"]
     msg_types: [TRADE, QUOTE]
 ```
@@ -93,7 +93,7 @@ Measured cost per extra session is about 30 ns per message on the pipeline threa
 
 ### Function-style workloads
 
-Lambda-style, meaning on-box function workloads, not a cloud FaaS (which has no shared memory, no co-location and no multicast). A session filter is a trigger spec: these symbols, these message types, these partitions. The ring is the event queue, already ordered, durable across consumer crashes and position-addressed so a consumer can resume or replay. The snapshot is the context a stateless function needs before its first event. The control channel is the registration API. The agent is the event source; functions never own a subscription, a socket or a schema.
+Lambda-style, meaning on-box function workloads, not a cloud FaaS (which has no shared memory, no co-location and no multicast). A session filter is a trigger spec: these symbols, these message types, these topics. The ring is the event queue, already ordered, durable across consumer crashes and position-addressed so a consumer can resume or replay. The snapshot is the context a stateless function needs before its first event. The control channel is the registration API. The agent is the event source; functions never own a subscription, a socket or a schema.
 
 A runtime on top is one long-lived host process per box that attaches a session (or a few, with different filters) and dispatches records to small functions in-process or to a warm pool. Because the ring is immutable, a failed function can be re-invoked on the same record, and a new function can be dry-run against the history the ring still holds before it goes live. Typical uses: alerting and surveillance (hundreds of tiny rules fed by one subscription), per-symbol-family sharding, enrichment side channels (dashboards, ledgers, notifications) that must not touch the strategy process.
 
@@ -128,10 +128,12 @@ Exchange -> firm feed handler -> internal bus (topics x partitions, published SB
 
 subplane does not talk to exchanges. Its input is a firm's own bus, which already carries SBE messages described by a published schema.
 
+The bus is organized as topics, each holding partitions; a partition is one stream with one publisher and one sequence. Apps subscribe to topics and never see partitions, which are an operator's view (architecture.md, "Topics and partitions"). Planned: a per-instrument sequence, a resolver served by the snapshot service, make-before-break moves of a ticker between partitions, and a gateway publishing one topic over several partitions.
+
 ## What apps get
 
-- A 64-byte routing header (`TickHeader`) in front of the original SBE bytes: symbol id, message type, venue, partition, bus sequence, exchange timestamp, agent ingest timestamp, template and schema ids.
-- In-band control events on the same ring, ordered with the data: sequence gaps, partition degraded or recovered, filter reloaded, agent restarted, session closing, new symbol mapped, plus bus admin messages (heartbeat, sequence reset).
+- A 64-byte routing header (`TickHeader`) in front of the original SBE bytes: symbol id, message type, venue, topic, bus sequence, exchange timestamp, agent ingest timestamp, template and schema ids.
+- In-band control events on the same ring, ordered with the data: sequence gaps, topic degraded or recovered, filter reloaded, agent restarted, session closing, new symbol mapped, plus bus admin messages (heartbeat, sequence reset).
 - A last-value snapshot over the control channel, so a late joiner can seed its state and then tail the ring without a hole (the late-join idiom). The last-value cache only holds self-contained values (see "Recovery: recap").
 - Recap: full state for a symbol (a book, accumulated statistics) from the publisher's snapshot service, merged into the ring by sequence, with in-band pending, complete and failed events.
 - Dynamic sessions: an app creates, reconfigures and destroys its own subscription over a Unix control socket. Operators can also define sessions in YAML and reload them.
@@ -237,7 +239,7 @@ Items are planned unless marked done. The order is the intended build order; eac
 12. **Derived feeds** (VWAP, NBBO, spread, book snapshots) computed once by the agent and published on the same rings; with `shm_ingest` in place these become the agent's own ingest partitions.
 13. Last-value cache exported into shared memory for direct app reads.
 14. Real bus capture on a production NIC with busy-poll, to replace the loopback numbers; kernel-bypass evaluation after that.
-15. **Feeds package** (`subplane-feeds`, a sister repository, crypto first): started 2026-10-13. One `spwsgw` binary (subplane WebSocket gateway) driven by per-exchange YAML packs (connection, subscribe templates, frame routing, JSON path to canonical field mapping with a closed vocabulary and a shared registry of conversions) plus compiled-in strategies for what YAML cannot say (order-book sync protocols); it publishes canonical SBE over Aeron, which the agent ingests as an ordinary `aeron` partition, so a box holds one exchange connection and every app reads a filtered ring. Binance spot, Coinbase, Kraken, Bitstamp and OKX are live (trades, quotes, books where the protocol is covered), each with a recorded fixture replayed byte for byte and end to end through `subplaned`. The same shape makes the agent the only Kafka consumer on a box once 10 exists. The sister repo depends only on the agent's public contract (the canonical schema, and one or more canonical messages back to back per Aeron offer, schema-framed) and never the reverse.
+15. **Feeds package** (`subplane-feeds`, a sister repository, crypto first): started 2026-10-13. One `spwsgw` binary (subplane WebSocket gateway) driven by per-exchange YAML packs (connection, subscribe templates, frame routing, JSON path to canonical field mapping with a closed vocabulary and a shared registry of conversions) plus compiled-in strategies for what YAML cannot say (order-book sync protocols); it publishes canonical SBE over Aeron, one topic per exchange, which the agent ingests as an ordinary `aeron` partition of that topic, so a box holds one exchange connection and every app reads a filtered ring. Binance spot, Coinbase, Kraken, Bitstamp and OKX are live (trades, quotes, books where the protocol is covered), each with a recorded fixture replayed byte for byte and end to end through `subplaned`. The same shape makes the agent the only Kafka consumer on a box once 10 exists. The sister repo depends only on the agent's public contract (the canonical schema, and one or more canonical messages back to back per Aeron offer, schema-framed) and never the reverse.
 16. **Recap** (see "Recovery: recap"). Groundwork done (2026-10-14): instrument definitions have their own message type and cache slot, and integer instrument ids can be scoped by venue. Done since (2026-10-15): in-band transport up/down events, reply markers in decoder config, per-partition `lvc: on|off`, the `recap:` block with the `aeron` recap component and the recap manager (requests, coalescing, retries, reply assembly), and the hold and merge on the pipeline thread for sessions that ask for recap (session start and filter changes as triggers); recap on SPP (`Hello`, `RecapRequest`, SPP replies by default, DBN recap); the failure triggers (gap, sequence reset, publisher restart) with `SYMBOL_STALE` and renewed requests (2026-10-16). Then: the SDK's recap helper with `views_app --recap`, and the canonical snapshot service `spwsgw-snap` in the feeds package, with the gateways emitting a book Clear on resync so any replica stays exact.
 17. **Relay** (planned): a separate process that tunnels the bus between sites, Aeron in and TCP out or TCP in and Aeron out, bytes and sequence untouched, heartbeats on idle links, a bounded buffer per connection; optionally the recap service for the sites below it.
 

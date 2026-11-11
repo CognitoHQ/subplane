@@ -26,14 +26,15 @@ PORT=$(( 20000 + (RANDOM % 30000) ))
 API=$(( 20000 + (RANDOM % 30000) ))
 SOCK="$TMP/ctl.sock"
 cat > "$TMP/config.yaml" <<EOF
-agent: { name: dbntest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [db0] } ] }
-partitions:
+agent: { name: dbntest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, topics: [db0] } ] }
+registry: [ { id: 1, name: db0 } ]
+topics:
   - name: db0
     transport: { type: tcp_stream, host: 127.0.0.1, port: $PORT, record_length: { offset: 0, size: 1, scale: 4 }, prelude: dbn, reconnect_ms: 100 }
     decoder: { type: dbn }
     heartbeat_timeout_ms: 2000
 sessions:
-  - { name: three, ring: { capacity_mb: 8, max_payload: 4096 }, partitions: [db0], symbols: ["1000", "1001", "1002"], msg_types: [TRADE, BOOK_UPDATE], deliver: { bus_admin: true, agent_control: true } }
+  - { name: three, ring: { capacity_mb: 8, max_payload: 4096 }, topics: [db0], symbols: ["1000", "1001", "1002"], msg_types: [TRADE, BOOK_UPDATE], deliver: { bus_admin: true, agent_control: true } }
 fanout: { ring_dir: /dev/shm }
 control: { socket_path: $SOCK, fallback_socket_path: $SOCK, linger_ms: 1000 }
 lvc: { max_payload: 512 }

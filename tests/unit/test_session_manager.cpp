@@ -77,6 +77,7 @@ struct H {
         REQUIRE(lvc.init(256, {static_cast<uint8_t>(MsgType::TRADE)}, 256, err));
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(partition_yaml), 0, data_dir(), cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto ft = std::make_unique<FakeTransport>();
         fake = ft.get();
         REQUIRE(part.build(cfg, err, std::move(ft)));
@@ -181,7 +182,7 @@ TEST_CASE("SessionManager: reconcile_config creates, updates and removes config-
     CHECK(err.find("client-owned") != std::string::npos);
 }
 
-TEST_CASE("SessionManager: client linger expires sessions; unknown partition and bad symbols rejected") {
+TEST_CASE("SessionManager: client linger expires sessions; unknown topic and bad symbols rejected") {
     H h;
     std::string err;
     REQUIRE(h.sm->create(h.spec("c", {"TRADE"}, "client"), err));
@@ -192,9 +193,13 @@ TEST_CASE("SessionManager: client linger expires sessions; unknown partition and
     CHECK(h.sm->count() == 0);
 
     SessionSpec bad = h.spec("b", {"TRADE"});
-    bad.partitions = {"nope"};
+    bad.topics = {"nope"};
     CHECK_FALSE(h.sm->create(bad, err));
-    CHECK(err.find("unknown partition") != std::string::npos);
+    CHECK(err.find("matches no topic") != std::string::npos);
+    bad.topics = {"t.>"};
+    CHECK_FALSE(h.sm->create(bad, err));
+    bad.topics = {"*"};
+    CHECK(h.sm->create(bad, err));
 
     SessionSpec syms = h.spec("s", {"TRADE"});
     syms.all_symbols = false;

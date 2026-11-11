@@ -17,7 +17,7 @@ inline void inc(std::atomic<uint64_t>& c, uint64_t n = 1) noexcept {
 #define SUBPLANE_PARTITION_COUNTERS(X) \
     X(packets) X(bytes) X(messages) X(unknown_templates) X(undecodable_tail) X(schema_mismatch) \
     X(gaps) X(dups) X(admin) X(degraded_events) X(decode_errors) X(malformed) X(truncated) X(transport_errors) X(seq_resets) \
-    X(transport_down) X(transport_up) X(recap_markers) X(tap_records) X(tap_dropped)
+    X(transport_down) X(transport_up) X(recap_markers) X(tap_records) X(tap_dropped) X(stream_mismatch)
 
 // One writer per counter, as above: up to recap_renewed by the recap manager
 // thread, from recap_held on by the partition's pipeline thread.
@@ -35,12 +35,14 @@ struct alignas(64) PartitionCounters {
         SUBPLANE_PARTITION_COUNTERS(X)
 #undef X
         uint32_t last_unknown_template = 0;
+        uint32_t last_stream_stamp = 0;     // the stream_id of the last mismatching heartbeat
     };
 
 #define X(n) std::atomic<uint64_t> n{0};
     SUBPLANE_PARTITION_COUNTERS(X)
 #undef X
     std::atomic<uint32_t> last_unknown_template{0};
+    std::atomic<uint32_t> last_stream_stamp{0};
 
     Snapshot snapshot() const {
         Snapshot s;
@@ -48,6 +50,7 @@ struct alignas(64) PartitionCounters {
         SUBPLANE_PARTITION_COUNTERS(X)
 #undef X
         s.last_unknown_template = last_unknown_template.load(std::memory_order_relaxed);
+        s.last_stream_stamp = last_stream_stamp.load(std::memory_order_relaxed);
         return s;
     }
     // Cold. f(name, value) for every counter, in declaration order.
@@ -63,7 +66,8 @@ struct alignas(64) PartitionCounters {
 #define X(n) o += "\"" #n "\":" + std::to_string(s.n) + ",";
         SUBPLANE_PARTITION_COUNTERS(X)
 #undef X
-        o += "\"last_unknown_template\":" + std::to_string(s.last_unknown_template) + "}";
+        o += "\"last_unknown_template\":" + std::to_string(s.last_unknown_template) +
+             ",\"last_stream_stamp\":" + std::to_string(s.last_stream_stamp) + "}";
         return o;
     }
 };

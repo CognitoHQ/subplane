@@ -21,12 +21,12 @@ std::unique_ptr<FilterTable> build_filter(const FilterSpec& spec, uint32_t max_s
         }
         t->msg_type_mask |= 1ull << m;
     }
-    for (uint16_t p : spec.partition_ids) {
-        if (p >= 64) {
-            err = "partition id " + std::to_string(p) + " must be < 64";
+    for (uint16_t id : spec.topic_ids) {
+        if (id == 0 || id > 32767) {
+            err = "topic id " + std::to_string(id) + " must be 1..32767";
             return nullptr;
         }
-        t->partition_mask |= 1ull << p;
+        t->topic_bits[id >> 6] |= 1ull << (id & 63u);
     }
     if (!spec.venue_ids.empty()) {
         t->venue_mask = 0;

@@ -18,8 +18,9 @@ API=$(( 20000 + (RANDOM % 30000) ))
 SOCK="$TMP/ctl.sock"
 FRAMING='{packet_header: [{name: seq, type: u64le}, {name: count, type: u16le}], message_prefix: [{name: len, type: u16le}], sequence: packet_header.seq, length: message_prefix.len}'
 cat > "$TMP/config.yaml" <<YAML
-agent: { name: cantest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, partitions: [can0] } ] }
-partitions:
+agent: { name: cantest, version: test, max_symbols: 65536, thread_groups: [ { name: g0, cpu: -1, topics: [can0] } ] }
+registry: [ { id: 1, name: can0 } ]
+topics:
   - name: can0
     transport: { type: udp, group: "", port: $PORT, interface: "", rcvbuf: 4194304 }
     framing: $FRAMING
@@ -39,7 +40,7 @@ partitions:
         - { template: 100, admin: HEARTBEAT }
     heartbeat_timeout_ms: 2000
 sessions:
-  - { name: all, ring: { capacity_mb: 8, max_payload: 4096 }, partitions: [can0], symbols: ["*"], msg_types: [], deliver: { bus_admin: true, agent_control: true } }
+  - { name: all, ring: { capacity_mb: 8, max_payload: 4096 }, topics: [can0], symbols: ["*"], msg_types: [], deliver: { bus_admin: true, agent_control: true } }
 fanout: { ring_dir: /dev/shm }
 control: { socket_path: $SOCK, fallback_socket_path: $SOCK, linger_ms: 1000 }
 lvc: { max_payload: 512 }

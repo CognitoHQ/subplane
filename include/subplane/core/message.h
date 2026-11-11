@@ -20,7 +20,7 @@ inline constexpr uint32_t RECORD_VERSION = 1;
 
 using SymbolId    = uint32_t;
 using VenueId     = uint16_t;
-using PartitionId = uint16_t;
+using TopicId = uint16_t;      // site-assigned, 1..32767; 0 = none (agent control)
 using TimestampNs = uint64_t; // nanoseconds since Unix epoch (CLOCK_REALTIME)
 
 // What kind of record this is.
@@ -67,8 +67,8 @@ enum class ControlCode : uint8_t {
     BUS_TRADING_STATUS  = 0x84,
 
     GAP_DETECTED        = 0xA0,
-    PARTITION_DEGRADED  = 0xA1,
-    PARTITION_RECOVERED = 0xA2,
+    TOPIC_DEGRADED      = 0xA1,
+    TOPIC_RECOVERED     = 0xA2,
     FILTER_RELOADED     = 0xA3,
     AGENT_RESTARTED     = 0xA4,
     SESSION_CLOSING     = 0xA5,
@@ -97,7 +97,7 @@ inline constexpr uint8_t FLAG_SNAPSHOT_ORIGIN = 0x02; // record came from a SNAP
 // SYMBOL_MAPPED control event or the control channel HELLO.
 struct alignas(64) TickHeader {
     uint64_t seq_tag;        // ring: absolute byte position of this record (written last, release). 0 elsewhere.
-    uint64_t sequence;       // bus sequence number, per partition. 0 if the bus has none.
+    uint64_t sequence;       // the stream's sequence number (one per partition). 0 if the bus has none.
     uint64_t exchange_ts;    // ns since epoch from the mapped schema field. 0 if unmapped.
     uint64_t ingest_ts;      // ns since epoch, packet receive time. Never 0 on a delivered record (INV-006).
     uint32_t symbol_id;      // dense interned id (or passthrough per config).
@@ -106,7 +106,7 @@ struct alignas(64) TickHeader {
     uint16_t schema_id;      // SBE schemaId.
     uint16_t schema_version; // SBE version.
     uint16_t venue_id;       // interned venue id, 0 if unmapped.
-    uint16_t partition_id;   // activation (partition) that produced this record.
+    uint16_t topic_id;       // topic of the record (site registry); 0 on agent-wide control records.
     uint8_t  msg_type;       // MsgType for DATA; ControlCode otherwise.
     uint8_t  kind;           // Kind.
     uint8_t  wire_format;    // WireFormat.
@@ -131,12 +131,12 @@ inline constexpr bool is_control(const TickHeader& h) noexcept {
 }
 
 // Zero-initialised header with the given kind/code. Convenience for control events.
-inline TickHeader make_control_header(ControlCode code, PartitionId partition,
+inline TickHeader make_control_header(ControlCode code, TopicId topic,
                                       TimestampNs ingest_ts, uint32_t payload_len) noexcept {
     TickHeader h{};
     h.ingest_ts    = ingest_ts;
     h.payload_len  = payload_len;
-    h.partition_id = partition;
+    h.topic_id     = topic;
     h.msg_type     = static_cast<uint8_t>(code);
     h.kind         = static_cast<uint8_t>(code == ControlCode::PAD ? Kind::PAD
                                           : static_cast<uint8_t>(code) < 0xA0 ? Kind::BUS_ADMIN

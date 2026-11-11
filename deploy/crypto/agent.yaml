@@ -1,10 +1,11 @@
 # Reference deployment: crypto exchanges through gateways (docs/guides/deploy-reference.md).
 #
-#   spwsgw (one per exchange) --Aeron IPC, stream 1001--> subplaned --ring per session--> apps
+#   spwsgw (one per exchange) --Aeron IPC, one topic each--> subplaned --ring per session--> apps
 #
-# The agent embeds the Aeron media driver, so nothing else needs to run. Every
-# gateway on the box publishes canonical SBE (schemas/subplane_canonical.xml)
-# on the same stream; instruments are told apart by InstrumentId and VenueId.
+# The agent embeds the Aeron media driver, so nothing else needs to run. Each
+# gateway publishes canonical SBE (schemas/subplane_canonical.xml) on its own
+# topic (one stream, one sequence); apps subscribe to topics (`crypto.>`) and
+# tell instruments apart by InstrumentId and VenueId.
 # Tested by ctest -R reference_configs.
 
 agent:
@@ -13,21 +14,23 @@ agent:
   max_symbols: 65536
   ring_mode: "0644"            # "0660" + a shared group if apps run as other users
   thread_groups:
-    - { name: g0, cpu: -1, partitions: [crypto] }   # pin cpu to an isolated core in production
+    - { name: g0, cpu: -1, topics: [crypto.binance-spot] }   # pin cpu to an isolated core in production
 
-partitions:
-  - name: crypto
+# The site's topic registry (topic_name -> topic_id); gateways read the same file.
+registry: ../../site/topics.example.yaml
+
+topics:
+  - name: crypto.binance-spot  # topic 11: stream_id 720897 (11 << 16 | 1), the Aeron stream id; spwsgw --topic crypto.binance-spot
     transport:
       type: aeron
       channel: "aeron:ipc"
-      stream_id: 1001          # spwsgw --stream-id
       aeron_dir: ""            # empty: Aeron's default (/dev/shm/aeron-<user>); spwsgw --aeron-dir must match
       driver: { embedded: true, threading_mode: shared }
     framing: { length: schema, sequence: message.Sequence }   # gateways batch several messages per offer
     decoder:
       type: sbe_routing
       schema: ../../schemas/subplane_canonical.xml            # relative to this file
-      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId, stream_id: StreamId }
       symbol_id_mode: table
       messages:
         - { template: 1,   msg_type: TRADE }
@@ -45,7 +48,7 @@ partitions:
 sessions:
   - name: all
     ring: { capacity_mb: 64, max_payload: 4096 }
-    partitions: [crypto]
+    topics: ["crypto.>"]       # every crypto topic: a new exchange's topic joins without a change here
     symbols: ["*"]
     msg_types: []
     deliver: { bus_admin: true, agent_control: true }

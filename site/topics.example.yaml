@@ -1,0 +1,18 @@
+# The site's topic registry: topic_name -> topic_id. Every agent and every
+# publisher (gateway) on the site reads the same file, so an id means the same
+# on every box, in every record and in every recording. Copy it, keep it in
+# version control, and assign each id once: never reuse or renumber one.
+#
+#   name  [A-Za-z0-9._-], 1..48 chars, `.` between segments (Kafka-legal);
+#         sessions match segments: `crypto.*`, `crypto.>`
+#   id    1..32767 (0 is reserved). A partition's stream_id is id << 16 | partition_num,
+#         the Aeron stream id unless the topic sets one.
+- { id: 1,  name: eq.sample }             # config.yaml: the sample SBE bus (schemas/sample_md.xml)
+- { id: 2,  name: dbn.sample }            # config.yaml: subplane dbn-sim
+- { id: 3,  name: fb.sample }             # config.yaml: the FlatBuffers fixture
+- { id: 4,  name: canonical.sample }      # config.yaml: examples/canonical_pub
+- { id: 11, name: crypto.binance-spot }   # subplane-feeds gateways, one topic per exchange
+- { id: 12, name: crypto.coinbase-exchange }
+- { id: 13, name: crypto.kraken }
+- { id: 14, name: crypto.bitstamp }
+- { id: 15, name: crypto.okx }

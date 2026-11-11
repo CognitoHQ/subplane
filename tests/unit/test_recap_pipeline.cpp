@@ -113,6 +113,7 @@ struct Rig {
         REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE)}, 256, err));
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto ft = std::make_unique<FakeTransport>(64);
         fake = ft.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::move(ft), std::make_unique<FakeRecap>()), err);
@@ -133,7 +134,7 @@ struct Rig {
         FilterSpec fs;
         for (uint64_t sec : secs) fs.symbol_ids.push_back(sym(sec));
         fs.msg_types = types;
-        fs.partition_ids = {0};
+        fs.topic_ids = {1};
         std::string err;
         s.filter_owned = build_filter(fs, 1024, 1, err);
         REQUIRE_MESSAGE(s.filter_owned, err);
@@ -162,7 +163,7 @@ struct Rig {
         FilterSpec fs;
         for (uint64_t sec : secs) fs.symbol_ids.push_back(sym(sec));
         fs.msg_types = {1, 2};
-        fs.partition_ids = {0};
+        fs.topic_ids = {1};
         std::string err;
         auto fresh = build_filter(fs, 1024, 2, err);
         REQUIRE(fresh);

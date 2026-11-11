@@ -12,7 +12,7 @@ for cfg in "$ROOT"/deploy/*/agent.yaml; do
   name=$(basename "$(dirname "$cfg")")
   API=$(( 20000 + (RANDOM % 30000) ))
   dir=$(dirname "$cfg")
-  sed -e "s|schema: \([^/][^ ]*\)|schema: $dir/\1|" \
+  sed -e "s|schema: \([^/][^ ]*\)|schema: $dir/\1|" -e "s|^registry: \([^/][^ ]*\)|registry: $dir/\1|" \
       -e "s|port: 8080|port: $API|" \
       -e "s|^  name: .*|  name: reftest$name|" \
       -e "s|socket_path: [^,]*,|socket_path: $TMP/$name.sock,|" -e "s|fallback_socket_path: [^,]*,|fallback_socket_path: $TMP/$name.sock,|" \

@@ -174,6 +174,7 @@ struct Rig {
         std::string err;
         PartitionConfig cfg;
         REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
+        cfg.set_topic("t", 1, 1);
         auto fr = std::make_unique<FakeRecap>();
         recap = fr.get();
         REQUIRE_MESSAGE(part.build(cfg, err, std::make_unique<FakeTransport>(), std::move(fr)), err);

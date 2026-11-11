@@ -44,6 +44,10 @@ if(BUILD_TESTING OR SUBPLANE_BUILD_TESTS)
     add_test(NAME canonical_pub
         COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_canonical_pub.sh
                 $<TARGET_FILE:canonical_pub> $<TARGET_FILE:subplaned> $<TARGET_FILE:views_app> ${SP_CANONICAL_SCHEMA})
+    # Topics: partitions of a topic, sessions by pattern, /topics, /reload ignored, config errors.
+    add_test(NAME topics
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/integration/test_topics.sh
+                $<TARGET_FILE:subplaned> $<TARGET_FILE:canonical_pub> ${SP_CANONICAL_SCHEMA})
     # Aeron ingest: aeron-pub -> media driver -> agent (aeron transport) -> ring -> views_app.
     if(SUBPLANE_WITH_AERON)
         foreach(mode ipc udp)

@@ -212,6 +212,7 @@ recap:
     SymbolTable symbols(1024);
     PartitionConfig cfg;
     REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
+    cfg.set_topic("t", 1, 1);
     Partition part;
     REQUIRE_MESSAGE(part.build(cfg, err, std::make_unique<FakeTransport>()), err);
     REQUIRE(part.has_recap());

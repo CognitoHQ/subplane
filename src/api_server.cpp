@@ -1,9 +1,11 @@
 #include "subplane/api_server.h"
+#include "subplane/pipeline/topic_registry.h"
 
 #include "subplane/agent.h"
 #include "subplane/logging/log_registry.h"
 #include "subplane/metrics/metrics_manager.h"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdlib>
@@ -11,6 +13,7 @@
 #include <strings.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <algorithm>
 #include <sstream>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -211,6 +214,7 @@ HttpResponse ApiServer::route_request(const HttpRequest& request) {
     if (path == "/status")     return handle_status(request);
     if (path == "/metrics")    return handle_metrics(request);
     if (path == "/topology")   return handle_topology(request);
+    if (path == "/topics")     return handle_topics(request);
     if (path == "/partitions") return handle_partitions(request);
     if (path == "/sessions")   return handle_sessions(request);
     if (path == "/reload")     return handle_reload(request);
@@ -269,6 +273,15 @@ HttpResponse ApiServer::handle_partitions(const HttpRequest&) {
     return r;
 }
 
+HttpResponse ApiServer::handle_topics(const HttpRequest&) {
+    if (!agent_) {
+        return error_response(500, "agent not available");
+    }
+    HttpResponse r;
+    r.body = serialize_topics(agent_->get_status());
+    return r;
+}
+
 HttpResponse ApiServer::handle_sessions(const HttpRequest&) {
     if (!agent_) {
         return error_response(500, "agent not available");
@@ -309,11 +322,16 @@ HttpResponse ApiServer::handle_reload(const HttpRequest& request) {
         return error_response(500, "agent not available");
     }
     std::string err;
-    if (!agent_->reload_sessions(err)) {
+    std::vector<std::string> ignored;
+    if (!agent_->reload_sessions(err, &ignored)) {
         return error_response(500, err.empty() ? "reload failed" : err);
     }
     HttpResponse r;
-    r.body = "{\"status\":\"reloaded\"}";
+    std::ostringstream j;
+    j << "{\"status\":\"reloaded\",\"ignored\":[";
+    for (size_t i = 0; i < ignored.size(); ++i) j << (i ? "," : "") << "\"" << json_escape(ignored[i]) << "\"";
+    j << "]}";
+    r.body = j.str();
     return r;
 }
 
@@ -350,7 +368,7 @@ HttpResponse ApiServer::handle_lvc(const HttpRequest& request) {
     j << "{\"symbol\":\"" << json_escape(symbol) << "\",\"symbol_id\":" << h.symbol_id
       << ",\"msg_type\":" << static_cast<int>(h.msg_type) << ",\"sequence\":" << h.sequence
       << ",\"exchange_ts\":" << h.exchange_ts << ",\"ingest_ts\":" << h.ingest_ts
-      << ",\"template_id\":" << h.template_id << ",\"partition_id\":" << h.partition_id
+      << ",\"template_id\":" << h.template_id << ",\"topic_id\":" << h.topic_id
       << ",\"venue_id\":" << h.venue_id << ",\"truncated\":" << ((h.flags & FLAG_LVC_TRUNCATED) ? "true" : "false")
       << ",\"payload_len\":" << h.payload_len << ",\"payload_hex\":\"";
     static const char* hex = "0123456789abcdef";
@@ -426,12 +444,14 @@ StringType ApiServer::serialize_partitions(const std::vector<PartitionStatus>& p
     for (size_t i = 0; i < parts.size(); ++i) {
         const auto& p = parts[i];
         if (i) j << ",";
-        j << "{\"name\":\"" << json_escape(p.name) << "\",\"id\":" << p.id
-          << ",\"state\":\"" << p.state << "\",\"last_sequence\":" << p.last_sequence
+        j << "{\"name\":\"" << json_escape(p.name) << "\",\"topic\":\"" << json_escape(p.topic)
+          << "\",\"topic_id\":" << p.topic_id << ",\"partition_num\":" << p.partition_num
+          << ",\"stream_id\":" << p.stream_id << ",\"state\":\"" << p.state << "\",\"last_sequence\":" << p.last_sequence
           << ",\"packets\":" << p.packets << ",\"messages\":" << p.messages
           << ",\"unknown_templates\":" << p.unknown_templates << ",\"gaps\":" << p.gaps
           << ",\"last_rx_ns\":" << p.last_rx_ns << ",\"transport\":\"" << p.transport
-          << "\",\"transport_down\":" << p.transport_down << ",\"transport_up\":" << p.transport_up;
+          << "\",\"transport_down\":" << p.transport_down << ",\"transport_up\":" << p.transport_up
+          << ",\"stream_mismatch\":" << p.stream_mismatch << ",\"last_stream_stamp\":" << p.last_stream_stamp;
         if (!p.recap_json.empty()) j << ",\"recap\":" << p.recap_json;
         if (!p.tap_ring.empty()) {
             j << ",\"tap\":{\"ring\":\"" << json_escape(p.tap_ring) << "\",\"records\":" << p.tap_records
@@ -454,7 +474,9 @@ StringType ApiServer::serialize_sessions(const std::vector<SessionStatus>& sessi
           << ",\"owner\":\"" << s.owner << "\",\"ring_path\":\"" << json_escape(s.ring_path)
           << "\",\"epoch\":" << s.epoch << ",\"published\":" << s.published
           << ",\"filtered\":" << s.filtered << ",\"filter_generation\":" << s.filter_generation
-          << ",\"reader_flags\":" << s.reader_flags << ",\"readers\":[";
+          << ",\"reader_flags\":" << s.reader_flags << ",\"topics\":[";
+        for (size_t k = 0; k < s.topics.size(); ++k) j << (k ? "," : "") << "\"" << json_escape(s.topics[k]) << "\"";
+        j << "],\"readers\":[";
         for (size_t k = 0; k < s.readers.size(); ++k) {
             const auto& r = s.readers[k];
             j << (k ? "," : "") << "{\"slot\":" << r.slot << ",\"pid\":" << r.pid << ",\"name\":\"" << json_escape(r.name)
@@ -468,11 +490,47 @@ StringType ApiServer::serialize_sessions(const std::vector<SessionStatus>& sessi
     return j.str();
 }
 
+// A topic's view: its partitions as this agent reads them, and the sessions
+// whose patterns take it.
+StringType ApiServer::serialize_topics(const AgentStatus& status) {
+    std::ostringstream j;
+    j << "[";
+    std::vector<std::string> done;
+    for (const auto& p : status.partitions) {
+        if (std::find(done.begin(), done.end(), p.topic) != done.end()) continue;
+        done.push_back(p.topic);
+        uint32_t degraded = 0;
+        std::ostringstream parts;
+        bool first = true;
+        for (const auto& q : status.partitions) {
+            if (q.topic != p.topic) continue;
+            if (q.state == "degraded") ++degraded;
+            parts << (first ? "" : ",") << "{\"partition_num\":" << q.partition_num << ",\"stream_id\":" << q.stream_id
+                  << ",\"state\":\"" << q.state << "\"}";
+            first = false;
+        }
+        j << (done.size() > 1 ? "," : "") << "{\"name\":\"" << json_escape(p.topic) << "\",\"topic_id\":" << p.topic_id
+          << ",\"degraded\":" << degraded << ",\"partitions\":[" << parts.str() << "],\"sessions\":[";
+        first = true;
+        for (const auto& s : status.sessions) {
+            bool match = s.topics.empty();
+            for (const auto& pat : s.topics) if (topic_matches(pat, p.topic)) { match = true; break; }
+            if (!match) continue;
+            j << (first ? "" : ",") << "\"" << json_escape(s.name) << "\"";
+            first = false;
+        }
+        j << "]}";
+    }
+    j << "]";
+    return j.str();
+}
+
 StringType ApiServer::serialize_status(const AgentStatus& status) {
     std::ostringstream j;
     j << "{\"name\":\"" << json_escape(status.name) << "\",\"version\":\"" << json_escape(status.version)
       << "\",\"running\":" << (status.running ? "true" : "false")
       << ",\"uptime_seconds\":" << status.uptime_seconds << ",\"epoch\":" << status.epoch
+      << ",\"topics\":" << serialize_topics(status)
       << ",\"partitions\":" << serialize_partitions(status.partitions)
       << ",\"sessions\":" << serialize_sessions(status.sessions) << "}";
     return j.str();

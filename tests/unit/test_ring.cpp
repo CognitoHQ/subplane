@@ -123,7 +123,7 @@ TEST_CASE("ring: open/publish/poll roundtrip") {
     CHECK(is_control(*rv.hdr));
     CHECK(rv.hdr->kind == static_cast<uint8_t>(Kind::AGENT_CONTROL));
     CHECK(rv.hdr->msg_type == static_cast<uint8_t>(ControlCode::AGENT_RESTARTED));
-    CHECK(rv.hdr->partition_id == 3);
+    CHECK(rv.hdr->topic_id == 3);
     CHECK(rv.hdr->ingest_ts == 555);
     REQUIRE(rv.payload_len == sizeof(ev));
     AgentRestartedEvent got{};
@@ -159,7 +159,7 @@ TEST_CASE("ring: header fields preserved except seq_tag and payload_len") {
     in.schema_id      = 22;
     in.schema_version = 33;
     in.venue_id       = 44;
-    in.partition_id   = 55;
+    in.topic_id   = 55;
     in.msg_type       = static_cast<uint8_t>(MsgType::QUOTE);
     in.kind           = static_cast<uint8_t>(Kind::DATA);
     in.wire_format    = static_cast<uint8_t>(WireFormat::SBE);

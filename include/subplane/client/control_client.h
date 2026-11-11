@@ -57,8 +57,11 @@
 
 namespace subplane {
 
-struct PartitionInfo {
-    uint16_t    id = 0;
+// A topic the agent reads: records carry topic_id; partitions are a
+// publishing construct, counted here for information only.
+struct TopicInfo {
+    uint16_t    topic_id = 0;
+    uint16_t    partitions = 0;
     std::string name;
 };
 
@@ -71,7 +74,7 @@ struct HelloInfo {
     uint32_t    max_symbols = 0;
     uint16_t    schema_id = 0;
     uint16_t    schema_version = 0;
-    std::vector<PartitionInfo> partitions;
+    std::vector<TopicInfo> topics;
 };
 
 struct AttachInfo {
@@ -90,7 +93,7 @@ struct SessionRequest {
     uint64_t    ring_capacity_bytes = 64ull << 20;
     uint32_t    max_payload = 4096;
     uint64_t    msg_type_mask = 0;   // bit i = MsgType i; 0 = all data types
-    uint64_t    partition_mask = 0;  // bit i = partition id i; 0 = all
+    std::vector<std::string> topics;  // topic patterns (`*` one segment, final `>` the rest); empty = all
     bool        all_symbols = true;
     bool        bus_admin = true;
     bool        agent_control = true;
@@ -161,8 +164,8 @@ public:
         CtlHelloResp r {};
         if (body.size() < sizeof(r)) return fail("HELLO: short reply");
         std::memcpy(&r, body.data(), sizeof(r));
-        if (body.size() != sizeof(r) + static_cast<size_t>(r.partition_count) * sizeof(CtlPartitionEntry))
-            return fail("HELLO: reply size does not match partition_count");
+        if (body.size() != sizeof(r) + static_cast<size_t>(r.topic_count) * sizeof(CtlTopicEntry))
+            return fail("HELLO: reply size does not match topic_count");
         out = HelloInfo {};
         out.agent_name = std::string(get_name(r.agent_name));
         out.epoch = r.epoch;
@@ -172,10 +175,10 @@ public:
         out.max_symbols = r.max_symbols;
         out.schema_id = r.schema_id;
         out.schema_version = r.schema_version;
-        for (uint16_t i = 0; i < r.partition_count; ++i) {
-            CtlPartitionEntry e {};
+        for (uint16_t i = 0; i < r.topic_count; ++i) {
+            CtlTopicEntry e {};
             std::memcpy(&e, body.data() + sizeof(r) + i * sizeof(e), sizeof(e));
-            out.partitions.push_back({e.id, std::string(get_name(e.name))});
+            out.topics.push_back({e.topic_id, e.partitions, std::string(get_name(e.name))});
         }
         return true;
     }
@@ -356,18 +359,25 @@ private:
         q.ring_capacity_bytes = r.ring_capacity_bytes;
         q.max_payload = r.max_payload;
         q.msg_type_mask = r.msg_type_mask;
-        q.partition_mask = r.partition_mask;
+        q.topic_count = static_cast<uint16_t>(r.topics.size());
         q.all_symbols = r.all_symbols ? 1 : 0;
         q.bus_admin = r.bus_admin ? 1 : 0;
         q.agent_control = r.agent_control ? 1 : 0;
         q.recap = r.recap ? 1 : 0;
         q.symbol_count = static_cast<uint32_t>(r.symbols.size());
-        out.assign(sizeof(q) + r.symbols.size() * sizeof(CtlSymbolName), 0);
+        if (r.topics.size() > 0xFFFF) return fail("too many topic patterns");
+        const size_t topics_at = sizeof(q) + r.symbols.size() * sizeof(CtlSymbolName);
+        out.assign(topics_at + r.topics.size() * sizeof(CtlTopicPattern), 0);
         std::memcpy(out.data(), &q, sizeof(q));
         for (size_t i = 0; i < r.symbols.size(); ++i) {
             CtlSymbolName s {};
             if (r.symbols[i].empty() || !set_name(s.name, r.symbols[i])) return fail("symbol name empty or longer than 24: " + r.symbols[i]);
             std::memcpy(out.data() + sizeof(q) + i * sizeof(s), &s, sizeof(s));
+        }
+        for (size_t i = 0; i < r.topics.size(); ++i) {
+            CtlTopicPattern t {};
+            if (r.topics[i].empty() || !set_name(t.pattern, r.topics[i])) return fail("topic pattern empty or longer than 48: " + r.topics[i]);
+            std::memcpy(out.data() + topics_at + i * sizeof(t), &t, sizeof(t));
         }
         return true;
     }

@@ -51,6 +51,8 @@ flowchart LR
 - Publish messages in your schema, back to back per Aeron offer, framed by the schema.
 - Every data message carries the routing fields at fixed root offsets: instrument, sequence, exchange timestamp, venue. The canonical schema puts them in one 32-byte prefix.
 - Keep one sequence per stream that only goes up.
+- Publish a topic, one stream per partition. The site assigns your topic's name and id in its registry; you choose the partition number (from 1). Your Aeron stream id is `topic_id << 16 | partition_num` (always positive), which is also what the agent's Aeron transport subscribes to by default. Apps see the topic and never the partition. Today a gateway publishes one partition per topic; one topic over several partitions is planned.
+- Stamp the stream in your `Heartbeat`: the canonical `Heartbeat` has `StreamId` (int32, root offset 32; 0 = unstamped). Send your stream id there. If it is non-zero and differs from the agent's `stream_id` for the partition it reads, the agent counts `stream_mismatch` (data is not dropped), which catches a gateway pointed at the wrong stream.
 - Announce your identity: canonical v2's `Heartbeat` will carry `SourceEpoch` and your SPP version (planned).
 - For a new schema, use the `subplane-schema-designer` skill.
 
