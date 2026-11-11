@@ -128,7 +128,7 @@ Exchange -> firm feed handler -> internal bus (topics x partitions, published SB
 
 subplane does not talk to exchanges. Its input is a firm's own bus, which already carries SBE messages described by a published schema.
 
-The bus is organized as topics, each holding partitions; a partition is one stream with one publisher and one sequence. Apps subscribe to topics and never see partitions, which are an operator's view (architecture.md, "Topics and partitions"). Planned: a per-instrument sequence, a resolver served by the snapshot service, make-before-break moves of a ticker between partitions, and a gateway publishing one topic over several partitions.
+The bus is organized as topics, each holding partitions; a partition is one stream with one publisher and one sequence. Apps subscribe to topics and never see partitions, which are an operator's view (architecture.md, "Topics and partitions"). Per-instrument sequence is implemented (2026-11-11): a publisher counts each instrument across the topic, the agent drops duplicates, detects instrument gaps and restarts, and the record's `sequence` becomes the instrument's. Planned: a resolver served by the snapshot service, make-before-break moves of a ticker between partitions, and a gateway publishing one topic over several partitions.
 
 ## What apps get
 
@@ -247,7 +247,7 @@ Items are planned unless marked done. The order is the intended build order; eac
 
 1. Raw `flatbuffers` decoder: done (2026-10-12). Field ids in YAML, whole buffer delivered bit-identical, no library.
 2. Typed views for flat SBE schemas: done (2026-10-12). `subplane schema --views` emits a C++ struct or memcpy view (decided by alignment, never packed), a NumPy dtype and a q `1:` spec from any group-less XML; the sample schema's views are generated and compiled at every build.
-3. The canonical flat SBE schema: done (2026-10-12). `schemas/subplane_canonical.xml`: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat as fixed, naturally aligned blocks with a common 32-byte prefix and int64 prices scaled by 10^-9; every message is a struct view, generated and compiled at every build, with `examples/views_app.cpp` consuming it end to end. No transcode yet.
+3. The canonical flat SBE schema: done (2026-10-12). `schemas/subplane_canonical.xml`: trade, quote, book update, ten-level book snapshot, OHLCV, status, instrument definition and heartbeat as fixed, naturally aligned blocks with a common 40-byte prefix (since 2026-11-11, with InstrumentSeq) and int64 prices scaled by 10^-9; every message is a struct view, generated and compiled at every build, with `examples/views_app.cpp` consuming it end to end. No transcode yet.
 4. Transcode to the canonical schema (planned): a per-partition mapping in the decoder YAML from source fields to canonical fields, with scale and unit conversion, validated at startup; apps written against the canonical struct run on any bus. Raw delivery stays the default.
 5. App-attached target schema (planned): a session names its own flat SBE XML, the daemon resolves the mapping by field name with aliases, one transcode per distinct schema.
 6. `subplane schema` (planned): projects tick-shaped protobuf or FlatBuffers messages to flat SBE XML and an identity mapping; a convenience over 4 and 5. A raw protobuf decoder follows the shape of step 1 when a user needs one.

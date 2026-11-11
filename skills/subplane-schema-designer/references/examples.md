@@ -3,16 +3,17 @@
 ## A canonical data message (from schemas/subplane_canonical.xml)
 
 ```xml
-<sbe:message name="Trade" id="1" blockLength="64" description="One trade">
-  <!-- shared 32-byte prefix: routing fields at fixed offsets in every data message -->
+<sbe:message name="Trade" id="1" blockLength="72" description="One trade">
+  <!-- shared 40-byte prefix: routing fields at fixed offsets in every data message -->
   <field name="InstrumentId" id="1" type="uint32" offset="0"/>   <!-- integer id; names come in InstrumentDefinition -->
   <field name="VenueId"      id="2" type="uint16" offset="4"/>
   <field name="Flags"        id="3" type="uint16" offset="6"/>
   <field name="Sequence"     id="4" type="uint64" offset="8"/>   <!-- one counter per stream -->
-  <field name="ExchangeTs"   id="5" type="Ts"     offset="16"/>
-  <field name="RecvTs"       id="6" type="Ts"     offset="24"/>
+  <field name="InstrumentSeq" id="8" type="uint64" offset="16"/> <!-- one counter per instrument across the topic, 0 = not counted -->
+  <field name="ExchangeTs"   id="5" type="Ts"     offset="24"/>
+  <field name="RecvTs"       id="6" type="Ts"     offset="32"/>
   <!-- message body: fixed point, naturally aligned (payload offset = 8 + root offset) -->
-  <field name="Price"        id="10" type="Price" offset="32"/>  <!-- int64 x 1e-9 -->
+  <field name="Price"        id="10" type="Price" offset="40"/>  <!-- int64 x 1e-9 -->
   ...
 </sbe:message>
 ```
@@ -20,10 +21,10 @@ Lint: `--routing InstrumentId,VenueId,Sequence,ExchangeTs --admin 100` reports n
 
 ## Adding a field later (evolution)
 ```xml
-<field name="MatchTs" id="20" type="Ts" offset="64" sinceVersion="2" description="venue matching-engine time, 0 if not sent"/>
+<field name="MatchTs" id="20" type="Ts" offset="72" sinceVersion="2" description="venue matching-engine time, 0 if not sent"/>
 ```
-- `blockLength` grows to 72 and the schema `version` becomes 2.
-- Old apps still read 64 bytes; new apps see `MatchTs = 0` from old gateways (read them with `read<T>()`, not `view<T>`).
+- `blockLength` grows to 80 and the schema `version` becomes 2.
+- Old apps still read 72 bytes; new apps see `MatchTs = 0` from old gateways (read them with `read<T>()`, not `view<T>`).
 - Check it with `--lint --against` the published file.
 
 ## Mapping a new template in the agent (before any gateway sends it)
@@ -33,7 +34,7 @@ topics:
     decoder:
       type: sbe_routing
       schema: schemas/subplane_canonical.xml
-      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+      fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId }
       messages:
         - { template: 3,  msg_type: BOOK_UPDATE }
         - { template: 11, msg_type: STATUS }      # the new template; data types are TRADE, QUOTE, BOOK_UPDATE, BOOK_SNAPSHOT, OHLCV, STATUS, DEFINITION

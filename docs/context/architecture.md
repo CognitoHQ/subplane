@@ -49,13 +49,23 @@ Each `partitions:` entry is deep-merged over the topic's keys: maps merge, anyth
 
 **Session patterns.** A session's `topics:` lists patterns that match topic names by `.` segment: `*` matches exactly one segment, a final `>` matches one or more, anything else matches itself (`crypto.*`, `crypto.>`). An omitted or empty list means all topics. A pattern that matches no topic is an error at session create, and a session's topics cannot change after creation (`SET_FILTER` refuses). A session `partitions:` key is an error. As before, a session configuration error is logged and the agent keeps running.
 
-**In the data path.** The record header carries `topic_id` (offset 48), `sequence` is the stream's own, one per partition, and the session filter accepts by `topic_id` (a 32768-bit bitmap). Until the per-instrument sequence lands (planned), sequences in events are the stream's own.
+**In the data path.** The record header carries `topic_id` (offset 48), and the session filter accepts by `topic_id` (a 32768-bit bitmap). A data record's `sequence` is the instrument's when the topic maps one (below), otherwise the stream's own, one per partition. Sequences in events (`GAP_DETECTED`, `TOPIC_*`, `TRANSPORT_*`, `SYMBOL_STALE.last_seq`, recap `as_of_seq`) are the stream's.
 
-**Stream identity in band.** The canonical `Heartbeat` (template 100) carries `StreamId` (int32, root offset 32, 0 = unstamped). The decoder routing field `stream_id` (`fields: { ..., stream_id: StreamId }`) reads it from admin messages only. When a heartbeat's stamp is non-zero and differs from the partition's `stream_id`, the partition counts `stream_mismatch` and records `last_stream_stamp`; data is not dropped. It catches a publisher stamped for one stream sending on another.
+**Instrument sequence.** A publisher can count each instrument across the whole topic: 1, 2, 3 ... with no holes, whichever partition carries the record (the canonical `InstrumentSeq`, CME's `RptSeq`; 0 = not counted). The decoder routing field `instrument_sequence` (`fields: { ..., instrument_sequence: InstrumentSeq }`, `sbe_routing` only, data messages only, needs `symbol_id_mode: table`) turns on, for that partition, a per-instrument check after the stream's own:
+- It keeps the last instrument sequence per symbol in an array owned by the thread group, sized `agent.max_symbols`, one per topic and shared by the topic's partitions (8 bytes per symbol per topic).
+- The first record of an instrument syncs. `last + 1` is delivered. A record at or below `last` is a duplicate: counted in `inst_dups` and dropped. This is how the same record arriving on two partitions, or replayed, reaches an app once.
+- A jump forward is delivered, counted in `inst_gaps`, and preceded by `INSTRUMENT_GAP{symbol_id, topic_id, expected, received}` on the sessions that take the record. On a recap topic the recap sessions that take the symbol get `SYMBOL_STALE{reason 5}` and a recap of that symbol only.
+- A record at or below `last` is a duplicate however far behind it is (no `dup_window` here): one partition may lag another by any amount. An instrument's count starts again only with its stream: when the stream restarts (`BUS_SEQ_RESET`, a backward stream jump beyond `dup_window`, `TRANSPORT_UP{publisher restart}`), every instrument of the topic syncs on its next record.
+- The record's header `sequence` is the instrument sequence (0 when the record carries none), so an app orders, de-duplicates and finds gaps per symbol by `sequence` whichever partition delivered it. Snapshot records of a recap carry the instrument's sequence as of S, read from the record itself; the held live records follow it.
+- The stream sequence still finds transport loss: `gaps`, `GAP_DETECTED`, and the recap floors and merge (the hold keeps each record's stream sequence beside it).
+- Measured: no cost above the bench's run-to-run noise (`replay --bench`, canonical topic, mapped against unmapped).
+- Not yet: filling an instrument gap from another partition (make-before-break moves, planned) and a late record behind its instrument is dropped, not reordered.
+
+**Stream identity in band.** The canonical `Heartbeat` (template 100) carries `StreamId` (int32, root offset 40, 0 = unstamped). The decoder routing field `stream_id` (`fields: { ..., stream_id: StreamId }`) reads it from admin messages only. When a heartbeat's stamp is non-zero and differs from the partition's `stream_id`, the partition counts `stream_mismatch` and records `last_stream_stamp`; data is not dropped. It catches a publisher stamped for one stream sending on another.
 
 **Restart rule.** Only `sessions:` is reloaded. `POST /reload` answers `{"status":"reloaded","ignored":["topics"]}` when `registry`, `topics` or `agent.thread_groups` changed, and logs `RELOAD_IGNORED`; those edits take effect on restart. Adding a partition therefore takes a restart; the weekend practice is to add partitions on the primary and the DR agent, then move tickers.
 
-**Planned, not built:** the per-instrument sequence (a 40-byte canonical prefix with an `InstrumentSeq`), a resolver (the SPP `Resolve` op served by the snapshot service), make-before-break intraday moves of a ticker between partitions, a gateway publishing one topic over several partitions, and a Kafka ingest transport.
+**Planned, not built:** a resolver (the SPP `Resolve` op served by the snapshot service), make-before-break intraday moves of a ticker between partitions, a gateway publishing one topic over several partitions, and a Kafka ingest transport.
 
 ## Deployment
 
@@ -211,6 +221,7 @@ What it decodes, from the message root block only:
 - `symbol_scope` (`global` default | `venue`): with `venue`, an integer symbol is interned together with the message's venue, so instrument 1 from venue 10 and instrument 1 from venue 20 are two symbols. Needs `symbol_id_mode: table`, an integer symbol and a mapped venue (the same option exists for `dbn`, where the venue is `publisher_id`, and for `flatbuffers`, where every message with an integer symbol needs a venue path). Session filters, `SYMBOL_MAPPED` names and `GET /lvc/{symbol}` then spell these symbols `<venue>:<id>` (`10:1`). Opt-in because it changes how filters are written; with globally unique ids (a site instrument master) `global` is enough.
 - `sequence`, `exchange_ts`, `venue` (integer fields; venue is truncated to 16 bits).
 - `stream_id` (integer field, read from admin messages only): the stream identity a publisher stamps in its heartbeat; see "Topics and partitions".
+- `instrument_sequence` (integer field, read from data messages only): the publisher's count of the instrument in the topic; see "Topics and partitions", instrument sequence.
 - Template id, schema id and schema version from the SBE header, and `msg_type` from the config mapping.
 
 What it does not do:
@@ -290,7 +301,7 @@ Every record is two parts: a fixed header tuple that the agent fills from wherev
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | `seq_tag` | u64 | On a ring: absolute byte position of this record, written last with release. 0 elsewhere. |
-| 8 | `sequence` | u64 | The stream's sequence (one per partition). 0 if the bus has none. |
+| 8 | `sequence` | u64 | Data records: the instrument sequence when the topic maps `instrument_sequence` (0 when the record carries none), otherwise the stream's sequence (one per partition). Other records: the stream's. 0 if the bus has none. |
 | 16 | `exchange_ts` | u64 | ns since epoch from the mapped schema field. 0 if unmapped. |
 | 24 | `ingest_ts` | u64 | ns since epoch at packet receive. Never 0 on a delivered record. |
 | 32 | `symbol_id` | u32 | Dense interned id (or passthrough per config). |
@@ -328,14 +339,15 @@ Payloads of AGENT_CONTROL records are packed little-endian PODs in `shm/control_
 | 0xA6 | SYMBOL_MAPPED | AGENT_CONTROL | `SymbolMappedEvent` {symbol_id, venue_id, name_len, name[24]} |
 | 0xA7 | TRANSPORT_DOWN | AGENT_CONTROL | `TransportStateEvent` {topic_id, reason, last_seq, changed_ns}, 24 bytes. Reasons are transport-neutral (INV-015): 1 source lost (the last Aeron image went away, a TCP peer closed, reset or refused), 2 local failure (Aeron driver or client timeout, socket error, a misframed TCP stream). Reported once per change: a transport already down reports nothing more. `last_seq` is the last sequence accepted before the change. |
 | 0xA8 | TRANSPORT_UP | AGENT_CONTROL | `TransportStateEvent`; reason 0, or 3 publisher restart: a new Aeron session replaced the previous one. After a restart, on every partition, the next sequence is accepted as a fresh start, as after `BUS_SEQ_RESET`: the new publisher's numbering is not compared with the old one's, so it is neither reported as a gap or reset nor dropped as duplicates when it starts within `dup_window` below the old sequence. A restart is reported even without a DOWN before it (over Aeron UDP the old image outlives its publisher by the image liveness timeout). It is written ahead of the records of the batch that brought the source back; on Aeron, when a poll sees a new image before the client has announced it, a plain UP comes first and the restart UP follows on the next poll, possibly after a few records. Over UDP multicast "up" is the first datagram, or the first after a socket error; a silent sender is `TOPIC_DEGRADED`, not a transport state. Both events go to every session of the partition that takes `agent_control`. `/partitions` shows the state (`unknown`, `up`, `down`) and the counts. |
-| 0xA9 | SYMBOL_STALE | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id u32, topic_id u16, reason u16, last_seq u64, changed_ns u64}, 24 bytes. The session's view of the symbol is no longer exact and a recap of it has started. `reason`: 1 sequence gap, 3 publisher restart, 4 sequence reset (`BUS_SEQ_RESET` or a backward jump beyond `dup_window`); 2 (transport down) is reserved and never sent. `last_seq` is the partition's last sequence before the change. Written only to recap sessions, once per symbol of theirs on the partition. |
+| 0xA9 | SYMBOL_STALE | AGENT_CONTROL | `SymbolStaleEvent` {symbol_id u32, topic_id u16, reason u16, last_seq u64, changed_ns u64}, 24 bytes. The session's view of the symbol is no longer exact and a recap of it has started. `reason`: 1 sequence gap, 3 publisher restart, 4 sequence reset (`BUS_SEQ_RESET` or a backward jump beyond `dup_window`), 5 instrument gap (this symbol only); 2 (transport down) is reserved and never sent. `last_seq` is the partition's last sequence before the change. Written only to recap sessions, once per symbol of theirs on the partition. |
 | 0xAA | RECAP_PENDING | AGENT_CONTROL | `RecapEvent` {request_id u64, symbol_id u32, topic_id u16, status u8, reserved u8, attempt u32, record_count u32, as_of_seq u64}, 32 bytes. The symbol is waiting for a snapshot; `request_id` and `attempt` are 0. |
 | 0xAB | RECAP_BEGIN | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the records in the reply, `attempt` 1 for the first request and +1 per retry |
 | 0xAC | RECAP_COMPLETE | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the snapshot records written to this ring |
 | 0xAD | RECAP_FAILED | AGENT_CONTROL | `RecapEvent`; `status`: 1 timeout, 2 rejected, 3 snapshot too old, 4 hold overflow, 5 reserved (a gap while a symbol is pending is reported as `SYMBOL_STALE`), 6 publisher identity mismatch (planned), 7 request could not be sent, 8 reply larger than `reply_slab_bytes`. The agent asks again; the symbol stays pending. |
+| 0xAE | INSTRUMENT_GAP | AGENT_CONTROL | `InstrumentGapEvent` {symbol_id u32, topic_id u16, reserved u16, expected_seq u64, received_seq u64, detected_ns u64}, 32 bytes. One instrument's sequence jumped (see "Topics and partitions", instrument sequence); written before the record that jumped; `received > expected` always. |
 | 0xFE | PAD | PAD | none |
 
-Every event's topic field is `topic_id` (it was `partition_id`, same layout). Bus admin delivery is topic-scoped (the session must accept the record's topic). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `TOPIC_DEGRADED` and `TOPIC_RECOVERED` go to the sessions whose patterns take that topic. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern; the four recap events only to the rings of the recap sessions waiting on that symbol, and `SYMBOL_STALE` only to recap sessions.
+Every event's topic field is `topic_id` (it was `partition_id`, same layout). Bus admin delivery is topic-scoped (the session must accept the record's topic). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `TOPIC_DEGRADED` and `TOPIC_RECOVERED` go to the sessions whose patterns take that topic; `INSTRUMENT_GAP` only to the sessions that take the record. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern; the four recap events only to the rings of the recap sessions waiting on that symbol, and `SYMBOL_STALE` only to recap sessions.
 
 ## Filters
 
@@ -537,27 +549,27 @@ public:
 
 The Python module defines one frozen dataclass per message (standard library `struct`, no dependencies) with `from_bytes`, a `RecordHeader` dataclass for the 64-byte `TickHeader`, and `parse(record)` that turns one ring record into `(RecordHeader, message)` by template id, so a ring or a recording can be read from Python without the C++ SDK. When NumPy is importable each class also carries a structured `DTYPE` with explicit offsets for columnar, zero-copy reads (`np.frombuffer(payloads, dtype=Trade.DTYPE)`). The q script emits a `1:` fixed-width spec and a `parse` function per message (unsigned fields widen to the signed q type of the same width; char arrays are cut from the raw bytes); it is generated and checked structurally but has not been run under q here. Little-endian schemas only; messages with groups or varData are reported as skipped, never partially emitted; constant fields are omitted and listed in a comment; enums and sets appear as their encoding primitive with the type name noted. `tests/data/sample_md.xml` is run through the tool at every build and the generated header is compiled and exercised by `test_sbe_views`; `ctest -R schema_views_numpy` loads the NumPy module (skipped where NumPy is absent). Scalar arrays (`<type primitiveType="int64" length="10">`) are typed in every view: `int64_t BidPx[10]` in a struct, an indexed accessor in a view class, a `('<i8', (10,))` dtype field, a tuple in the dataclass, a list in q.
 
-**Canonical schema.** `schemas/subplane_canonical.xml` (package `subplane.canonical`, schema id 100, version 1) is the normalized tick shape that the transcode mapping (planned, encoding-agnostic step 4), the kdb+ feed, the recorder index, the Python client and the feeds package target. Every message is flat and every scalar is naturally aligned at its payload offset, so all eight are struct views; `schemas/CMakeLists.txt` generates `subplane_canonical_views.{h,py,q}` into `build/generated/` at every build and `test_canonical` compiles the header and reads encoded messages through it. Rules: prices and quantities are `int64` scaled by 10^-9 (declared as the constant `PriceExponent = -9`; 1.0 is 1,000,000,000; range ±9.2e9), no floats, no per-message exponent; every data message starts with the same 32-byte prefix (`InstrumentId u32, VenueId u16, Flags u16, Sequence u64, ExchangeTs u64, RecvTs u64`, payload offsets 8..40), so routing fields sit at fixed offsets in every message; symbols are ids and names arrive as `InstrumentDefinition` messages (which is how a gateway assigns ids); the book snapshot is ten levels per side in fixed arrays, deeper books are raw passthrough; `BookUpdate` is one level per message.
+**Canonical schema.** `schemas/subplane_canonical.xml` (package `subplane.canonical`, schema id 100, version 1) is the normalized tick shape that the transcode mapping (planned, encoding-agnostic step 4), the kdb+ feed, the recorder index, the Python client and the feeds package target. Every message is flat and every scalar is naturally aligned at its payload offset, so all eight are struct views; `schemas/CMakeLists.txt` generates `subplane_canonical_views.{h,py,q}` into `build/generated/` at every build and `test_canonical` compiles the header and reads encoded messages through it. Rules: prices and quantities are `int64` scaled by 10^-9 (declared as the constant `PriceExponent = -9`; 1.0 is 1,000,000,000; range ±9.2e9), no floats, no per-message exponent; every data message starts with the same 40-byte prefix (`InstrumentId u32, VenueId u16, Flags u16, Sequence u64, InstrumentSeq u64, ExchangeTs u64, RecvTs u64`, payload offsets 8..48; `Sequence` counts the stream, `InstrumentSeq` the instrument across the topic, 0 = not counted), so routing fields sit at fixed offsets in every message; symbols are ids and names arrive as `InstrumentDefinition` messages (which is how a gateway assigns ids); the book snapshot is ten levels per side in fixed arrays, deeper books are raw passthrough; `BookUpdate` is one level per message.
 
 | Template | Message | Fields after the prefix | Payload bytes |
 |---|---|---|---|
-| 1 | `Trade` | `Price`, `Qty`, `TradeId u64`, `Aggressor` (Side) | 72 |
-| 2 | `Quote` | `BidPx`, `BidQty`, `AskPx`, `AskQty` | 72 |
-| 3 | `BookUpdate` | `Price`, `Qty` (0 on delete), `Side`, `Action` (Add/Update/Delete/Clear), `Level u8` | 64 |
-| 4 | `BookSnapshot` | `BidPx[10]`, `BidQty[10]`, `AskPx[10]`, `AskQty[10]`, `Depth u8` | 368 |
-| 5 | `Ohlcv` | `Open`, `High`, `Low`, `Close`, `Volume`, `IntervalSec u32` | 88 |
-| 6 | `Status` | `TradingStatus`, `Reason u8` | 48 |
-| 10 | `InstrumentDefinition` | `Symbol char[32]`, `Exchange`, `Base`, `Quote` (`char[16]`), `TickSize`, `LotSize`, `Status` | 144 |
-| 100 | `Heartbeat` | prefix only, `InstrumentId` 0; `StreamId i32` at offset 32 (0 = unstamped) | 48 |
+| 1 | `Trade` | `Price`, `Qty`, `TradeId u64`, `Aggressor` (Side) | 80 |
+| 2 | `Quote` | `BidPx`, `BidQty`, `AskPx`, `AskQty` | 80 |
+| 3 | `BookUpdate` | `Price`, `Qty` (0 on delete), `Side`, `Action` (Add/Update/Delete/Clear), `Level u8` | 72 |
+| 4 | `BookSnapshot` | `BidPx[10]`, `BidQty[10]`, `AskPx[10]`, `AskQty[10]`, `Depth u8` | 376 |
+| 5 | `Ohlcv` | `Open`, `High`, `Low`, `Close`, `Volume`, `IntervalSec u32` | 96 |
+| 6 | `Status` | `TradingStatus`, `Reason u8` | 56 |
+| 10 | `InstrumentDefinition` | `Symbol char[32]`, `Exchange`, `Base`, `Quote` (`char[16]`), `TickSize`, `LotSize`, `Status` | 152 |
+| 100 | `Heartbeat` | prefix only, `InstrumentId` 0; `StreamId i32` at offset 40 (0 = unstamped) | 56 |
 
-A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId}` (plus `stream_id: StreamId` to check the stream identity) and templates 1..6 mapped to the matching `MsgType`, 10 to `DEFINITION`, 100 to `admin: HEARTBEAT` (the commented `canonical.sample` topic in `config.yaml`). `subplane send --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views (`--spin` busy-polls; `--latency` prints histograms of canonical `RecvTs` to app read, ring `ingest_ts` to app read, and `RecvTs` to `ingest_ts`, all CLOCK_REALTIME on one box, so a gateway, the agent and an app measure end to end with no probes); `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
+A partition carrying it is ordinary `sbe_routing` configuration: `fields: {symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId}` (plus `stream_id: StreamId` to check the stream identity) and templates 1..6 mapped to the matching `MsgType`, 10 to `DEFINITION`, 100 to `admin: HEARTBEAT` (the commented `canonical.sample` topic in `config.yaml`). `subplane send --schema schemas/subplane_canonical.xml` publishes synthetic canonical messages (it binds field names from either the sample or the canonical schema), and `examples/views_app.cpp` consumes a ring through the generated views (`--spin` busy-polls; `--latency` prints histograms of canonical `RecvTs` to app read, ring `ingest_ts` to app read, and `RecvTs` to `ingest_ts`, all CLOCK_REALTIME on one box, so a gateway, the agent and an app measure end to end with no probes); `ctest -R canonical_views_app` runs sender, agent and app end to end. The generated `Trade`:
 
 ```cpp
-// Trade: template 1, 72 bytes. Constant fields omitted: PriceExponent (PriceExponent).
+// Trade: template 1, 80 bytes. Constant fields omitted: PriceExponent (PriceExponent).
 struct Trade {
     static constexpr bool kIsStruct = true;
     static constexpr uint16_t kTemplateId = 1;
-    static constexpr size_t kSize = 72;
+    static constexpr size_t kSize = 80;
     uint16_t blockLength;
     uint16_t templateId;
     uint16_t schemaId;
@@ -566,6 +578,7 @@ struct Trade {
     uint16_t VenueId;
     uint16_t Flags;
     uint64_t Sequence;
+    uint64_t InstrumentSeq;
     uint64_t ExchangeTs;  // Ts
     uint64_t RecvTs;  // Ts
     int64_t Price;  // Price
@@ -583,12 +596,13 @@ static_assert(offsetof(Trade, InstrumentId) == 8);
 static_assert(offsetof(Trade, VenueId) == 12);
 static_assert(offsetof(Trade, Flags) == 14);
 static_assert(offsetof(Trade, Sequence) == 16);
-static_assert(offsetof(Trade, ExchangeTs) == 24);
-static_assert(offsetof(Trade, RecvTs) == 32);
-static_assert(offsetof(Trade, Price) == 40);
-static_assert(offsetof(Trade, Qty) == 48);
-static_assert(offsetof(Trade, TradeId) == 56);
-static_assert(offsetof(Trade, Aggressor) == 64);
+static_assert(offsetof(Trade, InstrumentSeq) == 24);
+static_assert(offsetof(Trade, ExchangeTs) == 32);
+static_assert(offsetof(Trade, RecvTs) == 40);
+static_assert(offsetof(Trade, Price) == 48);
+static_assert(offsetof(Trade, Qty) == 56);
+static_assert(offsetof(Trade, TradeId) == 64);
+static_assert(offsetof(Trade, Aggressor) == 72);
 ```
 
 ## HTTP API (cold path)
@@ -600,7 +614,7 @@ static_assert(offsetof(Trade, Aggressor) == 64);
 | `GET /health` | `{"status":"ok"}` |
 | `GET /status` | name, version, uptime, epoch, partitions, sessions, topics |
 | `GET /topics` | per topic: name, `topic_id`, `degraded` (the count of its degraded partitions), `partitions` [{`partition_num`, `stream_id`, `state`}] and `sessions` (names of the sessions whose patterns take it); also inside `/status` as `topics` |
-| `GET /partitions` | per partition: name (`<topic>/<n>`), `topic`, `topic_id`, `partition_num`, `stream_id`, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts, `stream_mismatch` and `last_stream_stamp`; with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
+| `GET /partitions` | per partition: name (`<topic>/<n>`), `topic`, `topic_id`, `partition_num`, `stream_id`, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts, `stream_mismatch` and `last_stream_stamp`, `inst_gaps` and `inst_dups`; with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
 | `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation, ring-wide `reader_flags`, `topics` (its patterns, as given) and `readers` (slot, pid, name, lag bytes, records, overruns, heartbeat, tracing) |
 | `POST /sessions/<name>/trace?on=1\|0[&pid=N][&sample=N]` | latency tracing for the session's readers: every reader, or the slots of one pid; trace 1 record in `sample` |
 | `GET /symbols?from=&max=` | id to name pairs |
@@ -615,7 +629,7 @@ Anything else is 404 with a JSON error body. There is no per-session detail path
 
 Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 
-- Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `stream_mismatch`, `tap_records`, `tap_dropped`, plus `last_unknown_template`.
+- Per partition: `packets`, `bytes`, `messages`, `unknown_templates`, `undecodable_tail`, `schema_mismatch`, `gaps`, `dups`, `admin`, `degraded_events`, `decode_errors`, `malformed`, `truncated`, `transport_errors`, `seq_resets`, `stream_mismatch`, `inst_gaps`, `inst_dups`, `tap_records`, `tap_dropped`, plus `last_unknown_template`.
 - Per session: `published`, `filtered`, `publish_failed`, `ring_overruns` (reserved; the writer cannot observe reader overruns, so it stays 0: each reader reports its own through its reader slot, `subplane_app_overruns_total`).
 - Histogram: one `LogHistogram` per thread group, `recv_to_publish` in ns (receive timestamp to after the packet is published, recorded per packet). 64 power-of-two buckets by 4 sub-buckets (256 total), relative error up to 25%, single writer with relaxed load and store, snapshotted cold for p50, p90, p99, p99.9, min, max, mean. Per-stage histograms are planned.
 - Transports keep their own one-writer counters (`aeron`: fragments, oversize, image events, client errors; `tcp_stream`: connects, disconnects, framing errors), exported through the cold `Transport::counters()`.

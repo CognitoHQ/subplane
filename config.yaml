@@ -120,7 +120,7 @@ topics:
   #   decoder:
   #     type: sbe_routing
   #     schema: schemas/subplane_canonical.xml
-  #     fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+  #     fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId }
   #     symbol_id_mode: table
   #     messages:
   #       - { template: 1,   msg_type: TRADE }
@@ -149,7 +149,7 @@ topics:
   #   decoder:
   #     type: sbe_routing
   #     schema: schemas/subplane_canonical.xml
-  #     fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId, stream_id: StreamId }
+  #     fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId, stream_id: StreamId }
   #     symbol_id_mode: table
   #     messages:                     # every canonical template: an unlisted one is dropped before its Sequence is read, so it shows as a gap
   #       - { template: 1,   msg_type: TRADE }

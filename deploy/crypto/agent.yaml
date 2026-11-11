@@ -30,7 +30,7 @@ topics:
     decoder:
       type: sbe_routing
       schema: ../../schemas/subplane_canonical.xml            # relative to this file
-      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId, stream_id: StreamId }
+      fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId, stream_id: StreamId }
       symbol_id_mode: table
       messages:
         - { template: 1,   msg_type: TRADE }

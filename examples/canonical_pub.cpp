@@ -24,6 +24,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace sp_canonical;
 
@@ -31,9 +32,10 @@ namespace {
 
 uint64_t now_ns() { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count()); }
 
-// Every message starts with the SBE header and the 32-byte canonical prefix.
+// Every message starts with the SBE header and the 40-byte canonical prefix.
+// `seq` counts the stream, `iseq` this instrument.
 template <class T>
-void begin(T& m, uint32_t instrument, uint64_t seq) {
+void begin(T& m, uint32_t instrument, uint64_t seq, uint64_t iseq) {
     std::memset(&m, 0, sizeof m);
     m.blockLength = static_cast<uint16_t>(T::kSize - kHeaderSize);
     m.templateId = T::kTemplateId;
@@ -42,6 +44,7 @@ void begin(T& m, uint32_t instrument, uint64_t seq) {
     m.InstrumentId = instrument;
     m.VenueId = 1;
     m.Sequence = seq;
+    m.InstrumentSeq = iseq;
     m.ExchangeTs = now_ns();
     m.RecvTs = m.ExchangeTs;
 }
@@ -84,6 +87,7 @@ int main(int argc, char** argv) {
 
     uint8_t pkt[1400];
     uint64_t pkt_seq = 1, msg_seq = 0, sent = 0;
+    std::vector<uint64_t> iseq(symbols + 1, 0);
     const auto interval = std::chrono::nanoseconds(rate ? 2'000'000'000ull / rate : 0); // two messages per packet
     auto next = std::chrono::steady_clock::now();
     while (count == 0 || sent < count) {
@@ -96,10 +100,10 @@ int main(int argc, char** argv) {
 
         const uint32_t sym = static_cast<uint32_t>(1 + msg_seq % symbols);
         const int64_t px = 100'000'000'000ll + static_cast<int64_t>(sym) * 1'000'000'000ll + static_cast<int64_t>(msg_seq % 50) * 10'000'000ll; // 100.xx .. in 1e-9 units
-        Trade t; begin(t, sym, ++msg_seq);
+        Trade t; begin(t, sym, ++msg_seq, ++iseq[sym]);
         t.Price = px; t.Qty = 250'000'000; t.TradeId = msg_seq; t.Aggressor = static_cast<uint8_t>(1 + msg_seq % 2);
         append(pkt, pos, t);
-        Quote q; begin(q, sym, ++msg_seq);
+        Quote q; begin(q, sym, ++msg_seq, ++iseq[sym]);
         q.BidPx = px - 10'000'000; q.BidQty = 1'000'000'000; q.AskPx = px + 10'000'000; q.AskQty = 2'000'000'000;
         append(pkt, pos, q);
 

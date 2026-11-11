@@ -37,6 +37,7 @@ struct DecodeResult {
     uint32_t     total_len = 0; // full message length; 0 when unknown
     RecapMarker  marker    = RecapMarker::NONE; // set on OK when the message is a recap marker
     int32_t      stream_stamp = 0;  // an admin message's stream_id field; 0 = not stamped
+    uint64_t     instrument_seq = 0; // a data message's instrument_sequence field; 0 = not counted or unmapped
 };
 
 // Minimal interface so decoders do not depend on the SymbolTable.

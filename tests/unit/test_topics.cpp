@@ -149,12 +149,13 @@ struct TwoPartitions {
     std::unique_ptr<Session> s;
     ShmReader rd;
 
-    TwoPartitions() {
+    // `iseq`: the decoder maps instrument_sequence (canonical InstrumentSeq).
+    explicit TwoPartitions(bool iseq = false) {
         std::string err;
         REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE)}, 256, err));
         const TopicRegistry reg = registry("[ { id: 7, name: t.canon } ]");
         std::vector<PartitionConfig> cfgs;
-        REQUIRE_MESSAGE(expand_topics(YAML::Load(R"(
+        YAML::Node topics = YAML::Load(R"(
 - name: t.canon
   transport: { type: udp, group: "", port: 1 }
   framing: { length: schema, sequence: message.Sequence }
@@ -165,7 +166,9 @@ struct TwoPartitions {
     messages: [ { template: 1, msg_type: TRADE }, { template: 100, admin: HEARTBEAT } ]
   heartbeat_timeout_ms: 50
   partitions: [ {}, {} ]
-)"), reg, repo_dir(), cfgs, err), err);
+)");
+        if (iseq) topics[0]["decoder"]["fields"]["instrument_sequence"] = "InstrumentSeq";
+        REQUIRE_MESSAGE(expand_topics(topics, reg, repo_dir(), cfgs, err), err);
         REQUIRE(cfgs.size() == 2);
         for (size_t i = 0; i < 2; ++i) {
             auto ft = std::make_unique<FakeTransport>();
@@ -197,16 +200,24 @@ struct TwoPartitions {
     }
     ~TwoPartitions() { RingWriter::unlink_ring(ring_path); }
 
-    std::vector<uint8_t> msg(uint16_t tid, uint64_t seq, uint32_t instrument, int32_t stream = 0) {
+    // A canonical message, every field placed by the schema's own offsets.
+    std::vector<uint8_t> msg(uint16_t tid, uint64_t seq, uint32_t instrument, int32_t stream = 0, uint64_t iseq = 0) {
         const SbeSchema& sc = *part[0].schema();
         const MessageDef* m = sc.find_message(tid);
         REQUIRE(m);
-        std::vector<uint8_t> b(8 + m->block_length, 0);
+        const uint32_t hdr_size = sc.header().size;
+        std::vector<uint8_t> b(hdr_size + m->block_length, 0);
         const uint16_t hdr[4] = {m->block_length, tid, sc.schema_id(), sc.version()};
-        std::memcpy(b.data(), hdr, 8);
-        std::memcpy(b.data() + 8, &instrument, 4);
-        std::memcpy(b.data() + 8 + 8, &seq, 8);
-        if (tid == 100) std::memcpy(b.data() + 8 + 32, &stream, 4);
+        std::memcpy(b.data(), hdr, sizeof hdr);
+        const auto set = [&](const char* name, const void* v) {
+            const FieldDef* f = sc.find_field(*m, name);
+            REQUIRE_MESSAGE(f, name);
+            std::memcpy(b.data() + hdr_size + f->offset, v, f->size);
+        };
+        set("InstrumentId", &instrument);
+        set("Sequence", &seq);
+        set("InstrumentSeq", &iseq);
+        if (tid == 100) set("StreamId", &stream);
         return b;
     }
     std::vector<std::pair<TickHeader, std::vector<uint8_t>>> drain() {
@@ -282,4 +293,128 @@ TEST_CASE("a heartbeat stamped with another stream_id is counted, not dropped") 
     CHECK(c.stream_mismatch == 1);
     CHECK(c.last_stream_stamp == static_cast<uint32_t>(stream_id_of(7, 1)));
     CHECK(c.admin == 2);   // still delivered as bus admin
+}
+
+TEST_CASE("instrument sequence: one copy of each record across a topic's partitions, gaps per instrument") {
+    TwoPartitions h(true);
+    const auto trade = [&](int part, uint64_t seq, uint32_t inst, uint64_t iseq) { h.fake[part]->push(h.msg(1, seq, inst, 0, iseq), now_ns()); };
+    const auto sym = [&](uint32_t inst) { return h.symbols.lookup_u64(inst); };
+    // Two instruments interleaved on partition 1, the same records copied onto
+    // partition 2 (its own stream sequence): each instrument once, in order.
+    trade(0, 1, 5, 1); trade(0, 2, 6, 1); trade(0, 3, 5, 2);
+    trade(1, 1, 5, 1); trade(1, 2, 5, 2); trade(1, 3, 6, 1); trade(1, 4, 6, 2);
+    h.pipe.run_once();
+    auto recs = h.drain();
+    std::vector<std::pair<uint32_t, uint64_t>> got;
+    for (const auto& [hdr, _] : recs) {
+        REQUIRE(hdr.kind == static_cast<uint8_t>(Kind::DATA));
+        got.emplace_back(hdr.symbol_id, hdr.sequence);   // the record's sequence is the instrument's
+    }
+    const std::vector<std::pair<uint32_t, uint64_t>> want = {{sym(5), 1}, {sym(6), 1}, {sym(5), 2}, {sym(6), 2}};
+    CHECK(got == want);
+    CHECK(h.part[0].counters.snapshot().gaps == 0);
+    CHECK(h.part[1].counters.snapshot().gaps == 0);
+    CHECK(h.part[1].counters.snapshot().inst_dups == 3);
+    CHECK(h.part[0].counters.snapshot().inst_dups == 0);
+
+    // Instrument 5 jumps 2 -> 4: INSTRUMENT_GAP for it, then the record. The
+    // stream had no gap. A late 3 is behind the instrument now: dropped.
+    trade(0, 4, 5, 4);
+    trade(1, 5, 5, 3);
+    h.pipe.run_once();
+    recs = h.drain();
+    REQUIRE(recs.size() == 2);
+    CHECK(recs[0].first.msg_type == static_cast<uint8_t>(ControlCode::INSTRUMENT_GAP));
+    CHECK(recs[0].first.topic_id == 7);
+    InstrumentGapEvent g{};
+    REQUIRE(recs[0].second.size() == sizeof g);
+    std::memcpy(&g, recs[0].second.data(), sizeof g);
+    CHECK(g.symbol_id == sym(5));
+    CHECK(g.topic_id == 7);
+    CHECK(g.expected_seq == 3);
+    CHECK(g.received_seq == 4);
+    CHECK(recs[1].first.sequence == 4);
+    CHECK(h.part[0].counters.snapshot().inst_gaps == 1);
+    CHECK(h.part[0].counters.snapshot().gaps == 0);
+    CHECK(h.part[1].counters.snapshot().inst_dups == 4);
+
+    // A copy far behind its instrument (one partition lagging the other by
+    // more than dup_window) is still a duplicate, never a restart.
+    trade(0, 5, 6, 5000);   // instrument 6: 2 -> 5000, a gap
+    trade(1, 6, 6, 1);      // partition 2, 4999 behind: dropped
+    h.pipe.run_once();
+    recs = h.drain();
+    REQUIRE(recs.size() == 2);
+    CHECK(recs[0].first.msg_type == static_cast<uint8_t>(ControlCode::INSTRUMENT_GAP));
+    CHECK(recs[1].first.sequence == 5000);
+    CHECK(h.part[1].counters.snapshot().inst_dups == 5);
+
+    // Only the stream starting again restarts the count: partition 1's
+    // sequence goes back by more than dup_window, and instrument 6 syncs at 1.
+    trade(0, 3000, 5, 5);   // a stream gap; instrument 5 continues
+    trade(0, 1, 6, 1);      // the stream restarts
+    h.pipe.run_once();
+    recs = h.drain();
+    REQUIRE(recs.size() == 4);   // GAP_DETECTED, 5, GAP_DETECTED (reset), 1
+    CHECK(recs[0].first.msg_type == static_cast<uint8_t>(ControlCode::GAP_DETECTED));
+    CHECK(recs[1].first.sequence == 5);
+    CHECK(recs[2].first.msg_type == static_cast<uint8_t>(ControlCode::GAP_DETECTED));
+    CHECK(recs[3].first.symbol_id == sym(6));
+    CHECK(recs[3].first.sequence == 1);
+    const auto c = h.part[0].counters.snapshot();
+    CHECK(c.seq_resets == 1);
+    CHECK(c.inst_gaps == 2);   // 2 -> 4 and 2 -> 5000
+
+    // A record without an instrument sequence (0) is not counted: delivered, sequence 0.
+    trade(0, 2, 5, 0);
+    h.pipe.run_once();
+    recs = h.drain();
+    REQUIRE(recs.size() == 1);
+    CHECK(recs[0].first.sequence == 0);
+}
+
+TEST_CASE("instrument sequence: unmapped, a record's sequence is its stream's; passthrough ids are refused") {
+    TwoPartitions h;
+    h.fake[0]->push(h.msg(1, 9, 5, 0, 1), now_ns());
+    h.fake[1]->push(h.msg(1, 3, 5, 0, 1), now_ns());   // the same instrument count on the other partition: not compared
+    h.pipe.run_once();
+    const auto recs = h.drain();
+    REQUIRE(recs.size() == 2);
+    CHECK(recs[0].first.sequence == 9);
+    CHECK(recs[1].first.sequence == 3);
+
+    const TopicRegistry reg = registry("[ { id: 7, name: t.canon } ]");
+    std::vector<PartitionConfig> cfgs;
+    std::string err;
+    REQUIRE_MESSAGE(expand_topics(YAML::Load(R"(
+- name: t.canon
+  transport: { type: udp, group: "", port: 1 }
+  framing: { length: schema, sequence: message.Sequence }
+  decoder:
+    type: sbe_routing
+    schema: schemas/subplane_canonical.xml
+    symbol_id_mode: passthrough
+    fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq }
+    messages: [ { template: 1, msg_type: TRADE } ]
+)"), reg, repo_dir(), cfgs, err), err);
+    Partition p;
+    CHECK_FALSE(p.build(cfgs[0], err, std::make_unique<FakeTransport>()));
+    CHECK_MESSAGE(err.find("instrument_sequence needs symbol_id_mode: table") != std::string::npos, err);
+}
+
+TEST_CASE("instrument sequence: a partition added to a second pipeline gets that pipeline's state") {
+    // The agent builds its pipelines twice (the second at start, with the epoch)
+    // and adds the same partitions again; the first pipeline then goes away.
+    TwoPartitions h(true);
+    const uint64_t* first = h.part[0].inst_seq;
+    REQUIRE(first != nullptr);
+    CHECK(h.part[1].inst_seq == first);   // one topic: one state for both partitions
+    {
+        Pipeline again{"g0", 4243, h.symbols, h.lvc};
+        again.add_partition(&h.part[0]);
+        again.add_partition(&h.part[1]);
+        CHECK(h.part[0].inst_seq != nullptr);
+        CHECK(h.part[0].inst_seq != first);
+        CHECK(h.part[1].inst_seq == h.part[0].inst_seq);
+    }
 }

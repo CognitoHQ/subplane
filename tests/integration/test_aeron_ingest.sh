@@ -28,7 +28,7 @@ topics:
     decoder:
       type: sbe_routing
       schema: $SCHEMA
-      fields: { symbol: InstrumentId, sequence: Sequence, exchange_ts: ExchangeTs, venue: VenueId }
+      fields: { symbol: InstrumentId, sequence: Sequence, instrument_sequence: InstrumentSeq, exchange_ts: ExchangeTs, venue: VenueId }
       symbol_id_mode: table
       messages: [ { template: 1, msg_type: TRADE }, { template: 2, msg_type: QUOTE }, { template: 100, admin: HEARTBEAT } ]
     heartbeat_timeout_ms: 2000

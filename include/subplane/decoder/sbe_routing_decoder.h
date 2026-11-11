@@ -20,7 +20,9 @@ namespace subplane {
 
 // empty = unmapped. `stream_id` is read from admin messages only (the
 // canonical Heartbeat's StreamId): the publisher's own name for its stream.
-struct RoutingFieldMap { std::string symbol, sequence, exchange_ts, venue, stream_id; };
+// `instrument_sequence` is read from data messages only (canonical
+// InstrumentSeq, CME RptSeq): the publisher's count of this instrument in the topic.
+struct RoutingFieldMap { std::string symbol, sequence, exchange_ts, venue, stream_id, instrument_sequence; };
 
 struct TemplateMapping {
     uint16_t template_id = 0;
@@ -65,6 +67,10 @@ public:
         return false;
     }
     bool symbol_passthrough() const noexcept { return passthrough_; }
+    bool maps_instrument_sequence() const noexcept {
+        for (const auto& e : by_template_) if (e.present && !e.admin && e.iseq.end != 0) return true;
+        return false;
+    }
     bool symbol_venue_scope() const noexcept { return venue_scope_; }
     const std::vector<std::string>& warnings() const { return warnings_; }
 
@@ -81,7 +87,7 @@ private:
         uint8_t  msg_type = 0;
         RecapMarker marker = RecapMarker::NONE;
         const WalkProgram* prog = nullptr;
-        FieldRef symbol, sequence, exchange_ts, venue, stream_id;
+        FieldRef symbol, sequence, exchange_ts, venue, stream_id, iseq;
         FieldRef recap[kRecapFields];
     };
 

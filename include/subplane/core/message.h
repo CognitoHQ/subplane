@@ -80,6 +80,7 @@ enum class ControlCode : uint8_t {
     RECAP_BEGIN         = 0xAB,
     RECAP_COMPLETE      = 0xAC,
     RECAP_FAILED        = 0xAD,
+    INSTRUMENT_GAP      = 0xAE,
 
     PAD                 = 0xFE,
 };

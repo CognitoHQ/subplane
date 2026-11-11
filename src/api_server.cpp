@@ -451,7 +451,8 @@ StringType ApiServer::serialize_partitions(const std::vector<PartitionStatus>& p
           << ",\"unknown_templates\":" << p.unknown_templates << ",\"gaps\":" << p.gaps
           << ",\"last_rx_ns\":" << p.last_rx_ns << ",\"transport\":\"" << p.transport
           << "\",\"transport_down\":" << p.transport_down << ",\"transport_up\":" << p.transport_up
-          << ",\"stream_mismatch\":" << p.stream_mismatch << ",\"last_stream_stamp\":" << p.last_stream_stamp;
+          << ",\"stream_mismatch\":" << p.stream_mismatch << ",\"last_stream_stamp\":" << p.last_stream_stamp
+          << ",\"inst_gaps\":" << p.inst_gaps << ",\"inst_dups\":" << p.inst_dups;
         if (!p.recap_json.empty()) j << ",\"recap\":" << p.recap_json;
         if (!p.tap_ring.empty()) {
             j << ",\"tap\":{\"ring\":\"" << json_escape(p.tap_ring) << "\",\"records\":" << p.tap_records

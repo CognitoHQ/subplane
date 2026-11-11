@@ -142,6 +142,10 @@ public:
     }
     const Framer& framer() const noexcept { return framer_; }
     // True when symbol_id on this partition is the raw instrument id, not a table id.
+    // The decoder maps `instrument_sequence` (sbe_routing only).
+    bool maps_instrument_sequence() const noexcept {
+        return decoder_type_ == DecoderType::SBE_ROUTING && sbe_decoder_.maps_instrument_sequence();
+    }
     bool symbol_passthrough() const noexcept {
         switch (decoder_type_) {
             case DecoderType::DBN:         return dbn_decoder_.symbol_passthrough();
@@ -211,6 +215,11 @@ public:
     // it, carried in each tap record's `sequence` so the recorder sees losses.
     RingWriter*       tap = nullptr;
     uint64_t          tap_seq = 0;
+    // The topic's last instrument sequence per symbol id (0 = not seen yet),
+    // shared by the topic's partitions; set by the owning Pipeline when the
+    // decoder maps `instrument_sequence`, nullptr otherwise.
+    uint64_t*         inst_seq = nullptr;
+    uint32_t          inst_seq_size = 0;
 
     // Hot. Returns false if full or already attached.
     bool attach(Session* s) noexcept;

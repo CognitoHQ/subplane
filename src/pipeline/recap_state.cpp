@@ -66,7 +66,7 @@ void RecapState::erase(RecapPending& e) noexcept {
     --n_;
 }
 
-bool RecapState::hold(RecapPending& e, const TickHeader& h, const uint8_t* bytes, uint32_t len) noexcept {
+bool RecapState::hold(RecapPending& e, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept {
     if (len > kMaxHeldPayload) return false;
     const uint64_t need = sizeof(TickHeader) + static_cast<uint64_t>(len);
     const uint64_t room = (e.tail == RecapPending::kNil ? 0 : chunk_bytes_ - e.tail_used) +
@@ -74,6 +74,9 @@ bool RecapState::hold(RecapPending& e, const TickHeader& h, const uint8_t* bytes
     if (need > room) return false;
     TickHeader hh = h;
     hh.payload_len = len;
+    // INTENT: seq_tag is 0 off the ring, and RingWriter::publish never copies
+    // it from the header it is given, so it can carry the stream sequence here.
+    hh.seq_tag = stream_seq;
     write(e, reinterpret_cast<const uint8_t*>(&hh), sizeof(hh));
     write(e, bytes, len);
     ++e.held;

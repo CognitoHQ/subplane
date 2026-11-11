@@ -58,6 +58,7 @@ const char* code_name(const TickHeader& h) {
         case ControlCode::RECAP_BEGIN: return "RECAP_BEGIN";
         case ControlCode::RECAP_COMPLETE: return "RECAP_COMPLETE";
         case ControlCode::RECAP_FAILED: return "RECAP_FAILED";
+        case ControlCode::INSTRUMENT_GAP: return "INSTRUMENT_GAP";
         case ControlCode::PAD: return "PAD";
         default: return "CONTROL?";
     }
@@ -69,6 +70,13 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             if (len < sizeof(GapEvent)) return;
             GapEvent e; std::memcpy(&e, p, sizeof(e));
             std::printf(" topic=%u expected=%llu received=%llu", e.topic_id,
+                        static_cast<unsigned long long>(e.expected_seq), static_cast<unsigned long long>(e.received_seq));
+            break;
+        }
+        case ControlCode::INSTRUMENT_GAP: {
+            if (len < sizeof(InstrumentGapEvent)) return;
+            InstrumentGapEvent e; std::memcpy(&e, p, sizeof(e));
+            std::printf(" topic=%u symbol=%u expected=%llu received=%llu", e.topic_id, e.symbol_id,
                         static_cast<unsigned long long>(e.expected_seq), static_cast<unsigned long long>(e.received_seq));
             break;
         }

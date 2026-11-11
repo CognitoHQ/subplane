@@ -52,6 +52,7 @@ Point one Prometheus job at every agent and gateway; every series carries `servi
 | silent feed | `subplane_partition_last_receive_age_seconds > 5` | nothing arriving on a partition |
 | wrong stream | `rate(subplane_partition_stream_mismatch_total[5m]) > 0` | a publisher stamps a heartbeat with another partition's stream id; check its `--topic` (or `--stream-id`) and the agent's config. Data is not dropped; `last_stream_stamp` in `/partitions` shows the stamp |
 | bus loss | `rate(subplane_partition_gaps_total[5m]) > 0` | messages lost upstream of the agent |
+| instrument gap | `rate(subplane_partition_inst_gaps_total[5m]) > 0` | on a topic that maps `instrument_sequence`, an instrument's count jumped forward: a record of that instrument was lost on every partition. Apps got `INSTRUMENT_GAP` and recap sessions re-recapped the symbol. `inst_dups` counts records dropped as duplicates (normal when a record is sent on two partitions or replayed) |
 | app falling behind | `subplane_app_lag_bytes > 0.5 * on(session) group_left subplane_session_ring_capacity_bytes` | an app is half a ring behind and will overrun |
 | app stopped reading | `subplane_app_heartbeat_age_seconds > 5` | an app is hung or stopped polling |
 | app losing data | `rate(subplane_app_overruns_total[5m]) > 0` | an app was lapped |

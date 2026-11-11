@@ -55,7 +55,8 @@ for (;;) {
 Topics:
 - `hdr->topic_id` says which topic a record came from (0 on agent-wide control records). `ControlClient::hello()` returns `HelloInfo::topics`, one `TopicInfo {topic_id, partitions, name}` per topic the agent reads, so you can map ids to names. `partitions` is for information only.
 - `SessionRequest::topics` takes patterns that match topic names by `.` segment: `*` is exactly one segment, a final `>` is one or more (`crypto.*`, `crypto.>`). Empty means all topics. A pattern that matches no topic is an error, and a session's topics cannot change after it is created (`SET_FILTER` refuses); create a new session instead.
-- `sequence` is the stream's own, one per partition. Two topics, or two partitions of one topic, have unrelated sequences, so do not compare them.
+- `sequence` depends on the topic. On a topic whose publisher counts each instrument (the operator maps `instrument_sequence`), a data record's `sequence` is that instrument's count across the whole topic: 1, 2, 3 ... whichever partition carried it, or 0 if the record carries none. Order and de-duplicate per symbol by `sequence`. The agent already drops duplicates, so a record sent on two partitions reaches you once. Otherwise, and for non-data records and events, `sequence` is the stream's own, one per partition; two topics, or two partitions of one topic, have unrelated sequences, so do not compare them.
+- `INSTRUMENT_GAP` (0xAE, agent-control events) means one instrument's sequence jumped. It carries an `InstrumentGapEvent` {`symbol_id`, `topic_id`, `reserved`, `expected_seq`, `received_seq`, `detected_ns`} and comes just before the record that jumped. You get it only if your filter takes that record. Your state for the symbol is no longer exact; on a recap session the agent also sends `SYMBOL_STALE` and a new recap.
 - `TOPIC_DEGRADED` and `TOPIC_RECOVERED` (below) are the only partition-related events you see, and they name the topic.
 
 Rules that keep you correct:
@@ -82,14 +83,14 @@ When you join late, restart, or lose data, you need current state before applyin
   ```
   RECAP_PENDING{symbol}
   RECAP_BEGIN{as_of_seq = S, record_count}
-  snapshot records (FLAG_SNAPSHOT_ORIGIN set, sequence = S)
+  snapshot records (FLAG_SNAPSHOT_ORIGIN set, sequence = S, or the instrument's sequence as of S on a topic that counts instruments)
   RECAP_COMPLETE{S, records on this ring}
-  live records, sequence > S, no gap, no duplicate
+  live records, after S, no gap, no duplicate
   ```
 
   - Build your state from the snapshot records, then apply live records.
   - On `RECAP_FAILED{status, attempt}` the symbol stays pending and the agent asks again. Keep it marked stale until `RECAP_COMPLETE`.
-  - On `SYMBOL_STALE{reason}` (a sequence gap, a sequence reset or a publisher restart) your state for the symbol is no longer exact. Mark it stale and wait: the agent has already started a new recap, and the same sequence follows. Throw your state away at `RECAP_BEGIN`, not before, so you can keep showing it as stale.
+  - On `SYMBOL_STALE{reason}` (a sequence gap, an instrument gap, a sequence reset or a publisher restart) your state for the symbol is no longer exact. Mark it stale and wait: the agent has already started a new recap, and the same sequence follows. Throw your state away at `RECAP_BEGIN`, not before, so you can keep showing it as stale.
   - Other sessions on the box are never delayed by your recap.
 
 ## 5. Name your app

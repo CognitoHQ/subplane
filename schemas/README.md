@@ -9,7 +9,7 @@ requirement on a publisher is that this file exists and is current.
 
 `subplane_canonical.xml` is the canonical flat schema shipped with the agent (package
 `subplane.canonical`, id 100): eight messages, no groups, no varData, every scalar
-naturally aligned, a common 32-byte prefix, `int64` prices and quantities scaled by
+naturally aligned, a common 40-byte prefix (including `InstrumentSeq`, the per-instrument count across a topic), `int64` prices and quantities scaled by
 10^-9. `CMakeLists.txt` here runs `subplane schema --views all` on both schemas at build time
 into `build/generated/`; `test_canonical` and `examples/views_app` compile the result.
 Change the canonical schema only with a version bump and in the same commit as the

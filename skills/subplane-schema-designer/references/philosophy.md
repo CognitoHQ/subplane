@@ -4,7 +4,7 @@ subplane's agent sits on every application box. It subscribes to the bus once, f
 
 ## Routing fields
 - **Instrument** (integer), **sequence** (u64, one counter per stream, only going up), **exchange timestamp** (ns since the epoch), **venue** (small integer).
-- Put them in the **root block, at the same offsets in every data message**. The canonical schema uses one 32-byte prefix: `InstrumentId u32, VenueId u16, Flags u16, Sequence u64, ExchangeTs u64, RecvTs u64`. Routing then reads at fixed offsets, whatever the template.
+- Put them in the **root block, at the same offsets in every data message**. The canonical schema uses one 40-byte prefix: `InstrumentId u32, VenueId u16, Flags u16, Sequence u64, InstrumentSeq u64, ExchangeTs u64, RecvTs u64`. `Sequence` counts the stream; `InstrumentSeq` counts the instrument across the topic (0 = not counted). Routing then reads at fixed offsets, whatever the template.
 - The agent config maps them by name (`decoder.fields`). A field inside a group cannot be a routing field.
 
 ## Shape
