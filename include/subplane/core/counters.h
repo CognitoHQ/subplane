@@ -20,13 +20,14 @@ inline void inc(std::atomic<uint64_t>& c, uint64_t n = 1) noexcept {
     X(transport_down) X(transport_up) X(recap_markers) X(tap_records) X(tap_dropped) X(stream_mismatch) \
     X(inst_gaps) X(inst_dups)
 
-// One writer per counter, as above: up to recap_renewed by the recap manager
-// thread, from recap_held on by the partition's pipeline thread.
+// One writer per counter, as above: up to recap_sections_skipped by the recap
+// manager thread, from recap_held on by the partition's pipeline thread.
 #define SUBPLANE_RECAP_COUNTERS(X) \
     X(recap_requests) X(recap_coalesced) X(recap_replies) X(recap_rejects) X(recap_timeouts) \
     X(recap_overflows) X(recap_send_failed) X(recap_stray) X(recap_cancelled) X(recap_no_slab) X(recap_renewed) \
+    X(recap_bulk_requests) X(recap_sections) X(recap_sections_skipped) \
     X(recap_held) X(recap_merged) X(recap_records) X(recap_too_old) X(recap_hold_overflows) X(recap_post_dropped) \
-    X(recap_resyncs) X(recap_superseded)
+    X(recap_resyncs) X(recap_superseded) X(recap_elsewhere)
 
 #define SUBPLANE_SESSION_COUNTERS(X) X(published) X(filtered) X(ring_overruns) X(publish_failed)
 

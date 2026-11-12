@@ -42,6 +42,7 @@ struct SnapServer {
     aeron_t* client = nullptr;
     aeron_subscription_t* sub = nullptr;
     aeron_exclusive_publication_t* resp = nullptr;
+    aeron_exclusive_publication_t* sections = nullptr;   // set: answers are sections on it, matched by instrument
     std::atomic<int64_t> image_correlation{0};
     std::atomic<bool> stop{false};
     std::atomic<int> requests{0};
@@ -80,9 +81,9 @@ struct SnapServer {
             at += n;
         }
     }
-    bool offer(const std::vector<uint8_t>& b) {
+    bool offer(const std::vector<uint8_t>& b, aeron_exclusive_publication_t* to = nullptr) {
         for (int i = 0; i < 100000; ++i) {
-            if (aeron_exclusive_publication_offer(resp, b.data(), b.size(), nullptr, nullptr) >= 0) return true;
+            if (aeron_exclusive_publication_offer(to ? to : resp, b.data(), b.size(), nullptr, nullptr) >= 0) return true;
             sched_yield();
         }
         return false;
@@ -106,15 +107,27 @@ struct SnapServer {
         std::vector<uint8_t> trade; header(trade, 39, 1); put(trade, w.instrument, 8); put(trade, 1, 8); put(trade, 0, 8); put(trade, 0, 2);
         trade.insert(trade.end(), 39 - 26, 0);
         std::vector<uint8_t> f;
-        append<sp_proto::RecapBeginEncoder>(f, [&](auto& e) { e.CorrelationId(w.id).AsOf(w.last_seq + 1); });
-        append<sp_proto::RecapRecordEncoder>(f, [&](auto& e) { e.CorrelationId(w.id).Payload(trade.data(), trade.size()); });
-        append<sp_proto::RecapEndEncoder>(f, [&](auto& e) { e.CorrelationId(w.id).RecordCount(1); });
-        offer(f);
+        const uint64_t cid = sections ? 7000 + w.id : w.id;   // a section's id is the service's own
+        append<sp_proto::RecapBeginEncoder>(f, [&](auto& e) {
+            e.CorrelationId(cid).AsOf(w.last_seq + 1);
+            if (sections) e.Instrument(w.instrument);
+        });
+        append<sp_proto::RecapRecordEncoder>(f, [&](auto& e) { e.CorrelationId(cid).Payload(trade.data(), trade.size()); });
+        append<sp_proto::RecapEndEncoder>(f, [&](auto& e) { e.CorrelationId(cid).RecordCount(1); });
+        offer(f, sections);
     }
-    bool start(const std::string& dir, const std::string& request_channel, const std::string& control, std::string& err) {
+    bool start(const std::string& dir, const std::string& request_channel, const std::string& control, std::string& err,
+               const std::string& sections_channel = "") {
         response_control = control;
         if (aeron_context_init(&ctx) < 0 || aeron_context_set_dir(ctx, dir.c_str()) < 0 || aeron_init(&client, ctx) < 0 || aeron_start(client) < 0) {
             err = aeron_errmsg(); return false;
+        }
+        if (!sections_channel.empty()) {
+            aeron_async_add_exclusive_publication_t* ap = nullptr;
+            if (aeron_async_add_exclusive_publication(&ap, client, sections_channel.c_str(), 1103) < 0) { err = aeron_errmsg(); return false; }
+            int rc;
+            while ((rc = aeron_async_add_exclusive_publication_poll(&sections, ap)) == 0) sched_yield();
+            if (rc < 0) { err = aeron_errmsg(); return false; }
         }
         aeron_async_add_subscription_t* async = nullptr;
         if (aeron_async_add_subscription(&async, client, request_channel.c_str(), 1101, &SnapServer::on_image, this, nullptr, nullptr) < 0) { err = aeron_errmsg(); return false; }
@@ -151,6 +164,7 @@ struct SnapServer {
         stop.store(true);
         if (th.joinable()) th.join();
         if (resp) aeron_exclusive_publication_close(resp, nullptr, nullptr);
+        if (sections) aeron_exclusive_publication_close(sections, nullptr, nullptr);
         if (sub) aeron_subscription_close(sub, nullptr, nullptr);
         if (client) aeron_close(client);
         if (ctx) aeron_context_close(ctx);
@@ -180,16 +194,19 @@ struct Driver {
 // INTENT: small term buffers. Two publications at Aeron's 16 MB default need
 // about 100 MB of /dev/shm, more than a default Docker container has (64 MB);
 // CI runs in one.
-TEST_CASE("recap over Aeron: Hello and an SPP request out, an SPP reply back on a response channel, assembled by the manager") {
-    const std::string dir = "/dev/shm/subplane-recaptest-" + std::to_string(getpid());
-    const int base = 21000 + static_cast<int>(getpid() % 20000);
+namespace {
+
+// `sections`: the service answers on a section stream (aeron:ipc) instead of the response channel.
+void recap_round_trip(bool sections) {
+    const std::string dir = "/dev/shm/subplane-recaptest-" + std::to_string(getpid()) + (sections ? "s" : "");
+    const int base = 21000 + static_cast<int>(getpid() % 20000) + (sections ? 2 : 0);
     const std::string req_ep = "127.0.0.1:" + std::to_string(base);
     const std::string ctl_ep = "127.0.0.1:" + std::to_string(base + 1);
     std::string err;
     Driver drv;
     REQUIRE_MESSAGE(drv.start(dir, err), err);
     SnapServer srv;
-    REQUIRE_MESSAGE(srv.start(dir, "aeron:udp?endpoint=" + req_ep, ctl_ep, err), err);
+    REQUIRE_MESSAGE(srv.start(dir, "aeron:udp?endpoint=" + req_ep, ctl_ep, err, sections ? "aeron:ipc?term-length=65536" : ""), err);
 
     const std::string yaml = R"(
 name: p0
@@ -208,7 +225,7 @@ recap:
   response: { channel: "aeron:udp?control-mode=response|control=)" + ctl_ep + R"(", stream_id: 1102 }
   timeout_ms: 500
   retry: { base_ms: 20, max_ms: 100 }
-)";
+)" + (sections ? "  sections: { channel: \"aeron:ipc\", stream_id: 1103 }\n" : "");
     SymbolTable symbols(1024);
     PartitionConfig cfg;
     REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(yaml), 0, data_dir(), cfg, err), err);
@@ -252,4 +269,16 @@ recap:
     std::memcpy(&sec, ok.data + 4 + 8, 8);
     CHECK(sec == 31337);
     CHECK(part.recap_counters.recap_replies.load() == 1);
+    CHECK(part.recap_counters.recap_sections.load() == (sections ? 1u : 0u));
+    if (sections) CHECK(ok.request_id < 7000);   // the agent's request id, not the section's (7000 + it)
+}
+
+} // namespace
+
+TEST_CASE("recap over Aeron: Hello and an SPP request out, an SPP reply back on a response channel, assembled by the manager") {
+    recap_round_trip(false);
+}
+
+TEST_CASE("recap over Aeron: the reply comes as a section on the service's section stream, matched by instrument") {
+    recap_round_trip(true);
 }

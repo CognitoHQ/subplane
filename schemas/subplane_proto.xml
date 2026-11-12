@@ -106,16 +106,18 @@
     <field name="LastSeqSeen"     id="4" type="uint64" offset="24" description="last sequence the agent saw on the partition, 0 if none"/>
     <field name="SourceEpochSeen" id="5" type="uint64" offset="32" description="publisher identity the agent sees, 0 if unknown"/>
     <field name="Venue"           id="6" type="uint16" offset="40" description="the venue as on the wire, 0 if unmapped"/>
-    <field name="Flags"           id="7" type="uint16" offset="42" description="0; reserved"/>
+    <field name="Flags"           id="7" type="uint16" offset="42" description="bit 0 Bulk: every instrument of the partition (Instrument is 0); other bits 0"/>
   </sbe:message>
 
-  <sbe:message name="RecapBegin" id="11" blockLength="32"
-               description="Opens a reply: the records that follow are the instrument's state as of AsOf">
-    <field name="CorrelationId" id="1" type="uint64" offset="0"/>
+  <sbe:message name="RecapBegin" id="11" blockLength="48"
+               description="Opens a reply or a section: the records that follow are the instrument's state as of AsOf">
+    <field name="CorrelationId" id="1" type="uint64" offset="0"  description="a reply: the request's; a section: the section id, unique per service epoch"/>
     <field name="AsOf"          id="2" type="uint64" offset="8"  description="S: the live sequence the state is consistent with"/>
     <field name="SourceEpoch"   id="3" type="uint64" offset="16" description="publisher identity the state was built from, 0 if unknown"/>
     <field name="RecordCount"   id="4" type="uint32" offset="24" description="records to follow, 0 if not known up front"/>
     <field name="Flags"         id="5" type="uint16" offset="28" description="0; reserved"/>
+    <field name="Instrument"    id="6" type="uint64" offset="32" description="the instrument as on the wire; required on a section, 0 on a reply matched by CorrelationId"/>
+    <field name="Venue"         id="7" type="uint16" offset="40" description="the venue as on the wire, 0 if unmapped"/>
   </sbe:message>
 
   <sbe:message name="RecapRecord" id="12" blockLength="8"

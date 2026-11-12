@@ -1,12 +1,12 @@
 # The subplane protocol (SPP)
 
-Version 1. Status: specified. Implemented: the codec (`include/subplane/proto/subplane_proto_codec.h`) and the agent's side of recap over Aeron (`Hello`, `RecapRequest`, the reply messages, `Status`; see `docs/context/architecture.md`, "Recap"). Planned: the gateway's `Hello`, `Republish` and `SourceState` (feeds step 4), the TCP binding, and the app extension relay.
+Version 1. Status: specified. Implemented: the codec (`include/subplane/proto/subplane_proto_codec.h`), the agent's side of recap over Aeron (`Hello`, `RecapRequest`, the reply messages and sections, `Status`; see `docs/context/architecture.md`, "Recap"), and subplane-feeds' `spwsgw-snap`, which answers with sections. Planned: the gateway's `Hello`, `Republish` and `SourceState` (feeds step 4), the TCP binding, and the app extension relay.
 
 SPP is how subplane processes talk to each other about control:
 
 | From | To | What |
 |---|---|---|
-| agent | snapshot service (`<service>-snap`) | recap requests and replies |
+| agent | snapshot service (`<service>-snap`) | recap requests; replies, or sections on the service's section stream |
 | snapshot service | gateway | republish requests |
 | gateway | its subscribers (snapshot services) | source state, on the gateway's state stream |
 | app, through the agent | a declared service | extensions (planned) |
@@ -33,8 +33,8 @@ Live market data is never SPP. It stays on the bus, in the bus's own schema. SPP
 |---|---|---|---|
 | 1 | `Hello` | both ways | Who I am (`Role`, `ServiceName`, `PeerEpoch`), the versions I speak (`MinProtoVersion` to `ProtoVersion`), and my extensions (group `Extensions`: id, version) |
 | 2 | `Status` | reply | The outcome of a request with no richer reply. `Code`: Ok, Unsupported, NotReady, BadRequest, Busy, NotFound, Timeout, Denied. Optional `Text` is for logs only. |
-| 10 | `RecapRequest` | agent to snap | The state of `Instrument` (and `Venue`) as of a sequence. Carries `AgentEpoch`, `LastSeqSeen` and `SourceEpochSeen`. |
-| 11 | `RecapBegin` | snap to agent | Opens a reply: the records that follow are the state as of `AsOf` (S), built from publisher `SourceEpoch` |
+| 10 | `RecapRequest` | agent to snap | The state of `Instrument` (and `Venue`) as of a sequence, or with `Flags` bit 0 (Bulk) of every instrument of the stream. Carries `AgentEpoch`, `LastSeqSeen` and `SourceEpochSeen`. |
+| 11 | `RecapBegin` | snap to agent | Opens a reply or a section: the records that follow are the state as of `AsOf` (S), built from publisher `SourceEpoch`. A section names its `Instrument` and `Venue`. |
 | 12 | `RecapRecord` | snap to agent | One record: `Payload` is a stream message in the stream's own encoding, bytes as the publisher sent them |
 | 13 | `RecapEnd` | snap to agent | Closes a reply, with the number of records sent |
 | 14 | `RecapReject` | snap to agent | Replaces a reply. `Reason`: Other, NotReady, UnknownInstrument, Busy. |
@@ -43,6 +43,12 @@ Live market data is never SPP. It stays on the bus, in the bus's own schema. SPP
 | 900 | `Extension` | either way | An envelope for an extension: `ExtensionId`, `ExtType`, `Flags` (bit 0 must-understand, bit 1 reply expected), and an opaque `Body` |
 
 **A recap reply** is `RecapBegin`, then zero or more `RecapRecord`, then `RecapEnd`, all with the request's `CorrelationId`. It is sent contiguously: replies to different requests are not interleaved. A service that cannot answer sends a single `RecapReject` instead. S must be in the same sequence space as the live stream. Records carry the stream's bytes untouched, so recap works for any stream encoding (SBE, FlatBuffers, DBN), and apps receive the publisher's bytes unchanged.
+
+**Sections.** A service may answer instead on a **section stream** of its own, one-to-many, which every agent of the stream subscribes to. A request is then interest: the service publishes each wanted instrument once, as a section, however many agents asked for it, and agents take any section for an instrument they wait on, whoever asked.
+- **A section** is a reply whose `RecapBegin` names its `Instrument` and `Venue`; its `CorrelationId`, on every message of it, is a section id unique per service epoch. A receiver matches it by instrument, never by request. Sections are sent one at a time, so they never interleave; one may span offers.
+- **Answers on the response channel** shrink to what a section cannot say: `RecapReject` (an instrument the service does not have: `UnknownInstrument`) and `Status`. A service may acknowledge a request with `Status{Ok}`; nothing requires it.
+- **Bulk.** `RecapRequest.Flags` bit 0 asks for every instrument of the stream, for a resync after something every subscriber saw at once (a gap, a publisher restart). It is answered by sections only, with no end marker: a receiver ends its wait when the stream goes quiet.
+- **Coalescing and pacing** are the service's: it gathers interest for a window before an instrument's section is due (a longer one for bulk, which arrives from every agent at about the same time), publishes single requests ahead of bulk, and keeps to a byte rate. A known instrument that is not yet whole keeps its interest and is published once it is; the service does not refuse it as `NotReady`.
 
 **Source state** is how a publisher that recovers from its own upstream (a gateway resyncing an exchange book) says so without putting control into its market data. Its subscribers are snapshot services; the agent does not consume it today.
 - **Separate stream.** A publisher sends `SourceState` on a state stream of its own, never on its data stream: a data stream carries one schema, the publisher's.

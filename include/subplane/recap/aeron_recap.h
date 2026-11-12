@@ -1,13 +1,15 @@
 #pragma once
 
-// Aeron recap component: requests go out on a publication, replies come back
-// on an Aeron response channel, so each agent gets only its own replies.
+// Aeron recap component: requests go out on a publication, answers come back
+// on an Aeron response channel, so each agent gets only its own; sections, when
+// the service publishes them, arrive on its shared section stream.
 //
 //   recap:
 //     type: aeron
 //     aeron_dir: ""                  # media driver directory; empty = Aeron default
 //     request:  { channel: "aeron:udp?endpoint=snap-host:40500", stream_id: 1101 }
 //     response: { channel: "aeron:udp?control-mode=response|control=snap-host:40501", stream_id: 1102 }
+//     sections: { channel: "aeron:udp?endpoint=239.1.2.3:40502|interface=10.0.0.0/8", stream_id: 1103 }  # optional
 //     driver_timeout_ms: 10000
 //
 // The response subscription is added first; its registration id goes on the
@@ -38,6 +40,8 @@ struct AeronRecapConfig {
     int32_t     request_stream = 0;
     std::string response_channel;
     int32_t     response_stream = 0;
+    std::string sections_channel;      // empty: the service answers 1:1 only
+    int32_t     sections_stream = 0;
     uint64_t    driver_timeout_ms = 10000;
 
     static bool parse(const YAML::Node& node, AeronRecapConfig& out, std::string& err);
@@ -63,6 +67,7 @@ public:
 
 private:
     static void on_fragment(void* clientd, const uint8_t* buffer, size_t length, aeron_header_stct* header) noexcept;
+    static void on_section_fragment(void* clientd, const uint8_t* buffer, size_t length, aeron_header_stct* header) noexcept;
     static void on_client_error(void* clientd, int errcode, const char* message) noexcept;
 
     AeronRecapConfig cfg_;
@@ -70,8 +75,10 @@ private:
     aeron_context_stct*               ctx_ = nullptr;
     aeron_stct*                       client_ = nullptr;
     aeron_subscription_stct*          sub_ = nullptr;
+    aeron_subscription_stct*          sections_ = nullptr;
     aeron_exclusive_publication_stct* pub_ = nullptr;
     aeron_fragment_assembler_stct*    assembler_ = nullptr;
+    aeron_fragment_assembler_stct*    sections_assembler_ = nullptr;
     RecapFragmentSink*                sink_ = nullptr;   // set during poll()
     std::atomic<uint64_t>             client_errors_{0};  // written on the Aeron conductor thread
 };
