@@ -94,7 +94,11 @@ private:
     const RecapPending* recap_hold(Partition& p, const TickHeader& h, uint64_t stream_seq, const uint8_t* bytes, uint32_t len) noexcept;
     void recap_symbol_stale(Partition& p, uint32_t symbol_id, SymbolStaleReason reason, uint64_t now) noexcept;
     void recap_track(Session& s, const FilterTable* before, const FilterTable* after, uint64_t now) noexcept;
-    void recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now) noexcept;
+    void recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now, bool bulk = false) noexcept;
+    // The topic's other recap partitions in this pipeline (cold; at most 64).
+    template <class F> void recap_siblings(const Partition& p, F f) noexcept;
+    bool recap_homed_elsewhere(const Partition& p, uint32_t symbol_id) const noexcept;
+    bool recap_waits_elsewhere(const Partition& p, uint32_t symbol_id, uint16_t slot) noexcept;
     void recap_drop_waiter(Partition& p, RecapPending& e, Session& s) noexcept;
     void recap_drop_session(Session& s) noexcept;
     void recap_restart(Partition& p, SymbolStaleReason reason, uint64_t now) noexcept;
@@ -129,6 +133,7 @@ private:
     // symbol table at add_partition (INV-002), shared by the topic's partitions:
     // the instrument's count is the topic's, whichever partition carries it.
     std::vector<std::vector<uint64_t>> inst_states_;
+    std::vector<std::vector<uint8_t>>  inst_homes_;
     uint32_t              max_symbols_ = 0;
     std::vector<RecapCommand> recap_out_;
     std::vector<RecapRelease> release_out_;

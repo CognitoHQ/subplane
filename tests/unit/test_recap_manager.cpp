@@ -124,6 +124,16 @@ std::vector<uint8_t> s_reply(uint64_t rid, uint64_t as_of, std::initializer_list
     return out;
 }
 
+// A section: a reply that names its instrument, as published on the shared stream.
+std::vector<uint8_t> s_section(uint64_t section_id, uint64_t as_of, uint64_t instrument, std::initializer_list<std::vector<uint8_t>> payloads) {
+    std::vector<uint8_t> out = spp<sp_proto::RecapBeginEncoder>([&](auto& e) { e.CorrelationId(section_id).AsOf(as_of).Instrument(instrument); });
+    uint32_t n = 0;
+    for (const auto& p : payloads) { auto r = s_record(section_id, p); out.insert(out.end(), r.begin(), r.end()); ++n; }
+    auto e = s_end(section_id, n);
+    out.insert(out.end(), e.begin(), e.end());
+    return out;
+}
+
 // What the manager sent, decoded: every SPP message of every frame.
 struct Sent {
     uint16_t template_id = 0;
@@ -150,6 +160,7 @@ std::vector<Sent> sent_messages(const FakeRecap& f) {
 struct Req {
     uint64_t id, agent_epoch, instrument, last_seq;
     uint16_t venue;
+    uint16_t flags;
 };
 std::vector<Req> requests(const FakeRecap& f) {
     std::vector<Req> out;
@@ -157,7 +168,7 @@ std::vector<Req> requests(const FakeRecap& f) {
         if (m.template_id != sp_proto::RecapRequestDecoder::kTemplateId) continue;
         sp_proto::RecapRequestDecoder d;
         REQUIRE(d.wrap(m.msg.data(), m.msg.size()));
-        out.push_back({d.CorrelationId(), d.AgentEpoch(), d.Instrument(), d.LastSeqSeen(), d.Venue()});
+        out.push_back({d.CorrelationId(), d.AgentEpoch(), d.Instrument(), d.LastSeqSeen(), d.Venue(), d.Flags()});
     }
     return out;
 }
@@ -184,6 +195,10 @@ struct Rig {
     }
     void request(uint32_t sym, uint32_t generation = 0) { REQUIRE(ch.requests.push({RecapCommand::Op::REQUEST, 0, sym, generation})); }
     void cancel(uint32_t sym) { REQUIRE(ch.requests.push({RecapCommand::Op::CANCEL, 0, sym})); }
+    void request_bulk(uint32_t sym, uint32_t generation = 0) {
+        REQUIRE(ch.requests.push({.op = RecapCommand::Op::REQUEST, .symbol_id = sym, .generation = generation, .bulk = true}));
+    }
+    void request_floor(uint32_t sym, uint64_t floor) { REQUIRE(ch.requests.push({.op = RecapCommand::Op::REQUEST, .symbol_id = sym, .floor = floor})); }
     void step(uint64_t advance_ms = 0) { now += advance_ms * kMs; mgr.run_once(now); }
     std::vector<RecapReply> replies() {
         std::vector<RecapReply> out;
@@ -555,9 +570,11 @@ TEST_CASE("recap manager: SPP framing and unknown messages") {
     // A newer service appends a field to RecapBegin: read what is known.
     const uint64_t id = requests(*r.recap)[0].id;
     std::vector<uint8_t> nb;
-    put(nb, 8 + 40, 4);
-    put(nb, 40, 2); put(nb, 11, 2); put(nb, sp_proto::kSchemaId, 2); put(nb, 2, 2);
-    put(nb, id, 8); put(nb, 321, 8); put(nb, 0, 8); put(nb, 0, 4); put(nb, 0, 4); put(nb, 0xEEEE, 8);
+    put(nb, 8 + 56, 4);
+    put(nb, 56, 2); put(nb, 11, 2); put(nb, sp_proto::kSchemaId, 2); put(nb, 2, 2);
+    put(nb, id, 8); put(nb, 321, 8); put(nb, 0, 8); put(nb, 0, 4); put(nb, 0, 4);
+    put(nb, 0, 8); put(nb, 0, 8);   // Instrument 0 (a 1:1 reply), Venue, padding
+    put(nb, 0xEEEE, 8);             // the newer field
     r.recap->push(cat({nb, s_end(id, 0)}));
     r.step();
     auto rs = r.replies();
@@ -762,4 +779,177 @@ recap: { type: aeron }
     CHECK_FALSE(build(partition_yaml(), err));
     CHECK_MESSAGE(err.find("recap.request must be") != std::string::npos, err);
 #endif
+}
+
+TEST_CASE("recap manager: a section is matched by its instrument, whoever asked for it") {
+    std::string y = partition_yaml();
+    y.replace(y.find("coalesce_ms: 0"), 14, "coalesce_ms: 50");
+    Rig r(y);
+    const uint32_t a = r.symbols.intern_u64(11), b = r.symbols.intern_u64(12), c = r.symbols.intern_u64(13);
+    r.request(a);
+    r.step();
+    r.step(50);
+    const auto rq = requests(*r.recap);
+    REQUIRE(rq.size() == 1);
+    // b is still gathering; c nobody here waits on.
+    r.request(b);
+    r.step();
+    const auto t = trade_msg(11, 1);
+    r.recap->push_section(s_section(900, 40, 11, {t}));
+    r.recap->push_section(s_section(901, 41, 12, {trade_msg(12, 1)}));
+    r.recap->push_section(s_section(902, 42, 13, {trade_msg(13, 1)}));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 2);
+    CHECK(rs[0].symbol_id == a);
+    CHECK(rs[0].request_id == rq[0].id);   // ours: the request's id, not the section's
+    CHECK(rs[0].as_of == 40);
+    CHECK(records(rs[0])[0] == t);
+    CHECK(rs[1].symbol_id == b);
+    CHECK(rs[1].request_id == 901);        // never asked: the section id
+    CHECK(r.c().recap_sections == 2);
+    CHECK(r.c().recap_sections_skipped == 1);
+    CHECK(r.c().recap_stray == 0);
+    CHECK(r.c().inflight == 0);
+    CHECK(r.c().queued == 0);
+    r.step(100);
+    CHECK(requests(*r.recap).size() == 1); // b was served before it went out
+    (void)c;
+}
+
+TEST_CASE("recap manager: a section older than the floor is skipped; the request still waits") {
+    Rig r;
+    const uint32_t a = r.symbols.intern_u64(21);
+    r.request_floor(a, 100);
+    r.step();
+    REQUIRE(requests(*r.recap).size() == 1);
+    r.recap->push_section(s_section(1, 99, 21, {trade_msg(21, 1)}));
+    r.step();
+    CHECK(r.replies().empty());
+    CHECK(r.c().recap_sections_skipped == 1);
+    r.recap->push_section(s_section(2, 100, 21, {trade_msg(21, 1)}));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].as_of == 100);
+}
+
+TEST_CASE("recap manager: a 1:1 reply and a section assemble at once, each on its own source") {
+    Rig r;
+    const uint32_t a = r.symbols.intern_u64(31), b = r.symbols.intern_u64(32);
+    r.request(a);
+    r.request(b);
+    r.step();
+    const auto rq = requests(*r.recap);
+    REQUIRE(rq.size() == 2);
+    const uint64_t ida = rq[0].instrument == 31 ? rq[0].id : rq[1].id;
+    const auto ta = trade_msg(31, 1), tb = trade_msg(32, 1);
+    // Halves of each, interleaved across the two sources.
+    r.recap->push(cat({s_begin(ida, 10), s_record(ida, ta)}));
+    std::vector<uint8_t> sec = s_section(77, 20, 32, {tb});
+    r.recap->push_section(std::vector<uint8_t>(sec.begin(), sec.end()));
+    r.recap->push(s_end(ida, 1));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 2);
+    CHECK(rs[0].symbol_id == b);
+    CHECK(records(rs[0])[0] == tb);
+    CHECK(rs[1].symbol_id == a);
+    CHECK(records(rs[1])[0] == ta);
+    CHECK(r.c().recap_stray == 0);
+}
+
+TEST_CASE("recap manager: a bulk resync is one request for the partition, timed out on silence") {
+    Rig r;   // timeout_ms 100
+    const uint32_t a = r.symbols.intern_u64(41), b = r.symbols.intern_u64(42), c = r.symbols.intern_u64(43);
+    r.request_bulk(a);
+    r.request_bulk(b);
+    r.request_bulk(c);
+    r.step();
+    auto rq = requests(*r.recap);
+    REQUIRE(rq.size() == 1);
+    CHECK(rq[0].flags == 1);
+    CHECK(rq[0].instrument == 0);
+    CHECK(r.c().recap_bulk_requests == 1);
+    CHECK(r.c().inflight == 3);
+    // A single request for one on the bulk joins it; a new bulk symbol goes on its own.
+    const uint32_t d = r.symbols.intern_u64(44);
+    r.request(a);
+    r.request_bulk(d);
+    r.step();
+    CHECK(r.c().recap_coalesced == 1);
+    rq = requests(*r.recap);
+    REQUIRE(rq.size() == 2);
+    CHECK(rq[1].instrument == 44);
+    CHECK(rq[1].flags == 0);
+    r.cancel(d);
+    // Sections keep the bulk alive past timeout_ms while they arrive, for any instrument.
+    r.step(80);
+    r.recap->push_section(s_section(1, 5, 41, {trade_msg(41, 1)}));
+    r.step();
+    r.step(80);
+    r.recap->push_section(s_section(2, 5, 99, {trade_msg(99, 1)}));   // not ours: still progress
+    r.step();
+    r.step(80);
+    r.recap->push_section(s_section(3, 5, 42, {trade_msg(42, 1)}));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 2);
+    CHECK(rs[0].symbol_id == a);
+    CHECK(rs[1].symbol_id == b);
+    // Then silence: c was not in it. It fails once and is asked for on its own.
+    r.step(99);
+    CHECK(r.replies().empty());
+    r.step(1);
+    rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].symbol_id == c);
+    CHECK(rs[0].status == RecapStatus::TIMEOUT);
+    r.step(50);                // past the backoff (base 10, max 40)
+    rq = requests(*r.recap);
+    REQUIRE(rq.size() == 3);
+    CHECK(rq[2].flags == 0);
+    CHECK(rq[2].instrument == 43);
+    CHECK(r.c().recap_bulk_requests == 1);
+}
+
+TEST_CASE("recap manager: a refused bulk fails each of its symbols; a renew abandons it") {
+    Rig r;
+    const uint32_t a = r.symbols.intern_u64(51), b = r.symbols.intern_u64(52);
+    r.request_bulk(a);
+    r.request_bulk(b);
+    r.step();
+    auto rq = requests(*r.recap);
+    REQUIRE(rq.size() == 1);
+    r.recap->push(s_status(rq[0].id, sp_proto::StatusCode::Ok));   // acknowledged: not stray
+    r.step();
+    CHECK(r.c().recap_stray == 0);
+    r.recap->push(s_reject(rq[0].id, sp_proto::RejectReason::Busy));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 2);
+    for (const auto& x : rs) CHECK(x.status == RecapStatus::REJECTED);
+    CHECK(r.c().inflight == 0);
+
+    // A new generation renews: the bulk out is abandoned and a new one goes at once.
+    r.request_bulk(a, 1);
+    r.request_bulk(b, 1);
+    r.step();
+    rq = requests(*r.recap);
+    REQUIRE(rq.size() == 2);
+    CHECK(rq[1].flags == 1);
+    r.request_bulk(a, 2);
+    r.request_bulk(b, 2);
+    r.step();
+    rq = requests(*r.recap);
+    REQUIRE(rq.size() == 3);
+    CHECK(rq[2].flags == 1);
+    CHECK(r.c().recap_renewed == 4);
+    CHECK(r.c().inflight == 2);
+    r.recap->push_section(s_section(9, 5, 51, {trade_msg(51, 1)}));
+    r.step();
+    rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].generation == 2);
+    CHECK(rs[0].request_id == rq[2].id);
 }

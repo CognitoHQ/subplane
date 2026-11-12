@@ -6,6 +6,7 @@
 #include "subplane/recap/recap_transport.h"
 
 #include <deque>
+#include <utility>
 #include <vector>
 
 namespace subplane::test {
@@ -21,7 +22,7 @@ public:
     int poll(RecapFragmentSink& sink, int limit) noexcept override {
         int n = 0;
         while (n < limit && !fragments_.empty()) {
-            sink.on_fragment(fragments_.front().data(), static_cast<uint32_t>(fragments_.front().size()));
+            sink.on_fragment(fragments_.front().first.data(), static_cast<uint32_t>(fragments_.front().first.size()), fragments_.front().second);
             fragments_.pop_front();
             ++n;
         }
@@ -31,7 +32,8 @@ public:
     std::string describe() const override { return "fake recap"; }
     bool connected() const noexcept override { return open_ && link_up; }
 
-    void push(std::vector<uint8_t> fragment) { fragments_.push_back(std::move(fragment)); }
+    void push(std::vector<uint8_t> fragment, RecapSource src = RecapSource::RESPONSE) { fragments_.emplace_back(std::move(fragment), src); }
+    void push_section(std::vector<uint8_t> fragment) { push(std::move(fragment), RecapSource::SECTIONS); }
 
     std::vector<std::vector<uint8_t>> sent;   // one entry per frame
     RecapSendStatus send_status = RecapSendStatus::OK;
@@ -39,7 +41,7 @@ public:
 
 private:
     bool open_ = false;
-    std::deque<std::vector<uint8_t>> fragments_;
+    std::deque<std::pair<std::vector<uint8_t>, RecapSource>> fragments_;
 };
 
 } // namespace subplane::test

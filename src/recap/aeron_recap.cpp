@@ -24,6 +24,7 @@ bool AeronRecapConfig::parse(const YAML::Node& node, AeronRecapConfig& out, std:
         };
         if (!endpoint("request", out.request_channel, out.request_stream)) return false;
         if (!endpoint("response", out.response_channel, out.response_stream)) return false;
+        if (node["sections"] && !endpoint("sections", out.sections_channel, out.sections_stream)) return false;
     } catch (const YAML::Exception& e) {
         err = std::string("recap config: ") + e.what();
         return false;
@@ -67,6 +68,14 @@ bool AeronRecap::open(std::string& err) {
     if (aeron_fragment_assembler_create(&assembler_, &AeronRecap::on_fragment, this) < 0) {
         err = std::string("aeron fragment assembler: ") + aeron_errmsg(); close(); return false;
     }
+    if (!cfg_.sections_channel.empty()) {
+        sections_ = aeron_util::add_subscription(client_, cfg_.sections_channel, cfg_.sections_stream,
+                                                 nullptr, nullptr, nullptr, nullptr, cfg_.driver_timeout_ms, err);
+        if (!sections_) { close(); return false; }
+        if (aeron_fragment_assembler_create(&sections_assembler_, &AeronRecap::on_section_fragment, this) < 0) {
+            err = std::string("aeron fragment assembler: ") + aeron_errmsg(); close(); return false;
+        }
+    }
     return true;
 }
 
@@ -84,7 +93,12 @@ RecapSendStatus AeronRecap::send(const uint8_t* frame, uint32_t len) noexcept {
 
 void AeronRecap::on_fragment(void* clientd, const uint8_t* buffer, size_t length, aeron_header_stct*) noexcept {
     auto* self = static_cast<AeronRecap*>(clientd);
-    if (self->sink_) self->sink_->on_fragment(buffer, static_cast<uint32_t>(length));
+    if (self->sink_) self->sink_->on_fragment(buffer, static_cast<uint32_t>(length), RecapSource::RESPONSE);
+}
+
+void AeronRecap::on_section_fragment(void* clientd, const uint8_t* buffer, size_t length, aeron_header_stct*) noexcept {
+    auto* self = static_cast<AeronRecap*>(clientd);
+    if (self->sink_) self->sink_->on_fragment(buffer, static_cast<uint32_t>(length), RecapSource::SECTIONS);
 }
 
 void AeronRecap::on_client_error(void* clientd, int, const char*) noexcept {
@@ -95,8 +109,9 @@ int AeronRecap::poll(RecapFragmentSink& sink, int limit) noexcept {
     if (!sub_) return 0;
     sink_ = &sink;
     const int n = aeron_subscription_poll(sub_, aeron_fragment_assembler_handler, assembler_, static_cast<size_t>(limit));
+    const int m = sections_ ? aeron_subscription_poll(sections_, aeron_fragment_assembler_handler, sections_assembler_, static_cast<size_t>(limit)) : 0;
     sink_ = nullptr;
-    return n < 0 ? 0 : n;
+    return (n < 0 ? 0 : n) + (m < 0 ? 0 : m);
 }
 
 bool AeronRecap::connected() const noexcept {
@@ -105,6 +120,8 @@ bool AeronRecap::connected() const noexcept {
 
 void AeronRecap::close() noexcept {
     if (assembler_) { aeron_fragment_assembler_delete(assembler_); assembler_ = nullptr; }
+    if (sections_assembler_) { aeron_fragment_assembler_delete(sections_assembler_); sections_assembler_ = nullptr; }
+    if (sections_) { aeron_subscription_close(sections_, nullptr, nullptr); sections_ = nullptr; }
     if (pub_) { aeron_exclusive_publication_close(pub_, nullptr, nullptr); pub_ = nullptr; }
     if (sub_) { aeron_subscription_close(sub_, nullptr, nullptr); sub_ = nullptr; }
     if (client_) { aeron_close(client_); client_ = nullptr; }
@@ -118,6 +135,7 @@ std::string AeronRecap::endpoint_key(std::string_view host) const {
 std::string AeronRecap::describe() const {
     std::string s = "aeron recap request " + cfg_.request_channel + " stream " + std::to_string(cfg_.request_stream) +
                     ", response stream " + std::to_string(cfg_.response_stream);
+    if (!cfg_.sections_channel.empty()) s += ", sections " + cfg_.sections_channel + " stream " + std::to_string(cfg_.sections_stream);
     if (pub_) s += connected() ? " connected" : " not connected";
     return s;
 }

@@ -220,6 +220,13 @@ public:
     // decoder maps `instrument_sequence`, nullptr otherwise.
     uint64_t*         inst_seq = nullptr;
     uint32_t          inst_seq_size = 0;
+    // The partition each symbol of the topic was last delivered on, as
+    // Partition::id() + 1 (0 = not seen), shared by the topic's recap
+    // partitions in one pipeline; nullptr unless the topic has two or more.
+    // Recap asks only that partition's snapshot service, and a resync of one
+    // partition makes stale only its own symbols.
+    uint8_t*          inst_home = nullptr;
+    uint32_t          inst_home_size = 0;
 
     // Hot. Returns false if full or already attached.
     bool attach(Session* s) noexcept;

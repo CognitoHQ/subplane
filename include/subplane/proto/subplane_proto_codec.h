@@ -438,7 +438,7 @@ private:
 class RecapBeginEncoder {
 public:
     static constexpr uint16_t kTemplateId = 11;
-    static constexpr uint16_t kBlockLength = 32;
+    static constexpr uint16_t kBlockLength = 48;
 
     // Writes the header and a zeroed root block. Set root fields in any order,
     // then groups and data in schema order, then call finish().
@@ -457,6 +457,8 @@ public:
     RecapBeginEncoder& SourceEpoch(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 16, static_cast<uint64_t>(v)); return *this; }
     RecapBeginEncoder& RecordCount(uint32_t v) noexcept { if (ok_) detail::store<uint32_t>(buf_ + kHeaderSize + 24, static_cast<uint32_t>(v)); return *this; }
     RecapBeginEncoder& Flags(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 28, static_cast<uint16_t>(v)); return *this; }
+    RecapBeginEncoder& Instrument(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 32, static_cast<uint64_t>(v)); return *this; }
+    RecapBeginEncoder& Venue(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 40, static_cast<uint16_t>(v)); return *this; }
 
     // Writes every group and data element not yet written, empty. Returns the
     // message length, or 0 when the buffer was too small or a call was out of order.
@@ -510,6 +512,8 @@ public:
     uint64_t SourceEpoch() const noexcept { return 24u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 16) : uint64_t{}; }
     uint32_t RecordCount() const noexcept { return 28u <= block_ ? detail::load<uint32_t>(p_ + kHeaderSize + 24) : uint32_t{}; }
     uint16_t Flags() const noexcept { return 30u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 28) : uint16_t{}; }
+    uint64_t Instrument() const noexcept { return 40u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 32) : uint64_t{}; }
+    uint16_t Venue() const noexcept { return 42u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 40) : uint16_t{}; }
 
 private:
     const uint8_t* p_ = nullptr;

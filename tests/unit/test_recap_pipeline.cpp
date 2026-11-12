@@ -7,6 +7,7 @@
 #include "subplane/pipeline/pipeline.h"
 #include "subplane/pipeline/recap_state.h"
 #include "subplane/pipeline/session_manager.h"
+#include "subplane/proto/subplane_proto_codec.h"
 #include "subplane/shm/control_events.h"
 
 #include <cstring>
@@ -615,6 +616,7 @@ TEST_CASE("recap triggers: a gap makes every symbol of a recap session pending, 
     auto reqs = r.requests();
     REQUIRE(reqs.size() == 2); // 1002 renewed, 1001 asked for
     for (const auto& c : reqs) CHECK(c.generation == gen0 + 1);
+    for (const auto& c : reqs) CHECK(c.bulk);   // a partition-wide resync: one bulk request upstream
     CHECK(r.part.recap->find(r.sym(1001))->floor == 5);
     CHECK(r.part.recap->find(r.sym(1002))->floor == 5);
 
@@ -834,4 +836,193 @@ TEST_CASE("recap with instrument sequences: snapshot records carry the instrumen
     CHECK(gap);
     const uint32_t a = r.sym(1001), b = r.sym(2002);
     CHECK(seen == std::vector<std::pair<uint32_t, uint64_t>>{{a, 1}, {a, 2}, {a, 3}, {b, 1}, {a, 5}, {b, 2}, {a, 6}});
+}
+
+namespace {
+
+// Two recap partitions of one topic (/1 and /2), in one pipeline, each with its
+// own (fake) snapshot service. The test plays both managers.
+struct TwoRig {
+    SymbolTable symbols{1024};
+    Lvc lvc;
+    Partition part[2];
+    FakeTransport* fake[2] = {};
+    Pipeline pipe;
+    std::deque<std::vector<uint8_t>> slabs;
+    uint64_t seq[2] = {};
+    uint32_t next_id = 1;
+
+    TwoRig() : pipe("g0", 4242, symbols, lvc) {
+        std::string err;
+        REQUIRE(lvc.init(1024, {static_cast<uint8_t>(MsgType::TRADE)}, 256, err));
+        for (uint16_t i = 0; i < 2; ++i) {
+            PartitionConfig cfg;
+            REQUIRE_MESSAGE(PartitionConfig::parse(YAML::Load(partition_yaml()), i, data_dir(), cfg, err), err);
+            cfg.set_topic("t", 1, static_cast<uint16_t>(i + 1));
+            auto ft = std::make_unique<FakeTransport>(64);
+            fake[i] = ft.get();
+            REQUIRE_MESSAGE(part[i].build(cfg, err, std::move(ft), std::make_unique<FakeRecap>()), err);
+            REQUIRE(part[i].open(err));
+            pipe.add_partition(&part[i]);
+        }
+    }
+    uint32_t sym(uint64_t sec) { return symbols.intern_u64(sec); }
+
+    std::unique_ptr<App> app(std::initializer_list<uint64_t> secs) {
+        auto a = std::make_unique<App>();
+        a->s = std::make_unique<Session>();
+        Session& s = *a->s;
+        s.id = next_id++;
+        s.name = "two" + std::to_string(s.id);
+        s.partition_mask = 3;
+        s.recap = true;
+        FilterSpec fs;
+        for (uint64_t sec : secs) fs.symbol_ids.push_back(sym(sec));
+        fs.msg_types = {1, 2};
+        fs.topic_ids = {1};
+        fs.agent_control = true;
+        std::string err;
+        s.filter_owned = build_filter(fs, 1024, 1, err);
+        REQUIRE_MESSAGE(s.filter_owned, err);
+        s.filter.store(s.filter_owned.get());
+        a->path = "/dev/shm/subplane.recaptest." + std::to_string(getpid()) + "." + s.name + ".ring";
+        RingConfig rc;
+        rc.capacity_bytes = 1u << 20;
+        rc.max_payload = 4096;
+        rc.session_name = s.name;
+        RingWriter::unlink_ring(a->path);
+        REQUIRE_MESSAGE(s.ring.open(rc, a->path, 4242, err), err);
+        REQUIRE(a->rd.open(a->path));
+        PipelineCommand c;
+        c.type = PipelineCommand::Type::ADD_SESSION;
+        c.session = &s;
+        REQUIRE(pipe.post(c));
+        pipe.run_once();
+        return a;
+    }
+    void live(int pi, uint64_t sec) {
+        fake[pi]->push(trade(sec, ++seq[pi]), now_ns());
+        pipe.run_once();
+    }
+    std::vector<RecapCommand> requests() {
+        std::vector<RecapCommand> out;
+        RecapCommand c;
+        while (pipe.recap_channel().requests.pop(c)) out.push_back(c);
+        return out;
+    }
+    void reply(int pi, uint64_t sec, uint64_t as_of, const std::vector<std::vector<uint8_t>>& records, uint16_t slab) {
+        std::vector<uint8_t> buf;
+        for (const auto& m : records) { put(buf, m.size(), 4); buf.insert(buf.end(), m.begin(), m.end()); }
+        slabs.push_back(std::move(buf));
+        RecapReply r;
+        r.partition = static_cast<uint16_t>(pi);
+        r.slab = slab;
+        r.symbol_id = sym(sec);
+        r.request_id = 900 + slab;
+        r.attempt = 1;
+        r.generation = part[pi].recap->generation();
+        r.status = RecapStatus::OK;
+        r.as_of = as_of;
+        r.data = slabs.back().data();
+        r.bytes = static_cast<uint32_t>(slabs.back().size());
+        r.messages = static_cast<uint32_t>(records.size());
+        REQUIRE(pipe.recap_channel().replies.push(r));
+        pipe.run_once();
+    }
+    void unknown(int pi, uint64_t sec) {
+        RecapReply r;
+        r.partition = static_cast<uint16_t>(pi);
+        r.symbol_id = sym(sec);
+        r.request_id = 77;
+        r.attempt = 1;
+        r.generation = part[pi].recap->generation();
+        r.status = RecapStatus::REJECTED;
+        r.reason = static_cast<uint64_t>(sp_proto::RejectReason::UnknownInstrument);
+        REQUIRE(pipe.recap_channel().replies.push(r));
+        pipe.run_once();
+    }
+};
+
+size_t count(const std::vector<Rec>& v, ControlCode c) {
+    size_t n = 0;
+    for (const auto& r : v) n += is(r, c) ? 1u : 0u;
+    return n;
+}
+
+} // namespace
+
+TEST_CASE("recap across partitions: an unseen symbol is asked of each; the one that has it serves it, once") {
+    TwoRig r;
+    auto app = r.app({1001, 1002});
+    auto reqs = r.requests();
+    REQUIRE(reqs.size() == 4);   // both symbols of both partitions: neither has been seen
+    auto got = app->drain();
+    CHECK(count(got, ControlCode::RECAP_PENDING) == 2);   // one per symbol, not per partition
+
+    // /2 does not have 1001: quiet, /1 still tries. /1 serves it and /2 stops asking.
+    r.unknown(1, 1001);
+    CHECK(app->drain().empty());
+    CHECK(r.part[1].recap_counters.recap_elsewhere.load() == 1);
+    r.reply(0, 1001, 0, {trade(1001, 0)}, 1);
+    got = app->drain();
+    CHECK(count(got, ControlCode::RECAP_COMPLETE) == 1);
+    CHECK(r.part[1].recap->find(r.sym(1001)) == nullptr);
+    reqs = r.requests();
+    REQUIRE(reqs.size() == 1);
+    CHECK(reqs[0].op == RecapCommand::Op::CANCEL);
+    CHECK(reqs[0].partition == 1);
+
+    // /1 merges 1002 first: /2's request is cancelled before it answers.
+    r.reply(1, 1002, 0, {trade(1002, 0)}, 2);
+    got = app->drain();
+    CHECK(count(got, ControlCode::RECAP_COMPLETE) == 1);
+    CHECK(count(got, ControlCode::RECAP_FAILED) == 0);
+    CHECK(r.part[0].recap->pending() == 0);
+    CHECK(r.part[1].recap->pending() == 0);
+}
+
+TEST_CASE("recap across partitions: unknown on every partition is a failure") {
+    TwoRig r;
+    auto app = r.app({1001});
+    r.requests();
+    app->drain();
+    r.unknown(0, 1001);
+    CHECK(app->drain().empty());
+    r.unknown(1, 1001);
+    auto got = app->drain();
+    REQUIRE(count(got, ControlCode::RECAP_FAILED) == 1);
+    CHECK(r.part[0].recap->find(r.sym(1001)) != nullptr);   // still waiting: the managers retry
+}
+
+TEST_CASE("recap across partitions: a seen symbol is asked only of its partition; a gap there stales only its own") {
+    TwoRig r;
+    r.live(0, 1001);
+    r.live(1, 2002);
+    auto app = r.app({1001, 2002});
+    auto reqs = r.requests();
+    REQUIRE(reqs.size() == 2);
+    for (const auto& c : reqs) CHECK(c.partition == (c.symbol_id == r.sym(1001) ? 0 : 1));
+    r.reply(0, 1001, 1, {trade(1001, 0)}, 1);
+    r.reply(1, 2002, 1, {trade(2002, 0)}, 2);
+    app->drain();
+
+    // /2 loses 2..4: 2002 is stale and asked for in one bulk on /2; 1001 is not touched.
+    r.seq[1] = 4;
+    r.live(1, 2002);
+    auto got = app->drain();
+    REQUIRE(count(got, ControlCode::SYMBOL_STALE) == 1);
+    SymbolStaleEvent se{};
+    for (const auto& x : got) if (is(x, ControlCode::SYMBOL_STALE)) std::memcpy(&se, x.payload.data(), sizeof se);
+    CHECK(se.symbol_id == r.sym(2002));
+    reqs = r.requests();
+    REQUIRE(reqs.size() == 1);
+    CHECK(reqs[0].partition == 1);
+    CHECK(reqs[0].symbol_id == r.sym(2002));
+    CHECK(reqs[0].bulk);
+    CHECK(r.part[0].recap->pending() == 0);
+    // 1001 kept flowing live the whole time.
+    r.live(0, 1001);
+    got = app->drain();
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].hdr.symbol_id == r.sym(1001));
 }

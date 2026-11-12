@@ -7,6 +7,7 @@
 // manager's cold thread only, so virtual calls are fine here. The component
 // moves bytes; it never interprets them.
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -18,6 +19,13 @@ namespace subplane {
 
 enum class RecapSendStatus : uint8_t { OK, BACK_PRESSURED, NOT_CONNECTED, FAILED };
 
+// Where a fragment came from. RESPONSE is this agent's own channel (Hello,
+// Status, rejects, and replies from a service that answers 1:1); SECTIONS is
+// the service's shared section stream, which every agent on the partition
+// reads (docs/protocol/subplane-protocol.md, "Sections").
+enum class RecapSource : uint8_t { RESPONSE, SECTIONS };
+inline constexpr size_t kRecapSources = 2;
+
 // Receives response fragments during poll(). A fragment is one unit as the
 // service sent it (for Aeron, one reassembled offer); the manager splits it
 // into messages (SPP length prefixes, or the partition's framing in
@@ -25,7 +33,7 @@ enum class RecapSendStatus : uint8_t { OK, BACK_PRESSURED, NOT_CONNECTED, FAILED
 class RecapFragmentSink {
 public:
     virtual ~RecapFragmentSink() = default;
-    virtual void on_fragment(const uint8_t* data, uint32_t len) noexcept = 0;
+    virtual void on_fragment(const uint8_t* data, uint32_t len, RecapSource src) noexcept = 0;
 };
 
 class RecapTransport {
@@ -36,7 +44,7 @@ public:
     virtual bool open(std::string& err) = 0;
     // One frame: for Aeron, one offer.
     virtual RecapSendStatus send(const uint8_t* frame, uint32_t len) noexcept = 0;
-    // Delivers up to `limit` response fragments to the sink; returns how many.
+    // Delivers up to `limit` fragments from each source to the sink; returns how many.
     virtual int poll(RecapFragmentSink& sink, int limit) noexcept = 0;
     virtual void close() noexcept = 0;
     virtual std::string describe() const = 0;

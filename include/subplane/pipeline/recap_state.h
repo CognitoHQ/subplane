@@ -38,6 +38,7 @@ struct RecapPending {
     bool         in_use = false;
     bool         overflowed = false; // last hold failed; RECAP_FAILED{4} already sent
     bool         parked = false;     // an OK reply with S ahead of live waits in `reply`
+    bool         elsewhere = false;  // this partition's service does not have it (UnknownInstrument); another may
     uint32_t     symbol_id = 0;
     uint64_t     floor = 0;
     RecapWaiters waiters;

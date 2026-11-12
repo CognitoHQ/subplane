@@ -1,6 +1,7 @@
 #include "subplane/pipeline/pipeline.h"
 
 #include "subplane/core/clock.h"
+#include "subplane/proto/subplane_proto_codec.h"
 #include "subplane/shm/control_events.h"
 
 #include <algorithm>
@@ -37,6 +38,22 @@ void Pipeline::add_partition(Partition* p) {
     // agent rebuilds its pipelines at start) points into the old one's memory.
     p->inst_seq = nullptr;
     p->inst_seq_size = 0;
+    p->inst_home = nullptr;
+    p->inst_home_size = 0;
+    if (p->has_recap()) {
+        // INTENT: only a topic with two or more recap partitions needs to know
+        // where each symbol lives; the second one allocates for both.
+        for (Partition* q : partitions_) {
+            if (q == p || q->topic_id() != p->topic_id() || !q->has_recap()) continue;
+            if (q->inst_home == nullptr) {
+                inst_homes_.emplace_back(static_cast<size_t>(max_symbols_) + 1, 0);
+                q->inst_home = inst_homes_.back().data();
+                q->inst_home_size = max_symbols_ + 1;
+            }
+            p->inst_home = q->inst_home;
+            p->inst_home_size = q->inst_home_size;
+        }
+    }
     if (p->maps_instrument_sequence()) {
         for (Partition* q : partitions_) {
             if (q != p && q->topic_id() == p->topic_id() && q->inst_seq != nullptr) {
@@ -279,6 +296,8 @@ void Pipeline::process_message(Partition& p, const uint8_t* msg, uint32_t len, u
                 last = is;
             }
         }
+        if (p.inst_home != nullptr && h.symbol_id != 0 && h.symbol_id < p.inst_home_size) [[unlikely]]
+            p.inst_home[h.symbol_id] = static_cast<uint8_t>(p.id() + 1);
         if (p.lvc_enabled) lvc_.update(h, msg, len);
         publish_data(p, h, stream_seq, msg, len);
     } else {
@@ -670,7 +689,8 @@ void Pipeline::recap_track(Session& s, const FilterTable* before, const FilterTa
             const uint64_t b = w < nb ? before->symbol_bits[w] : 0;
             const uint64_t a = w < na ? after->symbol_bits[w] : 0;
             for (uint64_t added = a & ~b; added != 0; added &= added - 1) {
-                recap_add_waiter(p, s, static_cast<uint32_t>(w * 64 + static_cast<size_t>(__builtin_ctzll(added))), now);
+                const uint32_t sym = static_cast<uint32_t>(w * 64 + static_cast<size_t>(__builtin_ctzll(added)));
+                if (!recap_homed_elsewhere(p, sym)) recap_add_waiter(p, s, sym, now); // unseen: every partition is asked
             }
             for (uint64_t gone = b & ~a; gone != 0; gone &= gone - 1) {
                 const uint32_t sym = static_cast<uint32_t>(w * 64 + static_cast<size_t>(__builtin_ctzll(gone)));
@@ -680,7 +700,27 @@ void Pipeline::recap_track(Session& s, const FilterTable* before, const FilterTa
     }
 }
 
-void Pipeline::recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now) noexcept {
+template <class F> void Pipeline::recap_siblings(const Partition& p, F f) noexcept {
+    if (p.inst_home == nullptr) return;
+    for (Partition* q : partitions_) if (q != &p && q->recap != nullptr && q->topic_id() == p.topic_id()) f(*q);
+}
+
+bool Pipeline::recap_homed_elsewhere(const Partition& p, uint32_t symbol_id) const noexcept {
+    if (p.inst_home == nullptr || symbol_id >= p.inst_home_size) return false;
+    const uint8_t home = p.inst_home[symbol_id];
+    return home != 0 && home != static_cast<uint8_t>(p.id() + 1);
+}
+
+bool Pipeline::recap_waits_elsewhere(const Partition& p, uint32_t symbol_id, uint16_t slot) noexcept {
+    bool waits = false;
+    recap_siblings(p, [&](Partition& q) {
+        const RecapPending* e = q.recap->find(symbol_id);
+        waits = waits || (e != nullptr && e->waiters.test(slot));
+    });
+    return waits;
+}
+
+void Pipeline::recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, uint64_t now, bool bulk) noexcept {
     RecapState& st = *p.recap;
     RecapEvent ev{};
     ev.symbol_id = symbol_id;
@@ -698,18 +738,20 @@ void Pipeline::recap_add_waiter(Partition& p, Session& s, uint32_t symbol_id, ui
             s.ring.publish_control(ControlCode::RECAP_FAILED, p.topic_id(), now, &ev, sizeof(ev));
             return;
         }
-        recap_post(p, {RecapCommand::Op::REQUEST, p.id(), symbol_id});
+        recap_post(p, {.op = RecapCommand::Op::REQUEST, .partition = p.id(), .symbol_id = symbol_id, .bulk = bulk});
     }
     if (e->waiters.test(s.recap_slot)) return;
+    // One RECAP_PENDING per symbol, however many of the topic's partitions are asked.
+    const bool told = recap_waits_elsewhere(p, symbol_id, s.recap_slot);
     e->waiters.set(s.recap_slot);
-    if (!s.ring.publish_control(ControlCode::RECAP_PENDING, p.topic_id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
+    if (!told && !s.ring.publish_control(ControlCode::RECAP_PENDING, p.topic_id(), now, &ev, sizeof(ev))) inc(s.counters.publish_failed);
 }
 
 void Pipeline::recap_drop_waiter(Partition& p, RecapPending& e, Session& s) noexcept {
     e.waiters.clear(s.recap_slot);
     if (e.waiters.any()) return;
     if (e.parked) recap_release(p, e.reply.slab);
-    recap_post(p, {RecapCommand::Op::CANCEL, p.id(), e.symbol_id});
+    recap_post(p, {.op = RecapCommand::Op::CANCEL, .partition = p.id(), .symbol_id = e.symbol_id});
     p.recap->erase(e);
 }
 
@@ -744,7 +786,8 @@ void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t no
             st.clear_parked(e);
         }
         e.overflowed = false;
-        recap_post(p, {RecapCommand::Op::REQUEST, p.id(), e.symbol_id});
+        e.elsewhere = false;
+        recap_post(p, {.op = RecapCommand::Op::REQUEST, .partition = p.id(), .symbol_id = e.symbol_id, .bulk = true});
     }
     SymbolStaleEvent ev{};
     ev.topic_id = p.topic_id();
@@ -759,10 +802,13 @@ void Pipeline::recap_restart(Partition& p, SymbolStaleReason reason, uint64_t no
         for (size_t w = 0; w < f->symbol_bits.size(); ++w) {
             for (uint64_t bits = f->symbol_bits[w]; bits != 0; bits &= bits - 1) {
                 ev.symbol_id = static_cast<uint32_t>(w * 64 + static_cast<size_t>(__builtin_ctzll(bits)));
+                // INTENT: a symbol delivered on another partition of the topic
+                // is not affected by this one's stream changing.
+                if (recap_homed_elsewhere(p, ev.symbol_id)) continue;
                 if (f->agent_control && !s.ring.publish_control(ControlCode::SYMBOL_STALE, p.topic_id(), now, &ev, sizeof(ev))) {
                     inc(s.counters.publish_failed);
                 }
-                recap_add_waiter(p, s, ev.symbol_id, now); // RECAP_PENDING when it was live
+                recap_add_waiter(p, s, ev.symbol_id, now, true); // RECAP_PENDING when it was live; one bulk request asks for all
             }
         }
     }
@@ -841,6 +887,20 @@ void Pipeline::recap_reply(Partition& p, const RecapReply& r, uint64_t now) noex
         return;
     }
     if (!ok) {
+        // INTENT: on a topic with several recap partitions an unknown
+        // instrument usually lives on another one (it was asked of every
+        // partition before it was seen). Only when no other partition still
+        // tries is it a failure the waiters hear of; a partition that merges
+        // it drops the waiters from the others (recap_merge).
+        if (r.status == RecapStatus::REJECTED && r.reason == static_cast<uint64_t>(sp_proto::RejectReason::UnknownInstrument)) {
+            bool other_tries = false;
+            recap_siblings(p, [&](Partition& q) {
+                const RecapPending* o = q.recap->find(r.symbol_id);
+                other_tries = other_tries || (o != nullptr && !o->elsewhere);
+            });
+            e->elsewhere = true;
+            if (other_tries) { inc(p.recap_counters.recap_elsewhere); return; }
+        }
         // The manager retries on its own; the waiters hear of every failure.
         RecapEvent ev{};
         ev.request_id = r.request_id;
@@ -879,7 +939,7 @@ void Pipeline::recap_consider(Partition& p, RecapPending& e, const RecapReply& r
         ev.attempt = r.attempt;
         ev.as_of_seq = r.as_of;
         recap_emit(p, e, ControlCode::RECAP_FAILED, ev, now);
-        recap_post(p, {RecapCommand::Op::REQUEST, p.id(), e.symbol_id});
+        recap_post(p, {.op = RecapCommand::Op::REQUEST, .partition = p.id(), .symbol_id = e.symbol_id});
         return;
     }
     if (r.as_of > p.last_seq) {
@@ -969,7 +1029,16 @@ void Pipeline::recap_merge(Partition& p, RecapPending& e, const RecapReply& r, u
     });
     inc(p.recap_counters.recap_merged);
     recap_release(p, r.slab);
+    const uint32_t sym = e.symbol_id;
     p.recap->erase(e);
+    // The symbol is whole for these sessions: the topic's other partitions
+    // stop asking for them.
+    recap_siblings(p, [&](Partition& q) {
+        for (Session* sp : merge_waiters_) {
+            RecapPending* o = q.recap->find(sym);   // again each time: erased with its last waiter
+            if (o != nullptr && o->waiters.test(sp->recap_slot)) recap_drop_waiter(q, *o, *sp);
+        }
+    });
 }
 
 void Pipeline::recap_emit(Partition& p, const RecapPending& e, ControlCode code, const RecapEvent& ev, uint64_t now) noexcept {
@@ -983,6 +1052,7 @@ void Pipeline::recap_emit(Partition& p, const RecapPending& e, ControlCode code,
 void Pipeline::recap_post(Partition& p, const RecapCommand& cmd) noexcept {
     RecapCommand c = cmd;
     c.generation = p.recap->generation();
+    if (const RecapPending* e = p.recap->find(c.symbol_id); e != nullptr) c.floor = e->floor;
     if (recap_out_.empty() && recap_.requests.push(c)) return;
     if (recap_out_.size() < recap_out_cap_) recap_out_.push_back(c);
     else inc(p.recap_counters.recap_post_dropped);

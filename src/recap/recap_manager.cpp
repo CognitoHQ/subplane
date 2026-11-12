@@ -19,6 +19,7 @@ constexpr int kCommandsPerLoop = 4096;
 constexpr uint64_t kOverflowLogIntervalNs = 10'000'000'000ull;
 constexpr uint64_t kStatusReasonBase = 0x100; // RecapReply.reason for a Status: base + code
 constexpr std::string_view kServiceName = "subplaned";
+constexpr uint16_t kRecapRequestBulk = 1u << 0; // RecapRequest.Flags bit 0: every instrument of the partition
 
 } // namespace
 
@@ -119,7 +120,8 @@ int RecapManager::run_once(uint64_t now) noexcept {
             ps->was_connected = conn;
             ps->hello_sent = false;
             ps->peer = Peer{};
-            if (ps->asm_.active || ps->asm_.skipping) abort_assembly(*ps); // in-flight requests time out and retry
+            for (size_t src = 0; src < kRecapSources; ++src)   // in-flight requests time out and retry
+                if (ps->asm_[src].active || ps->asm_[src].skipping) abort_assembly(*ps, static_cast<RecapSource>(src));
         }
         bool hold_requests = false;
         if (conn && !ps->hello_sent) {
@@ -128,7 +130,7 @@ int RecapManager::run_once(uint64_t now) noexcept {
         }
         work += ps->transport->poll(*ps, kFragmentsPerPoll);
         service_timeouts(*ps);
-        if (!hold_requests) send_ready(*ps);
+        if (!hold_requests) { send_ready(*ps); send_bulk(*ps); }
         publish_gauges(*ps);
     }
     flush_outbox();
@@ -141,12 +143,16 @@ void RecapManager::handle_command(PState& ps, const RecapCommand& c) noexcept {
     if (c.op == RecapCommand::Op::REQUEST) {
         if (it != ps.entries.end()) {
             it->second.cancelled = false;
-            if (it->second.generation != c.generation) renew(ps, c.symbol_id, it->second, c.generation);
+            it->second.floor = c.floor;
+            if (it->second.generation != c.generation) renew(ps, c.symbol_id, it->second, c.generation, c.bulk);
             else inc(rc.recap_coalesced);
             return;
         }
         Entry e;
         e.generation = c.generation;
+        e.floor = c.floor;
+        // A bulk already out may have passed this symbol: one ticker more goes on its own.
+        e.bulk = c.bulk && ps.bulk_rid == 0;
         // INTENT: the gather window. Coalescing alone only joins requests that
         // overlap one in flight, and a recap on a fast link completes in less
         // than the few milliseconds between sessions created together (a
@@ -154,33 +160,95 @@ void RecapManager::handle_command(PState& ps, const RecapCommand& c) noexcept {
         // the snapshot service would build the same book again for each.
         e.due_ns = ps.now + static_cast<uint64_t>(ps.cfg.coalesce_ms) * 1'000'000ull;
         ps.entries.emplace(c.symbol_id, e);
-        ps.fifo.push_back(c.symbol_id);
+        if (e.bulk) {
+            if (ps.bulk_queued++ == 0) ps.bulk_due = e.due_ns;
+        } else {
+            ps.fifo.push_back(c.symbol_id);
+        }
         return;
     }
     // CANCEL: no session waits on the symbol any more.
     if (it == ps.entries.end()) return;
     inc(rc.recap_cancelled);
-    if (it->second.state == Entry::State::INFLIGHT) it->second.cancelled = true; // ends with its reply or timeout
-    else ps.entries.erase(it);                                                  // fifo skips it lazily
+    if (it->second.state == Entry::State::INFLIGHT && !it->second.bulk) it->second.cancelled = true; // ends with its reply or timeout
+    else finish(ps, c.symbol_id, true);                                                                // fifo skips it lazily
 }
 
-void RecapManager::renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t generation) noexcept {
+void RecapManager::renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t generation, bool bulk) noexcept {
     inc(ps.part->recap_counters.recap_renewed);
-    if (e.state == Entry::State::INFLIGHT) {
+    // INTENT: a reply (or section) being assembled for the symbol is from
+    // before the change: skipped to its end.
+    abort_assembly_of(ps, symbol_id);
+    if (e.state == Entry::State::INFLIGHT && e.bulk) {
+        // The stream changed under the bulk: every entry on it renews, so the
+        // bulk is abandoned and the next one asks again.
+        reset_bulk(ps);
+        --ps.bulk_queued;   // counted again below
+    } else if (e.state == Entry::State::INFLIGHT) {
         // INTENT: forget the request id, so its reply, now or later, is stray.
-        // A reply being assembled is skipped to its end.
-        if (ps.asm_.active && ps.asm_.request_id == e.request_id) {
-            abort_assembly(ps);
-            ps.asm_.skipping = true;
-        }
         ps.by_request.erase(e.request_id);
         --ps.inflight;
+    } else if (e.state == Entry::State::QUEUED && e.bulk) {
+        --ps.bulk_queued;
     }
     e.generation = generation;
     e.attempt = 0;
     e.state = Entry::State::QUEUED;
     e.due_ns = 0;
-    ps.fifo.push_front(symbol_id); // ahead of first requests: a renewed symbol has waited already
+    e.request_id = 0;
+    e.bulk = bulk && ps.bulk_rid == 0;
+    if (e.bulk) {
+        if (ps.bulk_queued++ == 0) ps.bulk_due = 0;   // a renew does not wait
+    } else {
+        ps.fifo.push_front(symbol_id); // ahead of first requests: a renewed symbol has waited already
+    }
+}
+
+void RecapManager::reset_bulk(PState& ps) noexcept {
+    for (auto& [sym, e] : ps.entries) {
+        if (!e.bulk || e.state != Entry::State::INFLIGHT) continue;
+        e.state = Entry::State::QUEUED;
+        e.request_id = 0;
+        ++ps.bulk_queued;
+    }
+    ps.bulk_inflight = 0;
+    ps.bulk_rid = 0;
+    ps.bulk_due = 0;
+}
+
+void RecapManager::send_bulk(PState& ps) noexcept {
+    RecapCounters& rc = ps.part->recap_counters;
+    if (ps.bulk_queued == 0 || ps.bulk_rid != 0 || ps.bulk_due > ps.now) return;
+    const uint64_t rid = next_request_id_;
+    RecapSendStatus st = RecapSendStatus::FAILED;
+    if (!ps.peer.incompatible) {
+        sp_proto::RecapRequestEncoder e(ps.tx + 4, sizeof(ps.tx) - 4);
+        e.CorrelationId(rid)
+         .AgentEpoch(epoch_)
+         .LastSeqSeen(ps.part->last_seq_pub.load(std::memory_order_relaxed))
+         .Flags(kRecapRequestBulk);
+        st = send_frame(ps, static_cast<uint32_t>(e.finish()));
+    }
+    if (st == RecapSendStatus::BACK_PRESSURED) return; // the same bulk next loop
+    if (st != RecapSendStatus::OK) {
+        inc(rc.recap_send_failed);
+        std::vector<uint32_t> queued;
+        for (const auto& [sym, e] : ps.entries) if (e.bulk && e.state == Entry::State::QUEUED) queued.push_back(sym);
+        for (const uint32_t sym : queued) fail(ps, sym, RecapStatus::SEND_FAILED, 0);
+        return;
+    }
+    ++next_request_id_;
+    for (auto& [sym, e] : ps.entries) {
+        if (!e.bulk || e.state != Entry::State::QUEUED) continue;
+        e.state = Entry::State::INFLIGHT;
+        e.request_id = rid;
+    }
+    ps.bulk_inflight += ps.bulk_queued;
+    ps.bulk_queued = 0;
+    ps.bulk_rid = rid;
+    ps.bulk_due = ps.now + static_cast<uint64_t>(ps.cfg.timeout_ms) * 1'000'000ull;
+    inc(rc.recap_requests);
+    inc(rc.recap_bulk_requests);
 }
 
 uint64_t RecapManager::backoff_ns(const PState& ps, uint32_t attempt) noexcept {
@@ -200,7 +268,7 @@ void RecapManager::send_ready(PState& ps) noexcept {
     while (ps.inflight < ps.cfg.max_inflight && !ps.fifo.empty()) {
         const uint32_t sym = ps.fifo.front();
         auto it = ps.entries.find(sym);
-        if (it == ps.entries.end() || it->second.state != Entry::State::QUEUED) { ps.fifo.pop_front(); continue; }
+        if (it == ps.entries.end() || it->second.state != Entry::State::QUEUED || it->second.bulk) { ps.fifo.pop_front(); continue; }
         // First requests join the back in arrival order, so when the front is
         // still gathering so is everything behind it. A retry queued behind it
         // waits at most coalesce_ms longer; a renew goes to the front, due now.
@@ -250,13 +318,18 @@ void RecapManager::service_timeouts(PState& ps) noexcept {
     std::inplace_vector<uint32_t, 64> expired;
     for (;;) {
         expired.clear();
+        // INTENT: the bulk's deadline is silence on the section stream, not
+        // its total time (reply_begin pushes it back): a paced burst of a
+        // whole partition takes as long as it takes, and the entries still
+        // waiting when it goes quiet were not in it.
+        const bool bulk_expired = ps.bulk_rid != 0 && ps.now >= ps.bulk_due;
         for (auto& [sym, e] : ps.entries) {
-            if (e.state == Entry::State::INFLIGHT && ps.now >= e.due_ns) { if (!expired.try_push_back(sym)) break; }
+            const bool expired_now = e.state == Entry::State::INFLIGHT && (e.bulk ? bulk_expired : ps.now >= e.due_ns);
+            if (expired_now) { if (!expired.try_push_back(sym)) break; }
             else if (e.state == Entry::State::BACKOFF && ps.now >= e.due_ns) { e.state = Entry::State::QUEUED; ps.fifo.push_back(sym); }
         }
         for (const uint32_t sym : expired) {
-            const Entry& e = ps.entries.at(sym);
-            if (ps.asm_.active && ps.asm_.request_id == e.request_id) abort_assembly(ps);
+            abort_assembly_of(ps, sym);
             inc(rc.recap_timeouts);
             fail(ps, sym, RecapStatus::TIMEOUT, 0);
         }
@@ -285,9 +358,13 @@ void RecapManager::finish(PState& ps, uint32_t symbol_id, bool success) noexcept
     auto it = ps.entries.find(symbol_id);
     if (it == ps.entries.end()) return;
     Entry& e = it->second;
-    if (e.state == Entry::State::INFLIGHT) {
+    if (e.state == Entry::State::INFLIGHT && e.bulk) {
+        if (--ps.bulk_inflight == 0) ps.bulk_rid = 0;
+    } else if (e.state == Entry::State::INFLIGHT) {
         --ps.inflight;
         ps.by_request.erase(e.request_id);
+    } else if (e.state == Entry::State::QUEUED && e.bulk) {
+        --ps.bulk_queued;
     }
     // INTENT: retry for as long as a session waits (no attempt limit); the
     // pipeline cancels when the last waiter leaves, and every failure was
@@ -297,13 +374,24 @@ void RecapManager::finish(PState& ps, uint32_t symbol_id, bool success) noexcept
         return;
     }
     ++e.attempt;
+    e.bulk = false;   // a retry is one ticker: the bulk it missed is over
+    e.request_id = 0;
     e.state = Entry::State::BACKOFF;
     e.due_ns = ps.now + backoff_ns(ps, e.attempt);
 }
 
-void RecapManager::abort_assembly(PState& ps) noexcept {
-    if (ps.asm_.slab >= 0) ps.free_slabs.push_back(static_cast<uint16_t>(ps.asm_.slab));
-    ps.asm_ = Assembly{};
+void RecapManager::abort_assembly(PState& ps, RecapSource src) noexcept {
+    Assembly& a = ps.asm_[static_cast<size_t>(src)];
+    if (a.slab >= 0) ps.free_slabs.push_back(static_cast<uint16_t>(a.slab));
+    a = Assembly{};
+}
+
+void RecapManager::abort_assembly_of(PState& ps, uint32_t symbol_id) noexcept {
+    for (size_t src = 0; src < kRecapSources; ++src) {
+        if (!ps.asm_[src].active || ps.asm_[src].symbol_id != symbol_id) continue;
+        abort_assembly(ps, static_cast<RecapSource>(src));
+        ps.asm_[src].skipping = true;
+    }
 }
 
 RecapSendStatus RecapManager::send_frame(PState& ps, uint32_t msg_len) noexcept {
@@ -334,8 +422,8 @@ void RecapManager::send_status(PState& ps, uint64_t correlation_id, uint16_t cod
     (void)send_frame(ps, static_cast<uint32_t>(e.finish())); // best effort: the sender times out otherwise
 }
 
-void RecapManager::PState::on_fragment(const uint8_t* data, uint32_t len) noexcept {
-    if (cfg.reply == RecapReplyMode::SPP) {
+void RecapManager::PState::on_fragment(const uint8_t* data, uint32_t len, RecapSource src) noexcept {
+    if (cfg.reply == RecapReplyMode::SPP || src == RecapSource::SECTIONS) {
         // INTENT: a frame is u32-length-prefixed SPP messages back to back. A
         // bad length ends the frame: nothing after it can be trusted.
         uint32_t at = 0;
@@ -345,7 +433,7 @@ void RecapManager::PState::on_fragment(const uint8_t* data, uint32_t len) noexce
             std::memcpy(&mlen, data + at, 4);
             at += 4;
             if (mlen > len - at) { inc(part->recap_counters.recap_stray); return; }
-            mgr->on_spp_message(*this, data + at, mlen);
+            mgr->on_spp_message(*this, src, data + at, mlen);
             at += mlen;
         }
         return;
@@ -365,7 +453,7 @@ void RecapManager::PState::on_fragment(const uint8_t* data, uint32_t len) noexce
     }
 }
 
-void RecapManager::on_spp_message(PState& ps, const uint8_t* msg, uint32_t len) noexcept {
+void RecapManager::on_spp_message(PState& ps, RecapSource src, const uint8_t* msg, uint32_t len) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
     sp_proto::Header h;
     if (!sp_proto::read_header(msg, len, h) || h.schema_id != sp_proto::kSchemaId) { inc(rc.recap_stray); return; }
@@ -376,15 +464,23 @@ void RecapManager::on_spp_message(PState& ps, const uint8_t* msg, uint32_t len) 
         case sp_proto::RecapBeginDecoder::kTemplateId: {
             sp_proto::RecapBeginDecoder d;
             if (!d.wrap(msg, len)) break;
-            reply_begin(ps, true, d.CorrelationId(), true, d.AsOf(), d.SourceEpoch() != 0, d.SourceEpoch());
+            BeginInfo b;
+            b.has_id = b.has_as_of = true;
+            b.rid = d.CorrelationId();
+            b.as_of = d.AsOf();
+            b.has_epoch = d.SourceEpoch() != 0;
+            b.epoch = d.SourceEpoch();
+            b.instrument = d.Instrument();
+            b.venue = d.Venue();
+            reply_begin(ps, src, b);
             return;
         }
         case sp_proto::RecapRecordDecoder::kTemplateId: {
             sp_proto::RecapRecordDecoder d;
             if (!d.wrap(msg, len)) break;
-            const Assembly& a = ps.asm_;
+            const Assembly& a = ps.asm_[static_cast<size_t>(src)];
             if (a.active && d.CorrelationId() != a.request_id) { inc(rc.recap_stray); return; } // replies are never interleaved
-            reply_record(ps, d.Payload_data(), static_cast<uint32_t>(d.Payload_size()));
+            reply_record(ps, src, d.Payload_data(), static_cast<uint32_t>(d.Payload_size()));
             return;
         }
         case sp_proto::RecapEndDecoder::kTemplateId: {
@@ -393,13 +489,13 @@ void RecapManager::on_spp_message(PState& ps, const uint8_t* msg, uint32_t len) 
             // INTENT: RecordCount guards against a reply that lost records on
             // the way; a short snapshot would be merged as if complete. The
             // request then times out and is retried.
-            const Assembly& a = ps.asm_;
+            const Assembly& a = ps.asm_[static_cast<size_t>(src)];
             if (a.active && d.CorrelationId() == a.request_id && !a.overflow && d.RecordCount() != a.messages) {
                 inc(rc.recap_stray);
-                abort_assembly(ps);
+                abort_assembly(ps, src);
                 return;
             }
-            reply_end(ps, true, d.CorrelationId());
+            reply_end(ps, src, true, d.CorrelationId());
             return;
         }
         case sp_proto::RecapRejectDecoder::kTemplateId: {
@@ -412,7 +508,9 @@ void RecapManager::on_spp_message(PState& ps, const uint8_t* msg, uint32_t len) 
             sp_proto::StatusDecoder d;
             if (!d.wrap(msg, len)) break;
             const uint16_t code = static_cast<uint16_t>(d.Code());
-            if (ps.by_request.count(d.CorrelationId()) != 0 && code != static_cast<uint16_t>(sp_proto::StatusCode::Ok)) {
+            const bool ours = ps.by_request.count(d.CorrelationId()) != 0 || (ps.bulk_rid != 0 && d.CorrelationId() == ps.bulk_rid);
+            if (ours && code == static_cast<uint16_t>(sp_proto::StatusCode::Ok)) return; // a service's acknowledgement: the sections follow
+            if (ours) {
                 // The service could not even start a reply (Unsupported, Busy, ...): as a reject.
                 reply_reject(ps, true, d.CorrelationId(), kStatusReasonBase + code);
                 return;
@@ -468,15 +566,23 @@ void RecapManager::on_peer_hello(PState& ps, const uint8_t* msg, uint32_t len) n
 
 void RecapManager::on_marker_message(PState& ps, const uint8_t* msg, uint32_t len) noexcept {
     RecapMarkerFields f;
-    if (!ps.part->read_recap_fields(msg, len, f)) { reply_record(ps, msg, len); return; }
+    if (!ps.part->read_recap_fields(msg, len, f)) { reply_record(ps, RecapSource::RESPONSE, msg, len); return; }
     const bool has_id = f.has[RECAP_REQUEST_ID];
     const uint64_t rid = f.value[RECAP_REQUEST_ID];
     switch (f.marker) {
-        case RecapMarker::BEGIN:
-            reply_begin(ps, has_id, rid, f.has[RECAP_AS_OF], f.value[RECAP_AS_OF], f.has[RECAP_SOURCE_EPOCH], f.value[RECAP_SOURCE_EPOCH]);
+        case RecapMarker::BEGIN: {
+            BeginInfo b;
+            b.has_id = has_id;
+            b.rid = rid;
+            b.has_as_of = f.has[RECAP_AS_OF];
+            b.as_of = f.value[RECAP_AS_OF];
+            b.has_epoch = f.has[RECAP_SOURCE_EPOCH];
+            b.epoch = f.value[RECAP_SOURCE_EPOCH];
+            reply_begin(ps, RecapSource::RESPONSE, b);
             return;
+        }
         case RecapMarker::END:
-            reply_end(ps, has_id, rid);
+            reply_end(ps, RecapSource::RESPONSE, has_id, rid);
             return;
         case RecapMarker::REJECT:
             reply_reject(ps, has_id, rid, f.has[RECAP_REASON] ? f.value[RECAP_REASON] : 0);
@@ -487,8 +593,8 @@ void RecapManager::on_marker_message(PState& ps, const uint8_t* msg, uint32_t le
     }
 }
 
-void RecapManager::reply_record(PState& ps, const uint8_t* msg, uint32_t len) noexcept {
-    Assembly& a = ps.asm_;
+void RecapManager::reply_record(PState& ps, RecapSource src, const uint8_t* msg, uint32_t len) noexcept {
+    Assembly& a = ps.asm_[static_cast<size_t>(src)];
     if (!a.active) { if (!a.skipping) inc(ps.part->recap_counters.recap_stray); return; } // a skipped reply was counted once, at its BEGIN
     if (a.overflow) return;
     std::vector<uint8_t>& slab = ps.slabs[static_cast<size_t>(a.slab)];
@@ -500,29 +606,54 @@ void RecapManager::reply_record(PState& ps, const uint8_t* msg, uint32_t len) no
     ++a.messages;
 }
 
-void RecapManager::reply_begin(PState& ps, bool has_id, uint64_t rid, bool has_as_of, uint64_t as_of, bool has_epoch, uint64_t epoch) noexcept {
+uint32_t RecapManager::section_symbol(const PState& ps, uint64_t instrument, uint16_t venue) const noexcept {
+    if (ps.part->symbol_passthrough()) return instrument <= 0xFFFFFFFFull ? static_cast<uint32_t>(instrument) : 0;
+    return symbols_.lookup_u64(instrument, ps.part->symbol_venue_scope() ? venue : uint16_t{0});
+}
+
+void RecapManager::reply_begin(PState& ps, RecapSource src, const BeginInfo& b) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
-    Assembly& a = ps.asm_;
-    if (a.active || a.skipping) { inc(rc.recap_stray); abort_assembly(ps); } // previous reply never ended
-    auto br = has_id ? ps.by_request.find(rid) : ps.by_request.end();
-    if (br == ps.by_request.end() || !has_as_of) { inc(rc.recap_stray); a.skipping = true; return; }
+    Assembly& a = ps.asm_[static_cast<size_t>(src)];
+    if (a.active || a.skipping) { inc(rc.recap_stray); abort_assembly(ps, src); } // previous reply never ended
+    if (!b.has_id || !b.has_as_of) { inc(rc.recap_stray); a.skipping = true; return; }
+    uint32_t sym = 0;
+    if (b.instrument != 0) {
+        // INTENT: a section is matched by its instrument, whoever asked for
+        // it: one published for another agent serves this one too. Skipped,
+        // and not counted stray, when nobody here waits on the instrument or
+        // it is older than the floor (the pipeline could not merge it).
+        if (src == RecapSource::SECTIONS && ps.bulk_rid != 0)
+            ps.bulk_due = ps.now + static_cast<uint64_t>(ps.cfg.timeout_ms) * 1'000'000ull; // the bulk is still arriving
+        sym = section_symbol(ps, b.instrument, b.venue);
+        auto it = sym != 0 ? ps.entries.find(sym) : ps.entries.end();
+        if (it == ps.entries.end() || it->second.cancelled || b.as_of < it->second.floor) {
+            inc(rc.recap_sections_skipped);
+            a.skipping = true;
+            return;
+        }
+        inc(rc.recap_sections);
+    } else {
+        auto br = ps.by_request.find(b.rid);
+        if (br == ps.by_request.end()) { inc(rc.recap_stray); a.skipping = true; return; }
+        sym = br->second;
+    }
     if (ps.free_slabs.empty()) { inc(rc.recap_no_slab); a.skipping = true; return; } // times out, retried
     a = Assembly{};
     a.active = true;
-    a.request_id = rid;
-    a.symbol_id = br->second;
+    a.request_id = b.rid;
+    a.symbol_id = sym;
     a.slab = ps.free_slabs.back();
     ps.free_slabs.pop_back();
-    a.as_of = as_of;
-    a.has_source_epoch = has_epoch;
-    a.source_epoch = epoch;
+    a.as_of = b.as_of;
+    a.has_source_epoch = b.has_epoch;
+    a.source_epoch = b.epoch;
 }
 
-void RecapManager::reply_end(PState& ps, bool has_id, uint64_t rid) noexcept {
+void RecapManager::reply_end(PState& ps, RecapSource src, bool has_id, uint64_t rid) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
-    Assembly& a = ps.asm_;
+    Assembly& a = ps.asm_[static_cast<size_t>(src)];
     if (a.skipping && !a.active) { a.skipping = false; return; }
-    if (!a.active || !has_id || rid != a.request_id) { inc(rc.recap_stray); abort_assembly(ps); return; }
+    if (!a.active || !has_id || rid != a.request_id) { inc(rc.recap_stray); abort_assembly(ps, src); return; }
     const uint32_t sym = a.symbol_id;
     if (a.overflow) {
         inc(rc.recap_overflows);
@@ -532,17 +663,17 @@ void RecapManager::reply_end(PState& ps, bool has_id, uint64_t rid) noexcept {
             LogRegistry::instance().warn("RECAP", "OVERFLOW", ps.part->name() + ": a reply exceeds reply_slab_bytes (" +
                                          std::to_string(ps.cfg.reply_slab_bytes) + "); raise it");
         }
-        abort_assembly(ps);
+        abort_assembly(ps, src);
         fail(ps, sym, RecapStatus::OVERFLOW, 0);
         return;
     }
     auto it = ps.entries.find(sym);
-    if (it == ps.entries.end() || it->second.cancelled) { abort_assembly(ps); finish(ps, sym, true); return; }
+    if (it == ps.entries.end() || it->second.cancelled) { abort_assembly(ps, src); finish(ps, sym, true); return; }
     RecapReply r;
     r.partition = ps.part->id();
     r.slab = static_cast<uint16_t>(a.slab);
     r.symbol_id = sym;
-    r.request_id = rid;
+    r.request_id = it->second.request_id != 0 ? it->second.request_id : rid; // a section nobody here asked for: its section id
     r.attempt = it->second.attempt + 1;
     r.generation = it->second.generation;
     r.status = RecapStatus::OK;
@@ -560,8 +691,16 @@ void RecapManager::reply_end(PState& ps, bool has_id, uint64_t rid) noexcept {
 
 void RecapManager::reply_reject(PState& ps, bool has_id, uint64_t rid, uint64_t reason) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
-    Assembly& a = ps.asm_;
-    if (a.active && a.request_id == rid) abort_assembly(ps);
+    Assembly& a = ps.asm_[static_cast<size_t>(RecapSource::RESPONSE)];
+    if (a.active && a.request_id == rid) abort_assembly(ps, RecapSource::RESPONSE);
+    if (has_id && ps.bulk_rid != 0 && rid == ps.bulk_rid) {
+        // The whole bulk is refused: each of its entries fails and retries on its own.
+        inc(rc.recap_rejects);
+        std::vector<uint32_t> on_bulk;
+        for (const auto& [sym, e] : ps.entries) if (e.bulk && e.state == Entry::State::INFLIGHT) on_bulk.push_back(sym);
+        for (const uint32_t sym : on_bulk) fail(ps, sym, RecapStatus::REJECTED, reason);
+        return;
+    }
     auto br = has_id ? ps.by_request.find(rid) : ps.by_request.end();
     if (br == ps.by_request.end()) { inc(rc.recap_stray); return; }
     inc(rc.recap_rejects);
@@ -587,8 +726,8 @@ void RecapManager::flush_outbox() noexcept {
 
 void RecapManager::publish_gauges(PState& ps) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
-    rc.inflight.store(ps.inflight, std::memory_order_relaxed);
-    rc.queued.store(ps.entries.size() - ps.inflight, std::memory_order_relaxed);
+    rc.inflight.store(ps.inflight + ps.bulk_inflight, std::memory_order_relaxed);
+    rc.queued.store(ps.entries.size() - ps.inflight - ps.bulk_inflight, std::memory_order_relaxed);
     rc.connected.store(ps.was_connected ? 1 : 0, std::memory_order_relaxed);
 }
 

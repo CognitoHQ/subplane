@@ -153,15 +153,23 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 | `subplane_snap_last_sequence` | gauge | | Sequence of the last data message applied (a recap's `AsOf`) |
 | `subplane_snap_data_connected`, `subplane_snap_state_connected` | gauge | | 1 while the gateway's data or state stream has an image |
 | `subplane_snap_instrument_state` | gauge | state | instruments by state: `ok` (served), `stale`, `unknown` |
-| `subplane_snap_recap_requests_total` | counter | result | `reply`, `not_ready`, `unknown_instrument` |
-| `subplane_snap_recap_<counter>_total` | counter | | the recap channel: `frames`, `malformed`, `hellos`, `unsupported`, `replies` (frames), `reply_dropped` |
+| `subplane_snap_recap_requests_total` | counter | result | RecapRequests for one instrument: `queued` (its section is due after the gather window), `coalesced` (already wanted), `unknown_instrument` (never seen here) |
+| `subplane_snap_recap_bulk_requests_total` | counter | | RecapRequests for every instrument (Bulk) |
+| `subplane_snap_recap_wanted`, `subplane_snap_recap_waiting` | gauge | | instruments with interest whose section is not out yet; of those, due but not Ok yet |
+| `subplane_snap_sections_total`, `subplane_snap_section_bytes_total` | counter | | sections built (one instrument's state, once for every agent that wants it), and their bytes |
+| `subplane_snap_sections_offered_total`, `subplane_snap_section_bytes_offered_total` | counter | | sections, and bytes, the section stream took |
+| `subplane_snap_sections_back_pressured_total`, `subplane_snap_sections_throttled_total` | counter | | sections that waited for a subscriber (flow control), or for the rate budget (`--section-rate`) |
+| `subplane_snap_sections_dropped_total` | counter | | sections not delivered: nobody subscribed, or the publication failed (the agents ask again) |
+| `subplane_snap_sections_connected` | gauge | | 1 while an agent subscribes to the section stream |
+| `subplane_snap_recap_<counter>_total` | counter | | the recap channel: `frames`, `malformed`, `hellos`, `unsupported`, `replies` (frames: rejects and Hellos), `reply_dropped` |
 | `subplane_snap_recap_peers` | gauge | | requesters (agents) connected to the recap channel |
 | `subplane_snap_gateway_<counter>_total` | counter | | with `--gateway-control`: `hellos_sent`, `republish_sent`, `offer_failed`, `hellos`, `status_ok`, `status_not_found`, `status_other`, `malformed` |
 | `subplane_snap_gateway_connected` | gauge | | with `--gateway-control`: 1 while the gateway's control channel takes requests |
 | `subplane_topology_edge` | gauge | direction, role, key | 1 when the edge is up |
 
 **Useful queries:**
-- recaps the snap cannot serve: `rate(subplane_snap_recap_requests_total{result="not_ready"}[5m]) > 0`;
+- recaps waiting on a book the snap cannot rebuild: `subplane_snap_recap_waiting > 0` for more than a minute;
+- recap traffic held back by the budget: `rate(subplane_snap_sections_throttled_total[5m])` against `rate(subplane_snap_sections_total[5m])`;
 - instruments it cannot recover: `subplane_snap_instrument_state{state="stale"} > 0` for more than a minute (with `subplane_snap_gateway_connected == 0`, it cannot even ask).
 
 ## Topology

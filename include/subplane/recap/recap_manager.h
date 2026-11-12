@@ -13,11 +13,21 @@
 // producer of replies. Nothing here runs on the pipeline thread.
 //
 // Reply contract with a snapshot service: a reply is `RecapBegin`, the
-// `RecapRecord`s, `RecapEnd`, sent contiguously on the response stream
-// (replies to different requests are not interleaved); `RecapReject`, or a
-// non-Ok `Status`, replaces the whole reply. In `reply: stream_markers` mode
+// `RecapRecord`s, `RecapEnd`, sent contiguously (replies to different requests
+// are not interleaved); `RecapReject`, or a non-Ok `Status`, replaces the whole
+// reply. A reply whose `RecapBegin` names its Instrument is a *section*: it is
+// matched by instrument, not by request, so a section published once on the
+// service's shared section stream serves every agent waiting on that
+// instrument, whoever asked. One without an Instrument is matched by
+// CorrelationId (a service that answers 1:1). In `reply: stream_markers` mode
 // the same shape comes in the stream's own schema and framing instead, between
 // decoder-mapped RECAP_BEGIN / RECAP_END / RECAP_REJECT markers.
+//
+// Bulk: a REQUEST marked bulk (a partition-wide resync: a gap, a sequence
+// reset, a publisher restart) joins one `RecapRequest{Bulk}` for the whole
+// partition, answered by sections. It times out on silence: every section the
+// service publishes while it is out pushes the deadline back, so a long paced
+// burst never expires while it is still arriving.
 
 #include "subplane/core/spsc_queue.h"
 #include "subplane/recap/recap_config.h"
@@ -46,12 +56,18 @@ class SymbolTable;
 // drops one from an older generation, which covers a reply already queued
 // when the renew arrived. Coalescing into the old request instead would merge
 // a snapshot of the stream as it was before the change.
+//
+// `floor` is the pending symbol's floor (RecapPending::floor) when posted: a
+// section older than it cannot be merged, so the manager skips it instead of
+// filling a slab the pipeline would refuse (it refuses it anyway).
 struct RecapCommand {
     enum class Op : uint8_t { REQUEST, CANCEL };
     Op       op = Op::REQUEST;
     uint16_t partition = 0;
     uint32_t symbol_id = 0;
     uint32_t generation = 0;
+    uint64_t floor = 0;
+    bool     bulk = false;
 };
 
 enum class RecapStatus : uint8_t { OK, REJECTED, TIMEOUT, OVERFLOW, SEND_FAILED };
@@ -110,16 +126,21 @@ private:
         enum class State : uint8_t { QUEUED, INFLIGHT, BACKOFF };
         State    state = State::QUEUED;
         bool     cancelled = false;
+        bool     bulk = false;   // waits on the partition's bulk request, not a request of its own
         uint32_t attempt = 0;
         uint32_t generation = 0;
         uint64_t request_id = 0;
-        uint64_t due_ns = 0;     // QUEUED: not sent before (coalesce_ms); INFLIGHT: timeout; BACKOFF: next try
+        uint64_t due_ns = 0;     // QUEUED: not sent before (coalesce_ms); INFLIGHT: timeout (single); BACKOFF: next try
+        uint64_t floor = 0;      // RecapCommand::floor
     };
+    // INTENT: one per source. A section on the shared stream and a reply on
+    // the response channel can be in progress at once; each source delivers
+    // its own messages in order, so neither interleaves with itself.
     struct Assembly {
         bool     active = false;     // between BEGIN and END
         bool     skipping = false;   // between an unknown BEGIN and its END
         bool     overflow = false;
-        uint64_t request_id = 0;
+        uint64_t request_id = 0;     // the reply's CorrelationId (a section's: its section id)
         uint32_t symbol_id = 0;
         int      slab = -1;
         uint32_t used = 0;
@@ -146,35 +167,48 @@ private:
         std::vector<uint16_t> free_slabs;
         std::unordered_map<uint32_t, Entry> entries;      // by symbol_id
         std::unordered_map<uint64_t, uint32_t> by_request; // request_id -> symbol_id
-        std::deque<uint32_t> fifo;                        // symbols waiting to be sent
-        uint32_t inflight = 0;
-        Assembly asm_;
+        std::deque<uint32_t> fifo;                        // single symbols waiting to be sent
+        uint32_t inflight = 0;                            // single requests in flight (max_inflight)
+        uint32_t bulk_queued = 0, bulk_inflight = 0;      // entries waiting on a bulk request, before / after it is sent
+        uint64_t bulk_due = 0;                            // QUEUED: gather until; INFLIGHT: silence timeout
+        uint64_t bulk_rid = 0;                            // the bulk request in flight, 0 if none
+        Assembly asm_[kRecapSources];
         Peer     peer;
         bool     hello_sent = false;   // our Hello went out on this connection
         bool     was_connected = false;
         uint8_t  tx[256] = {};         // one outgoing frame; every message the manager sends fits
         uint64_t now = 0;
         uint64_t last_overflow_log_ns = 0;
-        void on_fragment(const uint8_t* data, uint32_t len) noexcept override;
+        void on_fragment(const uint8_t* data, uint32_t len, RecapSource src) noexcept override;
+    };
+    struct BeginInfo {
+        bool     has_id = false, has_as_of = false, has_epoch = false;
+        uint64_t rid = 0, as_of = 0, epoch = 0;
+        uint64_t instrument = 0;     // a section; 0 = a reply matched by rid
+        uint16_t venue = 0;
     };
 
     void on_marker_message(PState& ps, const uint8_t* msg, uint32_t len) noexcept;  // reply: stream_markers
-    void on_spp_message(PState& ps, const uint8_t* msg, uint32_t len) noexcept;     // reply: spp
-    void reply_begin(PState& ps, bool has_id, uint64_t rid, bool has_as_of, uint64_t as_of, bool has_epoch, uint64_t epoch) noexcept;
-    void reply_record(PState& ps, const uint8_t* msg, uint32_t len) noexcept;
-    void reply_end(PState& ps, bool has_id, uint64_t rid) noexcept;
+    void on_spp_message(PState& ps, RecapSource src, const uint8_t* msg, uint32_t len) noexcept;     // reply: spp
+    void reply_begin(PState& ps, RecapSource src, const BeginInfo& b) noexcept;
+    void reply_record(PState& ps, RecapSource src, const uint8_t* msg, uint32_t len) noexcept;
+    void reply_end(PState& ps, RecapSource src, bool has_id, uint64_t rid) noexcept;
     void reply_reject(PState& ps, bool has_id, uint64_t rid, uint64_t reason) noexcept;
+    uint32_t section_symbol(const PState& ps, uint64_t instrument, uint16_t venue) const noexcept;
+    void send_bulk(PState& ps) noexcept;
+    void reset_bulk(PState& ps) noexcept;   // the bulk in flight is abandoned; its entries wait for the next one
     void on_peer_hello(PState& ps, const uint8_t* msg, uint32_t len) noexcept;
     bool send_hello(PState& ps) noexcept;    // false when back-pressured
     void send_status(PState& ps, uint64_t correlation_id, uint16_t code) noexcept;
     RecapSendStatus send_frame(PState& ps, uint32_t msg_len) noexcept; // ps.tx[4..] holds the message
     void handle_command(PState& ps, const RecapCommand& c) noexcept;
-    void renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t generation) noexcept;
+    void renew(PState& ps, uint32_t symbol_id, Entry& e, uint32_t generation, bool bulk) noexcept;
     void send_ready(PState& ps) noexcept;
     void service_timeouts(PState& ps) noexcept;
     void finish(PState& ps, uint32_t symbol_id, bool success) noexcept;   // request over: retry or forget
     void fail(PState& ps, uint32_t symbol_id, RecapStatus st, uint64_t reason) noexcept;
-    void abort_assembly(PState& ps) noexcept;
+    void abort_assembly(PState& ps, RecapSource src) noexcept;
+    void abort_assembly_of(PState& ps, uint32_t symbol_id) noexcept;   // any source assembling for the symbol
     void push_reply(PState& ps, const RecapReply& r) noexcept;
     void flush_outbox() noexcept;
     uint64_t backoff_ns(const PState& ps, uint32_t attempt) noexcept;
