@@ -144,6 +144,11 @@ int AeronTransport::poll(PacketBatch& out) noexcept {
                                           static_cast<size_t>(cfg_.batch));
     cur_ = nullptr;
     if (n < 0) return -1;
+    // INTENT: an image can join between poll_state() and the poll, which then
+    // reads its first records while the state is still DOWN. Report UP now: the
+    // pipeline applies state changes before the batch's records, so they still
+    // follow their TRANSPORT_UP. A no-op while already up.
+    if (out.count > 0) report_up();
     return out.count;
 }
 
