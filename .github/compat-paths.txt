@@ -20,6 +20,10 @@
 ^docs/protocol/
 ^include/subplane/proto/
 
+# subplane-lib: a library other repos link (rate limits, election, the store scripts)
+^include/subplane/lib/
+^libs/src/valkey_store\.cpp$
+
 # Recordings: the recording format (pcapng with subplane custom blocks)
 ^include/subplane/record/
 ^docs/context/recording-format\.md$
