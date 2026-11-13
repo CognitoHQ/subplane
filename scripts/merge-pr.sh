@@ -26,4 +26,9 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-gh pr merge "$pr" --rebase --delete-branch
+# INTENT: squash, so a branch can hold work-in-progress commits and main gets one
+# commit per PR: the final delta, titled and described by the PR itself. The PR
+# body replaces GitHub's default squash body, a list of every branch commit.
+title="$(gh pr view "$pr" --json title --jq .title)"
+body="$(gh pr view "$pr" --json body --jq .body)"
+gh pr merge "$pr" --squash --delete-branch --subject "$title (#$pr)" --body "$body"
