@@ -65,7 +65,7 @@ Each `partitions:` entry is deep-merged over the topic's keys: maps merge, anyth
 
 **Restart rule.** Only `sessions:` is reloaded. `POST /reload` answers `{"status":"reloaded","ignored":["topics"]}` when `registry`, `topics` or `agent.thread_groups` changed, and logs `RELOAD_IGNORED`; those edits take effect on restart. Adding a partition therefore takes a restart; the weekend practice is to add partitions on the primary and the DR agent, then move tickers.
 
-**Planned, not built:** a resolver (the SPP `Resolve` op served by the snapshot service), make-before-break intraday moves of a ticker between partitions, a gateway publishing one topic over several partitions, and a Kafka ingest transport.
+**Planned, not built:** make-before-break intraday moves of a ticker between partitions, a gateway publishing one topic over several partitions, and a Kafka ingest transport.
 
 ## Deployment
 
@@ -345,6 +345,8 @@ Payloads of AGENT_CONTROL records are packed little-endian PODs in `shm/control_
 | 0xAC | RECAP_COMPLETE | AGENT_CONTROL | `RecapEvent`; `as_of_seq` is S, `record_count` the snapshot records written to this ring |
 | 0xAD | RECAP_FAILED | AGENT_CONTROL | `RecapEvent`; `status`: 1 timeout, 2 rejected, 3 snapshot too old, 4 hold overflow, 5 reserved (a gap while a symbol is pending is reported as `SYMBOL_STALE`), 6 publisher identity mismatch (planned), 7 request could not be sent, 8 reply larger than `reply_slab_bytes`. The agent asks again; the symbol stays pending. |
 | 0xAE | INSTRUMENT_GAP | AGENT_CONTROL | `InstrumentGapEvent` {symbol_id u32, topic_id u16, reserved u16, expected_seq u64, received_seq u64, detected_ns u64}, 32 bytes. One instrument's sequence jumped (see "Topics and partitions", instrument sequence); written before the record that jumped; `received > expected` always. |
+| 0xAF | SYMBOL_UNRESOLVED | AGENT_CONTROL | `SymbolUnresolvedEvent` {topic_id u16, reason u8 (1 unknown, 2 ambiguous), name_len u8, reserved u32, name[56]}, 64 bytes. A session's symbol name was not found in its topics' resolver lists, or was found in more than one (qualify it as `<topic>:<name>`). `topic_id` is the topic of a qualified name, else 0. Sent to that session once per change; an unknown name is retried on each list. |
+| 0xB0 | TOPIC_MISMATCH | AGENT_CONTROL | `TopicMismatchEvent` {topic_id u16, partitions u16 (both as configured), resolver_topic_id u16, resolver_partitions u16, changed_ns u64}, 16 bytes. The topic's resolver describes it differently from the agent's config. Sent to the topic's sessions once per change. |
 | 0xFE | PAD | PAD | none |
 
 Every event's topic field is `topic_id` (it was `partition_id`, same layout). Bus admin delivery is topic-scoped (the session must accept the record's topic). Agent control events honour the session's `agent_control` flag. `GAP_DETECTED`, `TOPIC_DEGRADED` and `TOPIC_RECOVERED` go to the sessions whose patterns take that topic; `INSTRUMENT_GAP` only to the sessions that take the record. `SYMBOL_MAPPED` goes to every session in the thread group. `AGENT_RESTARTED`, `FILTER_RELOADED` and `SESSION_CLOSING` are written only to the ring of the session they concern; the four recap events only to the rings of the recap sessions waiting on that symbol, and `SYMBOL_STALE` only to recap sessions.
@@ -362,6 +364,7 @@ A `Session` is a filter table plus a ring plus counters.
 - **YAML sessions** (`sessions:`) have `owner=config`. They survive client disconnects. `POST /reload` re-reads the file and reconciles by name: new names are created, changed filters are swapped, names that disappeared are destroyed (reason 2). A session's topics cannot change after creation; destroy and recreate. Only the `sessions` section is reloaded; a change to `registry`, `topics` or `agent.thread_groups` is reported in the reply (`"ignored"`) and logged as `RELOAD_IGNORED`, and needs a restart. There is no SIGHUP handler; reload is via HTTP.
 - **Client sessions** (`owner=client`) are created over the control channel. They live while any connection that created or attached to them is open, plus `control.linger_ms` (default 5000) after the last holder disconnects; a new `ATTACH` before expiry keeps them. Reload never touches them. A name collision is rejected (`EXISTS`), and a YAML entry that collides with a client session is ignored with an error.
 - Session names are 1 to 31 characters of `[A-Za-z0-9_-]`. Symbols in a filter are names, decimal integer ids, or `<venue>:<id>` on `symbol_scope: venue` partitions (a bare id is rejected when every partition of the session is venue-scoped, and `<venue>:<id>` when none is), and are interned on the cold path. An empty `topics` list means all topics; a pattern that matches no topic is an error. An empty `msg_types` list means all data types.
+- **Names on topics with a resolver.** A symbol that is not numeric is a venue symbol (`BTC-USD`), looked up in the resolver lists of the session's topics that have one. It must match in exactly one of them; otherwise write it `<topic>:<name>`. Lists arrive after connect, so a session is not refused at creation: a name is subscribed by its instrument once a list has it; one that no list has gets `SYMBOL_UNRESOLVED{unknown}` (not while a candidate topic has no list yet) and is retried on each list; one in several gets `SYMBOL_UNRESOLVED{ambiguous}`. Neither is subscribed. Topics without a resolver keep names as string symbols.
 
 ## Control channel
 
@@ -420,7 +423,7 @@ A partition can recap only if its symbol is an integer (the request names the in
 
 **The `aeron` component.** It adds a subscription on the response channel (an Aeron response channel, `control-mode=response` with `control=` the service's response endpoint), then a request publication carrying `response-correlation-id=<that subscription's registration id>`. The service answers on a response publication made with the requesting image's correlation id, so each agent receives only its own replies. The agent's request channel must not set `response-correlation-id` itself. Requests are small (a `RecapRequest` frame is 60 bytes), so `|term-length=65536` on the request channel (and on the service's response publication, sized to its largest reply) keeps `/dev/shm` use small; Aeron's 16 MB default term length costs about 48 MB per publication, which a container's 64 MB `/dev/shm` cannot hold twice. With `sections:` it also subscribes to the service's section stream (multicast, multi-destination or IPC), which every agent on the partition reads; the service's publication sets the flow control (`fc=max`, the multicast default, keeps a slow agent from holding the others back: it loses a section and asks again).
 
-**The recap manager** (`recap/recap_manager.h`): one cold thread per agent, started after the control server when any partition has a recap block. Each pipeline group talks to it through three SPSC queues: requests (`REQUEST` or `CANCEL` for a symbol, produced only by the pipeline, which owns who waits), replies, and slab releases. Per partition it:
+**The recap manager** (`recap/recap_manager.h`): one cold thread per agent, started after the control server when any partition has a recap block. Each pipeline group talks to it through three SPSC queues: requests (`REQUEST` or `CANCEL` for a symbol, produced only by the pipeline, which owns who waits; `FLOOR` when the pipeline rebases a waiting symbol's floor at a new stream's first sequence, so the manager matches sections against the same floor), replies, and slab releases. Per partition it:
 - coalesces: one upstream request per symbol however many sessions ask (`recap_coalesced`). A symbol's first request waits `coalesce_ms` (default 20, 0..10000) before it goes out, so sessions that ask together share it: a reload or apps restarting with the agent create sessions a few milliseconds apart, and a recap on a fast link completes in less, so without the window each would send its own (measured: 16 sessions on 2 instruments sent 32 requests; 20 ms made it 6, 200 ms made it 2). A retry queued behind a waiting request waits at most `coalesce_ms` longer; a renew does not wait;
 - renews: every request and reply carries the pipeline's recap generation for the partition, which rises when the stream changes under the pending recaps (a gap, a sequence reset, a publisher restart). A `REQUEST` with a newer generation than the symbol's request abandons the one in flight (its reply, then or later, is stray; one half assembled is skipped to its end), resets the attempt count and sends a fresh request at once, ahead of the queue (`recap_renewed`). There is no separate renew op;
 - sends SPP `Hello` (`Role` agent, `PeerEpoch` = the agent's epoch, versions 1 to its own) as the first message whenever the component reports a connection, again after every reconnect, and keeps the service's `Hello` per connection. A service whose `MinProtoVersion` is above the agent's version gets `Status{Unsupported}` and no requests until it reconnects; those requests fail as `SEND_FAILED` and are retried;
@@ -465,6 +468,22 @@ Records between the markers are delivered with the snapshot-origin flag and `Tic
 Planned: the publisher identity check (status 6, with canonical v2's `SourceEpoch`).
 
 **Topics with several partitions** (implemented). Each partition has its own snapshot service, the one that follows its stream, so S is that stream's sequence and the merge is unchanged. The pipeline keeps, per topic, the partition each symbol was last delivered on (`Partition::inst_home`, one byte per symbol, only on topics with two or more recap partitions in the group). A recap session's symbol is asked of that partition only; one not seen yet is asked of every partition. A service that does not have it answers `RecapReject{UnknownInstrument}`: that partition waits quietly (`recap_elsewhere`) while another still tries, and fails (`RECAP_FAILED`) only when every partition has said so. When one partition merges the symbol, the others drop those sessions' waits and cancel. A session gets one `RECAP_PENDING` per symbol however many partitions are asked.
+
+**Resolver** (implemented). A topic may name a resolver: a service that answers SPP `Resolve` (`docs/protocol/subplane-protocol.md`) with the topic's instruments, each with its home partition and venue symbol. In subplane-feeds it is one of the topic's snaps, on its recap request channel. The block sits at topic level and belongs to partition 1 (one per topic; refused inside a `partitions` entry):
+```yaml
+resolver:
+  type: aeron                       # the recap transport, reused
+  aeron_dir: ""
+  request:  { channel: "aeron:udp?endpoint=snap-host:40500", stream_id: 1101 }
+  response: { channel: "aeron:udp?control-mode=response|control=snap-host:40501", stream_id: 1102 }
+  timeout_ms: 2000                  # per Resolve; a timeout asks for the whole topic again
+  refresh_ms: 60000                 # asks again this often, so new listings appear; at least timeout_ms
+```
+- **The client** runs on the recap manager's thread (created for it if no partition has recap). On each connect it sends `Hello`, then a whole-topic `Resolve`, and again every `refresh_ms`. A reject or a non-Ok `Status` waits for the next refresh. A complete answer (the reply with Last) replaces the topic's directory (`recap/topic_directory.h`), read by the session manager, and interns the listed instruments.
+- **Check.** Every answer's `TopicId` and `Partitions` are compared with the config. A difference counts `resolver_mismatch` and sends `TOPIC_MISMATCH` to the topic's sessions, once per change; data is not dropped.
+- **Homes.** For an instrument not yet delivered, the list's partition seeds `inst_home`, so its recap is asked of its home partition only, not of every partition. Data still wins: a symbol already delivered keeps the partition it was delivered on.
+- **Names.** On a topic with a resolver, a session symbol that is not numeric is a venue symbol, resolved through the list (see "Sessions").
+- Counters (per topic, on partition 1, under `resolver` in `/partitions` and `/metrics`): `resolver_requests`, `resolver_replies`, `resolver_lists` (complete answers), `resolver_rejects`, `resolver_timeouts`, `resolver_stray`, `resolver_mismatch`; gauges `resolver_instruments` (the last list's size) and `resolver_connected`.
 
 **What a recapping session sees for symbol X:** `SYMBOL_STALE` (when a gap, reset or restart triggered it), `RECAP_PENDING` (unless it was pending already), then `RECAP_BEGIN`, the snapshot records, `RECAP_COMPLETE{S}`, then live data in sequence order with no gap and no duplicate. Each failure on the way is a `RECAP_FAILED`. Sessions without the flag see none of this, and nothing they receive is delayed.
 
@@ -619,12 +638,12 @@ static_assert(offsetof(Trade, Aggressor) == 72);
 | `GET /health` | `{"status":"ok"}` |
 | `GET /status` | name, version, uptime, epoch, partitions, sessions, topics |
 | `GET /topics` | per topic: name, `topic_id`, `degraded` (the count of its degraded partitions), `partitions` [{`partition_num`, `stream_id`, `state`}] and `sessions` (names of the sessions whose patterns take it); also inside `/status` as `topics` |
-| `GET /partitions` | per partition: name (`<topic>/<n>`), `topic`, `topic_id`, `partition_num`, `stream_id`, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts, `stream_mismatch` and `last_stream_stamp`, `inst_gaps` and `inst_dups`; with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
+| `GET /partitions` | per partition: name (`<topic>/<n>`), `topic`, `topic_id`, `partition_num`, `stream_id`, state (init, active, degraded), last sequence, packets, messages, unknown templates, gaps, last receive ns, transport state (`unknown`, `up`, `down`) and the `transport_down` / `transport_up` counts, `stream_mismatch` and `last_stream_stamp`, `inst_gaps` and `inst_dups`; with recap, `recap` (its counters); on a topic's partition 1 with a resolver, `resolver` (its counters); with a tap, `tap` {`ring`, `records`, `dropped`, `bytes` (ring head), `readers`, `lag_bytes` (the slowest reader)} |
 | `GET /sessions` | per session: name, id, owner, ring path, epoch, published, filtered, filter generation, ring-wide `reader_flags`, `topics` (its patterns, as given) and `readers` (slot, pid, name, lag bytes, records, overruns, heartbeat, tracing) |
 | `POST /sessions/<name>/trace?on=1\|0[&pid=N][&sample=N]` | latency tracing for the session's readers: every reader, or the slots of one pid; trace 1 record in `sample` |
 | `GET /symbols?from=&max=` | id to name pairs |
 | `GET /lvc/{symbol}?type=TRADE` | last value for a symbol (name or numeric id) and type: header fields plus `payload_hex` |
-| `GET /topology` | what the agent consumes (one `data` entry per partition, local `{topic, partition, stream_id}`, one `recap` entry per recap block) and feeds (one ring per session, with the apps reading it; one `record` entry per tap ring), each by canonical endpoint key: `docs/context/observability.md` |
+| `GET /topology` | what the agent consumes (one `data` entry per partition, local `{topic, partition, stream_id}`, one `recap` entry per recap block, one `resolver` entry per resolver block) and feeds (one ring per session, with the apps reading it; one `record` entry per tap ring), each by canonical endpoint key: `docs/context/observability.md` |
 | `GET /metrics` | Prometheus text exposition (`docs/context/observability.md`: every partition, transport, recap, group and session counter, state gauges, the `recv_to_publish` histogram, `subplane_service_info`); `?format=json` for the JSON form |
 | `POST /reload` | re-reads the config file and reconciles the `sessions` section; the reply lists `ignored` sections that changed (`registry`, `topics`, `agent.thread_groups`) |
 
@@ -663,7 +682,8 @@ Counters are one-writer relaxed atomics (`core/counters.h`), read cold.
 - `decoder`: `type: sbe_routing`, `schema` (XML path), `fields` (`symbol`, `sequence`, `exchange_ts`, `venue`, and `stream_id`, read from admin messages only; each a root-block schema field name), `symbol_id_mode` (`table` | `passthrough`), `symbol_scope` (`global` | `venue`), `messages[]` (`template` plus `msg_type` or `admin`; recap markers also take `fields`).
 - `heartbeat_timeout_ms` (default 2000), `dup_window` (default 1024).
 - `lvc` (`on` default | `off`): whether this partition's data feeds the last-value cache. Turn it off for partitions whose values are built from many messages (book updates, accumulated volume), where the last single update would mislead; their state comes from recap (planned) instead.
-- `recap`: the snapshot service for this partition; see "Recap" (config, component and manager implemented; the merge planned).
+- `recap`: the snapshot service for this partition; see "Recap".
+- `resolver`: the topic's resolver, at topic level only (it belongs to partition 1); see "Recap", Resolver.
 - `tap`: `{capacity_mb: 256, max_payload: 65536}` (both optional; the block's presence turns it on): copy every received unit into the partition's tap ring for `subplane record`; see "Tap".
 
 `sessions[]` (reloadable)
@@ -710,7 +730,7 @@ include/subplane/
   core/        message.h filter_table.h seqlock.h histogram.h counters.h clock.h spsc_queue.h
   registry/    component_registry.h
   transport/   transport.h udp_multicast.h tcp_stream.h aeron_transport.h
-  recap/       recap_transport.h aeron_recap.h recap_config.h recap_manager.h
+  recap/       recap_transport.h aeron_recap.h recap_config.h recap_manager.h topic_directory.h
   framing/     framing.h sbe_length.h
   decoder/     decoder_common.h sbe_schema.h sbe_routing_decoder.h dbn_decoder.h flatbuffers_decoder.h flatbuffers_wire.h sbe_views.h sbe_codec.h
   pipeline/    pipeline.h partition.h topic_registry.h session.h session_manager.h lvc.h symbol_resolver.h recap_state.h

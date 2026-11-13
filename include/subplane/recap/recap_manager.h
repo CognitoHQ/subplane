@@ -23,6 +23,12 @@
 // the same shape comes in the stream's own schema and framing instead, between
 // decoder-mapped RECAP_BEGIN / RECAP_END / RECAP_REJECT markers.
 //
+// Resolver: a topic may name a resolver (`resolver:`), a service answering SPP
+// `Resolve`. The manager runs its client on this thread too: the whole topic is
+// asked for on every connect and each refresh_ms; a complete answer is published
+// to the topic's TopicDirectory (session names) and noted to the pipeline
+// (homes, the topic check).
+//
 // Bulk: a REQUEST marked bulk (a partition-wide resync: a gap, a sequence
 // reset, a publisher restart) joins one `RecapRequest{Bulk}` for the whole
 // partition, answered by sections. It times out on silence: every section the
@@ -32,6 +38,7 @@
 #include "subplane/core/spsc_queue.h"
 #include "subplane/recap/recap_config.h"
 #include "subplane/recap/recap_transport.h"
+#include "subplane/recap/topic_directory.h"
 
 #include <atomic>
 #include <cstdint>
@@ -61,7 +68,8 @@ class SymbolTable;
 // section older than it cannot be merged, so the manager skips it instead of
 // filling a slab the pipeline would refuse (it refuses it anyway).
 struct RecapCommand {
-    enum class Op : uint8_t { REQUEST, CANCEL };
+    // FLOOR: the symbol's floor moved (the pipeline rebased it); `floor` is the new one.
+    enum class Op : uint8_t { REQUEST, CANCEL, FLOOR };
     Op       op = Op::REQUEST;
     uint16_t partition = 0;
     uint32_t symbol_id = 0;
@@ -98,24 +106,44 @@ struct RecapRelease {
     uint16_t slab = 0;
 };
 
+// What a topic's resolver said, for the pipeline thread: the topic (checked
+// against the config) and each instrument's home partition (seeds inst_home,
+// so recap for an instrument not yet seen asks its home only).
+struct ResolveNote {
+    enum class Kind : uint8_t { TOPIC, HOME };
+    Kind     kind = Kind::HOME;
+    bool     mismatch = false;   // TOPIC: the resolver's topic id or partition count differs from the config
+    uint16_t partition = 0;      // Partition::id() of the topic's partition 1
+    uint16_t topic_id = 0;       // TOPIC: as the resolver has it
+    uint16_t partitions = 0;     // TOPIC: as the resolver has it
+    uint16_t home_num = 0;       // HOME: the instrument's partition_num
+    uint32_t symbol_id = 0;      // HOME
+};
+
 struct RecapChannel {
     SpscQueue<RecapCommand, 4096> requests;   // pipeline -> manager
     SpscQueue<RecapReply, 1024>   replies;    // manager -> pipeline
     SpscQueue<RecapRelease, 1024> releases;   // pipeline -> manager
+    SpscQueue<ResolveNote, 4096>  resolved;   // manager -> pipeline
 };
 
 class RecapManager {
 public:
-    RecapManager(uint64_t epoch, const SymbolTable& symbols);
+    RecapManager(uint64_t epoch, SymbolTable& symbols);
     ~RecapManager();
 
     // Cold, before open(). The partition must have a recap block; its
     // component is taken from it. One channel may serve several partitions.
     bool add_partition(Partition& p, RecapChannel& ch, std::string& err);
+    // Cold, before open(). `p` is the topic's partition 1 (it holds the
+    // resolver block); `partitions` is how many the config gives the topic.
+    // Each complete answer is published to `dir` and noted to `ch`.
+    bool add_resolver(Partition& p, RecapChannel& ch, TopicDirectory& dir, uint16_t partitions, std::string& err);
     bool open(std::string& err);           // opens every component
     void start();
     void stop();
     size_t partitions() const noexcept { return parts_.size(); }
+    size_t resolvers() const noexcept { return resolvers_.size(); }
 
     // One iteration (the thread loop, or a test with its own clock). Returns
     // work done (commands, fragments, sends, timeouts).
@@ -181,6 +209,30 @@ private:
         uint64_t last_overflow_log_ns = 0;
         void on_fragment(const uint8_t* data, uint32_t len, RecapSource src) noexcept override;
     };
+    // A topic's resolver client (SPP Resolve): asks for the whole topic on
+    // every connect and each refresh_ms, assembles the paged answer.
+    struct RState : RecapFragmentSink {
+        RecapManager*   mgr = nullptr;
+        Partition*      part = nullptr;     // the topic's partition 1
+        RecapChannel*   ch = nullptr;
+        TopicDirectory* dir = nullptr;
+        uint16_t        configured = 0;     // the topic's partition count in the config
+        std::unique_ptr<RecapTransport> transport;
+        ResolverConfig  cfg;
+        Peer     peer;
+        bool     hello_sent = false;
+        bool     was_connected = false;
+        uint8_t  tx[256] = {};
+        uint64_t now = 0;
+        uint64_t rid = 0;                   // the Resolve in flight, 0 if none
+        uint64_t due_ns = 0;                // rid != 0: its timeout; else: the next ask
+        uint16_t got_topic = 0, got_parts = 0;
+        std::vector<ResolvedInstrument> building;
+        bool     noted = false;             // a TOPIC note went out
+        uint16_t noted_topic = 0, noted_parts = 0;
+        std::unordered_map<uint32_t, uint16_t> noted_home;   // symbol_id -> partition_num sent
+        void on_fragment(const uint8_t* data, uint32_t len, RecapSource src) noexcept override;
+    };
     struct BeginInfo {
         bool     has_id = false, has_as_of = false, has_epoch = false;
         uint64_t rid = 0, as_of = 0, epoch = 0;
@@ -215,14 +267,21 @@ private:
     void publish_gauges(PState& ps) noexcept;
     PState* find(uint16_t partition) noexcept;
     void loop() noexcept;
+    void run_resolver(RState& rs) noexcept;
+    void on_resolver_message(RState& rs, const uint8_t* msg, uint32_t len) noexcept;
+    void resolver_complete(RState& rs) noexcept;
+    void push_note(RecapChannel& ch, const ResolveNote& n) noexcept;
 
     uint64_t epoch_;
-    const SymbolTable& symbols_;
+    SymbolTable& symbols_;
     uint64_t next_request_id_ = 1;
     uint64_t rng_;
     std::vector<std::unique_ptr<PState>> parts_;
+    std::vector<std::unique_ptr<RState>> resolvers_;
     std::vector<RecapChannel*> channels_;
     std::deque<std::pair<RecapChannel*, RecapReply>> outbox_; // replies a full queue could not take yet
+    std::deque<std::pair<RecapChannel*, ResolveNote>> note_outbox_;
+    std::unordered_map<RecapChannel*, uint32_t> note_waiting_;   // notes of each channel in note_outbox_
     std::thread thread_;
     std::atomic<bool> stop_{false};
     bool running_ = false;

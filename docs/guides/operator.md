@@ -91,4 +91,6 @@ Within a moment, `subplane_app_read_latency_seconds{session, app, pid}` shows th
 | `subplane_partition_messages_total` flat (per `topic` and `partition`) | `subplane_transport_state`, the publisher, multicast routing (`subplane probe`) |
 | an app appears in `/topology` without `reader` | it was built with an older SDK, or cannot write the ring file (`agent.ring_mode`) |
 | `subplane_reader_slots_used` near 64 per session | more than 64 readers on one ring; the extras read but do not report |
+| apps report `SYMBOL_UNRESOLVED`, or recap of an unseen ticker goes to every partition | the topic's `resolver` in `/partitions` (on `<topic>/1`): `resolver_connected` 1, `resolver_lists` rising every `refresh_ms`, `resolver_instruments` as expected |
+| `subplane_resolver_mismatch_total` rising | the agent's topic (registry id, number of partitions) differs from what the publisher's resolver says; fix whichever is wrong |
 | `scan.unreadable` high in `/topology` | the agent cannot read other users' `/proc/<pid>/maps`: run it with `CAP_SYS_PTRACE`, or rely on reader slots |

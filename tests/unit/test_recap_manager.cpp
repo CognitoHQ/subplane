@@ -834,6 +834,25 @@ TEST_CASE("recap manager: a section older than the floor is skipped; the request
     CHECK(rs[0].as_of == 100);
 }
 
+TEST_CASE("recap manager: FLOOR moves a waiting symbol's floor; a restarted stream's section is taken at once") {
+    Rig r;
+    const uint32_t a = r.symbols.intern_u64(21);
+    r.request_floor(a, 79000);   // posted by the restart, before the new stream's first sequence
+    r.step();
+    REQUIRE(requests(*r.recap).size() == 1);
+    REQUIRE(r.ch.requests.push({.op = RecapCommand::Op::FLOOR, .symbol_id = a, .floor = 0})); // rebased at seq 1
+    REQUIRE(r.ch.requests.push({.op = RecapCommand::Op::FLOOR, .symbol_id = r.symbols.intern_u64(22), .floor = 5})); // nobody waits: ignored
+    r.step();
+    r.recap->push_section(s_section(1, 40, 21, {trade_msg(21, 1)}));
+    r.step();
+    auto rs = r.replies();
+    REQUIRE(rs.size() == 1);
+    CHECK(rs[0].as_of == 40);
+    CHECK(r.c().recap_sections_skipped == 0);
+    CHECK(r.c().recap_coalesced == 0);
+    CHECK(requests(*r.recap).size() == 1);
+}
+
 TEST_CASE("recap manager: a 1:1 reply and a section assemble at once, each on its own source") {
     Rig r;
     const uint32_t a = r.symbols.intern_u64(31), b = r.symbols.intern_u64(32);

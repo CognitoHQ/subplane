@@ -81,6 +81,8 @@ enum class ControlCode : uint8_t {
     RECAP_COMPLETE      = 0xAC,
     RECAP_FAILED        = 0xAD,
     INSTRUMENT_GAP      = 0xAE,
+    SYMBOL_UNRESOLVED   = 0xAF,
+    TOPIC_MISMATCH      = 0xB0,
 
     PAD                 = 0xFE,
 };

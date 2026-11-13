@@ -79,6 +79,8 @@ Label names must match `[a-zA-Z_][a-zA-Z0-9_]*` and must not start with `__`; ot
 | `subplane_topology_edge` | gauge | direction, role, key, topic and partition, or session | 1 when the edge is up |
 | `subplane_topology_scan_unreadable` | gauge | | processes the consumer scan could not read |
 | `subplane_recap_connected` | gauge | topic, partition | 1 while the recap component is connected to its service |
+| `subplane_resolver_<counter>_total` | counter | topic, partition | resolver counters (architecture.md, "Recap", Resolver), without their `resolver_` prefix: `requests`, `replies`, `lists`, `rejects`, `timeouts`, `stray`, `mismatch`; a topic's partition 1, with a resolver only |
+| `subplane_resolver_instruments`, `subplane_resolver_connected` | gauge | topic, partition | instruments in the last complete list; 1 while connected to the resolver |
 | `subplane_app_lag_bytes` | gauge | session, app, pid | ring bytes the app has not read (head minus its reader's position) |
 | `subplane_app_heartbeat_age_seconds` | gauge | session, app, pid | seconds since the app's reader last reported |
 | `subplane_app_records_total`, `subplane_app_overruns_total` | counter | session, app, pid | records the reader returned; times it was lapped |
@@ -161,7 +163,7 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 | `subplane_snap_sections_back_pressured_total`, `subplane_snap_sections_throttled_total` | counter | | sections that waited for a subscriber (flow control), or for the rate budget (`--section-rate`) |
 | `subplane_snap_sections_dropped_total` | counter | | sections not delivered: nobody subscribed, or the publication failed (the agents ask again) |
 | `subplane_snap_sections_connected` | gauge | | 1 while an agent subscribes to the section stream |
-| `subplane_snap_recap_<counter>_total` | counter | | the recap channel: `frames`, `malformed`, `hellos`, `unsupported`, `replies` (frames: rejects and Hellos), `reply_dropped` |
+| `subplane_snap_recap_<counter>_total` | counter | | the recap channel: `frames`, `malformed`, `hellos`, `unsupported`, `replies` (frames: rejects, Hellos and resolve answers), `reply_dropped`, `resolves` (SPP `Resolve` answered, with `--instruments`), `not_here` (RecapRequests refused at once: the instruments file puts the instrument on another partition, or does not list it) |
 | `subplane_snap_recap_peers` | gauge | | requesters (agents) connected to the recap channel |
 | `subplane_snap_gateway_<counter>_total` | counter | | with `--gateway-control`: `hellos_sent`, `republish_sent`, `offer_failed`, `hellos`, `status_ok`, `status_not_found`, `status_other`, `malformed` |
 | `subplane_snap_gateway_connected` | gauge | | with `--gateway-control`: 1 while the gateway's control channel takes requests |
@@ -200,11 +202,12 @@ Every sample carries `service="spwsgw"`, `instance` and `host`; the gateway's ow
 - **`role`:** what is lost if the edge breaks:
   - `data`: the live stream;
   - `recap`: recovery only;
+  - `resolver`: the topic's instrument list (an agent's `resolver` block); losing it keeps the last list, so new names and homes wait;
   - `record`: a recording only (a partition's tap ring, read by `subplane record`; its `local` has `topic` and `partition`);
   - `control`: a request path, for example a gateway's republish input (planned).
 - **`state`:**
   - for a `data` edge, the transport state: `up`, `down` or `unknown`;
-  - for a `recap` edge, whether the recap component is connected to its snapshot service;
+  - for a `recap` or `resolver` edge, whether the component is connected to its service;
   - a ring is `up` while the agent runs.
 - **`publisher`:** what the transport knows about the current source. For Aeron this is the newest image's session id; a new id means a new publisher instance.
 
@@ -236,7 +239,7 @@ An app needs no code to appear in `consumers`. The agent finds it in three ways:
 ### The snapshot service's topology
 - **Upstream `data`:** the gateway's canonical stream (`--data-channel`, `--data-stream`). `state` is `up` while it has an image.
 - **Upstream `recap`:** the gateway's SourceState stream (`--state-stream`), and with `--gateway-control` its SPP control channel. The gateway lists both downstream with the same keys. `state` is `up` while the stream has an image, or while the control channel takes requests.
-- **Downstream `recap`:** the recap request channel (`--recap-channel`, `--recap-stream`), keyed as the agent keys its partition's `recap.request` (upstream there). `state` is `up` while an agent is connected.
+- **Downstream `recap`:** the recap request channel (`--recap-channel`, `--recap-stream`), keyed as the agent keys its partition's `recap.request` (upstream there). An agent whose `resolver` points at this snap lists the same key with role `resolver`. `state` is `up` while an agent is connected.
 - `local` gives the number of `instruments` known.
 
 ### Endpoint keys
