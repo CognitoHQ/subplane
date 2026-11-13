@@ -11,7 +11,8 @@ Hot-path rewrite complete (M0-M8): transport, framing, routing decoder, pipeline
 ## Tech Stack
 Only what builds today:
 - **Language**: C++26 (GCC 16, Ubuntu 26.04), CMake 3.20+, `-Werror`; built in the toolchain image (`docker/Dockerfile`, `scripts/dev.sh`), never with the host compiler. The app SDK (client headers, generated views) stays C++20; the examples build as C++20 to hold it there
-- **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`; Aeron C client + media driver fetched at configure time (`cmake/aeron.cmake`, pinned tag, no Java; needs CMake 3.30+; `SUBPLANE_WITH_AERON=OFF` to drop it)
+- **Dependencies**: yaml-cpp (system); pugixml and doctest vendored in `third_party/`; Aeron C client + media driver fetched at configure time (`cmake/aeron.cmake`, pinned tag, no Java; needs CMake 3.30+; `SUBPLANE_WITH_AERON=OFF` to drop it); libvalkey fetched the same way for subplane-lib (`cmake/valkey.cmake`, `SUBPLANE_WITH_VALKEY=OFF` to drop it)
+- **subplane-lib** (`libs/`, `include/subplane/lib/`, C++20): rate limits and per-process primary/secondary election over Valkey; standalone, not linked yet
 - **Ingest**: UDP multicast / unicast (`recvmmsg`, optional busy-poll and kernel timestamps); TCP byte stream reassembled into records (`tcp_stream`); Aeron streams, IPC or UDP, optional embedded media driver (`aeron`)
 - **Decode**: SBE routing decoder (routing fields only) with declarative framing and schema-walk message length; DBN decoder (Databento, fixed 16-byte header); FlatBuffers decoder (field ids via the vtable, no library). Encoding is per-partition config. Canonical flat SBE schema (`schemas/subplane_canonical.xml`) with typed C++/Python/q views generated at build time by `subplane schema`.
 - **Fan-out**: shared-memory ring per session in `/dev/shm`, header-only reader SDK

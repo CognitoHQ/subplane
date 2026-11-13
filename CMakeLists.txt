@@ -24,6 +24,7 @@ option(SUBPLANE_BUILD_TESTS "Build unit and integration tests" ON)
 option(SUBPLANE_BUILD_TOOLS "Build the subplane CLI (probe, tail, schema, send, replay, dbn-sim, aeron-pub, soak)" ON)
 option(SUBPLANE_WERROR "Treat warnings as errors" ON)
 option(SUBPLANE_WITH_AERON "Build the aeron transport (fetches the Aeron C client + media driver)" ON)
+option(SUBPLANE_WITH_VALKEY "Build subplane-lib's Valkey store (fetches libvalkey)" ON)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -46,6 +47,9 @@ target_include_directories(doctest INTERFACE third_party/doctest)
 
 if(SUBPLANE_WITH_AERON)
     include(cmake/aeron.cmake)
+endif()
+if(SUBPLANE_WITH_VALKEY)
+    include(cmake/valkey.cmake)
 endif()
 
 # Core library: everything except main().
@@ -107,6 +111,9 @@ if(SUBPLANE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# subplane-lib (libs/): rate limits and election, its own target and tests.
+add_subdirectory(libs)
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/examples/CMakeLists.txt)
     add_subdirectory(examples)
