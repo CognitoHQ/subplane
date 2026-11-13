@@ -128,7 +128,7 @@ Exchange -> firm feed handler -> internal bus (topics x partitions, published SB
 
 subplane does not talk to exchanges. Its input is a firm's own bus, which already carries SBE messages described by a published schema.
 
-The bus is organized as topics, each holding partitions; a partition is one stream with one publisher and one sequence. Apps subscribe to topics and never see partitions, which are an operator's view (architecture.md, "Topics and partitions"). Per-instrument sequence is implemented (2026-11-11): a publisher counts each instrument across the topic, the agent drops duplicates, detects instrument gaps and restarts, and the record's `sequence` becomes the instrument's. Planned: a resolver served by the snapshot service, make-before-break moves of a ticker between partitions, and a gateway publishing one topic over several partitions.
+The bus is organized as topics, each holding partitions; a partition is one stream with one publisher and one sequence. Apps subscribe to topics and never see partitions, which are an operator's view (architecture.md, "Topics and partitions"). Per-instrument sequence is implemented (2026-11-11): a publisher counts each instrument across the topic, the agent drops duplicates, detects instrument gaps and restarts, and the record's `sequence` becomes the instrument's. The resolver is implemented (2026-11-13): the snapshot service answers SPP `Resolve` from the gateway's instruments file, and the agent uses the list to check its topic config, to send an unseen ticker's recap to its home partition only, and to subscribe sessions by venue symbol. Planned: make-before-break moves of a ticker between partitions, and a gateway publishing one topic over several partitions.
 
 ## What apps get
 

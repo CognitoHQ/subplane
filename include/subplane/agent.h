@@ -31,6 +31,7 @@ class Pipeline;
 class SessionManager;
 class ControlServer;
 class RecapManager;
+class TopicDirectory;
 
 class Agent {
 public:
@@ -109,6 +110,8 @@ private:
     std::vector<std::unique_ptr<Partition>> partitions_;
     std::vector<std::unique_ptr<Pipeline>>  groups_;
     std::vector<int>                group_cpus_;
+    // INTENT: before sessions_ and recap_, so it outlives both (they hold pointers).
+    std::vector<std::unique_ptr<TopicDirectory>> directories_;   // one per topic with a resolver
     std::unique_ptr<SessionManager> sessions_;
     std::unique_ptr<ControlServer>  control_;
     std::unique_ptr<RecapManager>   recap_;
@@ -127,6 +130,7 @@ private:
     std::string site_, env_;
     std::vector<std::pair<std::string, std::string>> info_labels_;
     std::string recap_keys_[64];            // by partition id: the recap request stream's endpoint key
+    std::string resolver_keys_[64];         // by partition id (a topic's partition 1): the resolver's
     mutable std::mutex mutex_;
 };
 

@@ -10,6 +10,8 @@
 #include "subplane/pipeline/partition.h"
 #include "subplane/pipeline/pipeline.h"
 #include "subplane/pipeline/session.h"
+#include "subplane/recap/topic_directory.h"
+#include "subplane/shm/control_events.h"
 #include "subplane/status_types.h"
 #include "subplane/symbol_table.h"
 
@@ -33,6 +35,17 @@ struct SessionManagerConfig {
     uint64_t    reader_stale_ns = 30'000'000'000ull; // a dead reader's slot is reclaimed after this long without a heartbeat
 };
 
+// A ticker name a session asked for that is not subscribed (SYMBOL_UNRESOLVED).
+// `listed` is false while a topic it could be on has no resolver list yet: it is
+// then not reported, only retried.
+struct UnresolvedName {
+    std::string      name;
+    uint16_t         topic_id = 0;   // the qualifying topic, 0 for a bare name
+    UnresolvedReason reason = UnresolvedReason::UNKNOWN;
+    bool             listed = true;
+    bool operator==(const UnresolvedName& o) const noexcept { return name == o.name && topic_id == o.topic_id && reason == o.reason && listed == o.listed; }
+};
+
 struct SessionAttachInfo {
     uint32_t    id = 0;
     std::string name;
@@ -46,8 +59,11 @@ struct SessionAttachInfo {
 
 class SessionManager {
 public:
+    // `directories`: the resolver lists of the topics that have one; a session's
+    // non-numeric symbols on those topics are ticker names resolved through them.
     SessionManager(SessionManagerConfig cfg, SymbolTable& symbols, Lvc& lvc,
-                   std::vector<Partition*> partitions, std::vector<Pipeline*> groups);
+                   std::vector<Partition*> partitions, std::vector<Pipeline*> groups,
+                   std::vector<TopicDirectory*> directories = {});
     ~SessionManager();
 
     // Creates and attaches. Fails on name collision or unknown partition/symbol constraints.
@@ -69,6 +85,9 @@ public:
     void client_disconnected(const std::string& name, uint64_t now_ns);
     void client_reattached(const std::string& name);
     void service_linger(uint64_t now_ns);
+    // Cold, periodic: when a resolver list changed, resolves the names still
+    // unresolved again; a name now listed joins its session's filter.
+    void service_names();
 
     // Reader slots, cold. Frees the slots of readers that are dead (pid gone,
     // or reused with another start time) and silent for reader_stale_ns.
@@ -87,7 +106,9 @@ public:
     bool snapshot(const std::string& name, uint64_t& ring_head_at_snapshot, const SnapshotFn& fn) const;
 
     // Resolves a spec into a FilterSpec + partition mask + owning group. Exposed for tests.
-    bool resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& partition_mask, Pipeline*& group, std::string& err) const;
+    // Ticker names that do not resolve are left out of the filter and listed in `unresolved`.
+    bool resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& partition_mask, Pipeline*& group, std::string& err,
+                 std::vector<UnresolvedName>* unresolved = nullptr) const;
 
 private:
     struct Entry {
@@ -98,6 +119,9 @@ private:
         bool        client_connected = false;
         uint64_t    disconnect_ns = 0;
         std::vector<uint32_t> recap_symbols; // filter symbol ids of a recap session
+        std::vector<UnresolvedName> unresolved;  // names left out of the filter
+        std::vector<UnresolvedName> reported;    // SYMBOL_UNRESOLVED already written
+        uint64_t names_version = 0;              // directories' versions when last resolved
     };
 
     Entry* find_locked(const std::string& name);
@@ -106,6 +130,9 @@ private:
     std::string ring_path(const std::string& name) const;
     bool post_and_wait(Pipeline& g, const PipelineCommand& c, std::string& err);
     bool specs_differ(const SessionSpec& a, const SessionSpec& b) const;
+    bool set_filter_locked(Entry& e, const SessionSpec& spec, std::string& err);
+    void report_unresolved_locked(Entry& e);
+    uint64_t names_version() const noexcept;
     // Recap sessions: a symbol list (not all symbols), agent control events on,
     // and the distinct symbols of all recap sessions on each recap partition
     // within its recap.max_pending, so the pipeline's pending table cannot fill.
@@ -117,6 +144,7 @@ private:
     Lvc& lvc_;
     std::vector<Partition*> partitions_;
     std::vector<Pipeline*> groups_;
+    std::vector<TopicDirectory*> directories_;
     mutable std::mutex mutex_;
     uint64_t last_reader_service_ns_ = 0;
     std::vector<Entry> entries_;

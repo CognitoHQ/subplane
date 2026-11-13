@@ -43,6 +43,7 @@ struct PartitionConfig {
     YAML::Node  framing_node;
     YAML::Node  decoder_node;
     YAML::Node  recap_node;           // optional `recap:` block (snapshot service)
+    YAML::Node  resolver_node;        // optional topic `resolver:` block; partition 1 only
     std::string base_dir;             // for resolving relative schema paths
     uint32_t    heartbeat_timeout_ms = 2000;
     uint64_t    dup_window = 1024;
@@ -105,7 +106,8 @@ public:
     // via the registry (or uses `transport_override` when given, for tests).
     bool build(const PartitionConfig& cfg, std::string& err,
                std::unique_ptr<Transport> transport_override = nullptr,
-               std::unique_ptr<RecapTransport> recap_override = nullptr);
+               std::unique_ptr<RecapTransport> recap_override = nullptr,
+               std::unique_ptr<RecapTransport> resolver_override = nullptr);
     bool open(std::string& err);   // opens the transport
     void close() noexcept;         // closes the transport, and marks the tap ring CLOSED
 
@@ -187,6 +189,11 @@ public:
     const RecapConfig& recap_config() const noexcept { return recap_cfg_; }
     std::unique_ptr<RecapTransport> take_recap_transport() noexcept { return std::move(recap_transport_); }
     const RecapTransport* recap_transport() const noexcept { return recap_transport_.get(); } // null once taken
+    // Resolver (cold): the topic's `resolver:` block, held by its partition 1.
+    bool has_resolver() const noexcept { return has_resolver_; }
+    const ResolverConfig& resolver_config() const noexcept { return resolver_cfg_; }
+    std::unique_ptr<RecapTransport> take_resolver_transport() noexcept { return std::move(resolver_transport_); }
+    const RecapTransport* resolver_transport() const noexcept { return resolver_transport_.get(); } // null once taken
 
     Transport& transport() noexcept { return *transport_; }
     const Transport& transport() const noexcept { return *transport_; }
@@ -196,6 +203,7 @@ public:
     // Hot state (pipeline thread only, except counters which are read cold).
     PartitionCounters counters;
     RecapCounters     recap_counters;        // written by the recap manager thread
+    ResolverCounters  resolver_counters;     // the same; partition 1 of a topic with a resolver
     uint64_t          expected_seq = 0;      // 0 = unknown, resync on next
     // Backward jumps smaller than this are duplicates; larger ones mean the
     // publisher restarted its sequence and we resync (counted as seq_resets).
@@ -249,10 +257,14 @@ private:
     bool                       has_recap_ = false;
     RecapConfig                recap_cfg_;
     std::unique_ptr<RecapTransport> recap_transport_;
+    bool                       has_resolver_ = false;
+    ResolverConfig             resolver_cfg_;
+    std::unique_ptr<RecapTransport> resolver_transport_;
     std::string                schema_xml_;
     std::unique_ptr<RingWriter> tap_ring_;
     std::string                tap_path_, tap_ctx_path_;
     bool build_recap(std::unique_ptr<RecapTransport> recap_override, std::string& err);
+    bool build_resolver(std::unique_ptr<RecapTransport> resolver_override, std::string& err);
 };
 
 } // namespace subplane

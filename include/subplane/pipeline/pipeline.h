@@ -27,11 +27,18 @@
 namespace subplane {
 
 struct PipelineCommand {
-    enum class Type : uint8_t { ADD_SESSION, REMOVE_SESSION, SWAP_FILTER, STOP };
+    // EMIT writes one agent control record (code, body) to the session's ring:
+    // the cold side's events (SYMBOL_UNRESOLVED), since only this thread writes rings.
+    enum class Type : uint8_t { ADD_SESSION, REMOVE_SESSION, SWAP_FILTER, EMIT, STOP };
+    static constexpr uint32_t kMaxBody = 64;
     Type               type = Type::STOP;
     Session*           session = nullptr;
     const FilterTable* filter = nullptr;
     uint32_t           generation = 0;
+    ControlCode        code = ControlCode::PAD;   // EMIT
+    uint16_t           topic_id = 0;              // EMIT: the record header's
+    uint8_t            body_len = 0;              // EMIT
+    uint8_t            body[kMaxBody] = {};       // EMIT
 };
 
 class Pipeline {
@@ -104,6 +111,7 @@ private:
     void recap_restart(Partition& p, SymbolStaleReason reason, uint64_t now) noexcept;
     void recap_rebase(Partition& p, uint64_t seq) noexcept;
     void apply_recaps(uint64_t now) noexcept;
+    void apply_resolved(uint64_t now) noexcept;
     void recap_reply(Partition& p, const RecapReply& r, uint64_t now) noexcept;
     void recap_consider(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept;
     void recap_merge(Partition& p, RecapPending& e, const RecapReply& r, uint64_t now) noexcept;
@@ -135,6 +143,7 @@ private:
     std::vector<std::vector<uint64_t>> inst_states_;
     std::vector<std::vector<uint8_t>>  inst_homes_;
     uint32_t              max_symbols_ = 0;
+    bool                  has_resolver_ = false;   // a partition here holds its topic's resolver
     std::vector<RecapCommand> recap_out_;
     std::vector<RecapRelease> release_out_;
     size_t                recap_out_cap_ = 0;

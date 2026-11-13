@@ -66,6 +66,7 @@ bool PartitionConfig::parse(const YAML::Node& node, uint16_t id, const std::stri
         }
         out.decoder_node = YAML::Clone(node["decoder"]);
         if (node["recap"].IsDefined()) out.recap_node = YAML::Clone(node["recap"]);
+        if (node["resolver"].IsDefined()) out.resolver_node = YAML::Clone(node["resolver"]);
         out.heartbeat_timeout_ms = node["heartbeat_timeout_ms"].as<uint32_t>(2000u);
         out.dup_window = node["dup_window"].as<uint64_t>(1024u);
         if (const auto l = node["lvc"]) {
@@ -138,6 +139,8 @@ YAML::Node topic_partition_node(const YAML::Node& tn, size_t index) {
     // Inherited by every partition, partition 2 would ask for a second driver on
     // the same directory and the agent would refuse to start.
     if (index != 0 && base["transport"].IsMap() && base["transport"]["driver"].IsDefined()) base["transport"].remove("driver");
+    // INTENT: one resolver per topic: partition 1 holds the topic's client.
+    if (index != 0) base.remove("resolver");
     YAML::Node entry(YAML::NodeType::Map);
     if (const auto ps = tn["partitions"]; ps.IsDefined()) {
         if (!ps.IsSequence() || index >= ps.size()) return YAML::Node(YAML::NodeType::Undefined);
@@ -191,6 +194,10 @@ bool expand_topics(const YAML::Node& topics, const TopicRegistry& registry, cons
                         err = "topic " + tname + ": a partition has no name of its own (it is " + tname + "/<n>)";
                         return false;
                     }
+                    if (e.IsMap() && e["resolver"].IsDefined()) {
+                        err = "topic " + tname + ": resolver is a topic key (one per topic), not a partition's";
+                        return false;
+                    }
                 }
                 count = ps.size();
             }
@@ -220,7 +227,7 @@ bool expand_topics(const YAML::Node& topics, const TopicRegistry& registry, cons
 }
 
 bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_ptr<Transport> transport_override,
-                      std::unique_ptr<RecapTransport> recap_override) {
+                      std::unique_ptr<RecapTransport> recap_override, std::unique_ptr<RecapTransport> resolver_override) {
     cfg_ = cfg;
     dup_window = cfg.dup_window;
     lvc_enabled = cfg.lvc;
@@ -310,6 +317,7 @@ bool Partition::build(const PartitionConfig& cfg, std::string& err, std::unique_
     }
 
     if (!build_recap(std::move(recap_override), err)) return false;
+    if (!build_resolver(std::move(resolver_override), err)) return false;
     if (transport_override) {
         transport_ = std::move(transport_override);
     } else {
@@ -362,6 +370,26 @@ bool Partition::build_recap(std::unique_ptr<RecapTransport> recap_override, std:
         if (!recap_transport_) { err = pre + err; return false; }
     }
     has_recap_ = true;
+    return true;
+}
+
+bool Partition::build_resolver(std::unique_ptr<RecapTransport> resolver_override, std::string& err) {
+    has_resolver_ = false;
+    if (!cfg_.resolver_node.IsDefined() || cfg_.resolver_node.IsNull()) return true;
+    const std::string pre = "topic " + cfg_.topic_name + ": resolver: ";
+    if (!ResolverConfig::parse(cfg_.resolver_node, resolver_cfg_, err)) { err = pre + err; return false; }
+    // INTENT: the resolver names instruments as u64 ids, as recap does.
+    const bool str = decoder_type_ == DecoderType::FLATBUFFERS ? fb_decoder_.has_string_symbol()
+                   : decoder_type_ == DecoderType::DBN         ? false
+                                                               : sbe_decoder_.has_string_symbol();
+    if (str) { err = pre + "needs an integer symbol field; the resolver names instruments as u64 ids"; return false; }
+    if (resolver_override) {
+        resolver_transport_ = std::move(resolver_override);
+    } else {
+        resolver_transport_ = make_component(recap_components(), resolver_cfg_.type, cfg_.resolver_node, err);
+        if (!resolver_transport_) { err = pre + err; return false; }
+    }
+    has_resolver_ = true;
     return true;
 }
 

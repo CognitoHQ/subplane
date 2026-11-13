@@ -7,15 +7,23 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstring>
 #include <csignal>
 #include <unordered_set>
 
 namespace subplane {
 
 SessionManager::SessionManager(SessionManagerConfig cfg, SymbolTable& symbols, Lvc& lvc,
-                               std::vector<Partition*> partitions, std::vector<Pipeline*> groups)
+                               std::vector<Partition*> partitions, std::vector<Pipeline*> groups,
+                               std::vector<TopicDirectory*> directories)
     : cfg_(std::move(cfg)), symbols_(symbols), lvc_(lvc),
-      partitions_(std::move(partitions)), groups_(std::move(groups)) {}
+      partitions_(std::move(partitions)), groups_(std::move(groups)), directories_(std::move(directories)) {}
+
+uint64_t SessionManager::names_version() const noexcept {
+    uint64_t v = 0;
+    for (const TopicDirectory* d : directories_) v += d->version();
+    return v;
+}
 
 SessionManager::~SessionManager() {
     destroy_all();
@@ -40,7 +48,8 @@ const SessionManager::Entry* SessionManager::find_locked(const std::string& name
 }
 
 bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& partition_mask,
-                             Pipeline*& group, std::string& err) const {
+                             Pipeline*& group, std::string& err, std::vector<UnresolvedName>* unresolved) const {
+    if (unresolved) unresolved->clear();
     fs = FilterSpec{};
     partition_mask = 0;
     group = nullptr;
@@ -96,8 +105,63 @@ bool SessionManager::resolve(const SessionSpec& spec, FilterSpec& fs, uint64_t& 
     }
     const bool passthrough = n_pass != 0;
 
+    // The session's topics that have a resolver: on them a non-numeric symbol
+    // is a ticker name, looked up in the topic's list.
+    std::vector<const TopicDirectory*> named;
+    for (const TopicDirectory* d : directories_) {
+        if (std::find(fs.topic_ids.begin(), fs.topic_ids.end(), d->topic_id()) != fs.topic_ids.end()) named.push_back(d);
+    }
+    auto topic_partition = [&](uint16_t topic_id) -> const Partition* {
+        for (const Partition* p : partitions_) if (p->topic_id() == topic_id) return p;
+        return nullptr;
+    };
+
     fs.all_symbols = spec.all_symbols;
     for (const auto& sym : spec.symbols) {
+        uint64_t nv = 0;
+        uint16_t nvenue = 0;
+        if (!named.empty() && !parse_numeric_symbol(sym, nv, nvenue)) {
+            // INTENT: a name must match in exactly one of the session's topics
+            // (Satya, 2026-11-13); `<topic>:<name>` picks the topic. The lists
+            // arrive after the resolvers connect, so a miss is not an error
+            // here: the name is left out and resolved again when a list changes.
+            std::string_view name = sym;
+            const TopicDirectory* only = nullptr;
+            if (const size_t colon = name.find(':'); colon != std::string_view::npos) {
+                for (const TopicDirectory* d : named) {
+                    if (d->topic_name() == name.substr(0, colon)) { only = d; name.remove_prefix(colon + 1); break; }
+                }
+            }
+            UnresolvedName miss;
+            miss.name = sym;
+            miss.topic_id = only ? only->topic_id() : 0;
+            const TopicDirectory* hit_dir = nullptr;
+            ResolvedInstrument hit;
+            uint32_t hits = 0;
+            bool all_listed = true;
+            for (const TopicDirectory* d : named) {
+                if (only && d != only) continue;
+                all_listed = all_listed && d->version() != 0;
+                ResolvedInstrument r;
+                if (d->find(name, r)) { ++hits; hit = r; hit_dir = d; }
+            }
+            if (hits != 1) {
+                miss.reason = hits > 1 ? UnresolvedReason::AMBIGUOUS : UnresolvedReason::UNKNOWN;
+                miss.listed = hits > 1 || all_listed;
+                if (unresolved) unresolved->push_back(miss);
+                continue;
+            }
+            const Partition* p = topic_partition(hit_dir->topic_id());
+            uint32_t id = 0;
+            if (p != nullptr && p->symbol_passthrough()) id = hit.instrument < cfg_.max_symbols ? static_cast<uint32_t>(hit.instrument) : 0;
+            else if (p != nullptr) id = symbols_.intern_u64(hit.instrument, p->symbol_venue_scope() ? hit.venue : uint16_t{0});
+            if (id == 0) {
+                err = "session " + spec.name + ": cannot intern symbol " + sym + " (table full or id out of range)";
+                return false;
+            }
+            fs.symbol_ids.push_back(id);
+            continue;
+        }
         // INTENT: interning on the cold path is allowed (table is lock-free and
         // append-only); the pipeline thread may intern the same name
         // concurrently and will converge on the same id.
@@ -187,10 +251,14 @@ bool SessionManager::create(const SessionSpec& spec, std::string& err) {
     FilterSpec fs;
     uint64_t mask = 0;
     Pipeline* group = nullptr;
-    if (!resolve(spec, fs, mask, group, err)) return false;
+    std::vector<UnresolvedName> unresolved;
+    const uint64_t version = names_version();
+    if (!resolve(spec, fs, mask, group, err, &unresolved)) return false;
     if (!check_recap_locked(spec, fs, mask, nullptr, err)) return false;
 
     Entry e;
+    e.unresolved = std::move(unresolved);
+    e.names_version = version;
     e.spec = spec;
     e.group = group;
     e.generation = 1;
@@ -230,6 +298,7 @@ bool SessionManager::create(const SessionSpec& spec, std::string& err) {
     e.client_connected = spec.owner == "client";
     entries_.push_back(std::move(e));
     LogRegistry::instance().info("SESSION", "CREATED", spec.name + " -> " + path);
+    report_unresolved_locked(entries_.back());
     return true;
 }
 
@@ -240,6 +309,11 @@ bool SessionManager::set_filter(const SessionSpec& spec, std::string& err) {
         err = "session " + spec.name + " not found";
         return false;
     }
+    return set_filter_locked(*e, spec, err);
+}
+
+bool SessionManager::set_filter_locked(Entry& entry, const SessionSpec& spec, std::string& err) {
+    Entry* e = &entry;
     // INTENT: recap is fixed at creation; SET_FILTER keeps it whatever the
     // request says (its recap byte is defined for CREATE_SESSION only).
     SessionSpec want = spec;
@@ -247,7 +321,9 @@ bool SessionManager::set_filter(const SessionSpec& spec, std::string& err) {
     FilterSpec fs;
     uint64_t mask = 0;
     Pipeline* group = nullptr;
-    if (!resolve(want, fs, mask, group, err)) return false;
+    std::vector<UnresolvedName> unresolved;
+    const uint64_t version = names_version();
+    if (!resolve(want, fs, mask, group, err, &unresolved)) return false;
     if (mask != e->session->partition_mask) {
         err = "session " + spec.name + ": topics cannot change after creation; destroy and recreate";
         return false;
@@ -273,7 +349,69 @@ bool SessionManager::set_filter(const SessionSpec& spec, std::string& err) {
     SessionSpec keep = want;
     keep.owner = e->spec.owner;
     e->spec = keep;
+    e->unresolved = std::move(unresolved);
+    e->names_version = version;
+    report_unresolved_locked(*e);
     return true;
+}
+
+// Writes SYMBOL_UNRESOLVED for each unresolved name not reported with the same
+// reason before. A name that resolved, or whose topic has no list yet, is
+// forgotten, so it is reported again if it goes missing later.
+void SessionManager::report_unresolved_locked(Entry& e) {
+    std::vector<UnresolvedName> now;
+    for (const UnresolvedName& u : e.unresolved) {
+        if (!u.listed) continue;
+        now.push_back(u);
+        if (std::find(e.reported.begin(), e.reported.end(), u) != e.reported.end()) continue;
+        SymbolUnresolvedEvent ev{};
+        ev.topic_id = u.topic_id;
+        ev.reason = static_cast<uint8_t>(u.reason);
+        ev.name_len = static_cast<uint8_t>(u.name.size() < sizeof(ev.name) ? u.name.size() : sizeof(ev.name));
+        std::memcpy(ev.name, u.name.data(), ev.name_len);
+        PipelineCommand c;
+        c.type = PipelineCommand::Type::EMIT;
+        c.session = e.session.get();
+        c.code = ControlCode::SYMBOL_UNRESOLVED;
+        c.topic_id = u.topic_id;
+        c.body_len = sizeof(ev);
+        std::memcpy(c.body, &ev, sizeof(ev));
+        std::string err;
+        if (!post_and_wait(*e.group, c, err)) {
+            LogRegistry::instance().warn("SESSION", "UNRESOLVED", e.spec.name + ": " + err);
+            continue;
+        }
+        LogRegistry::instance().warn("SESSION", "UNRESOLVED", e.spec.name + ": " + u.name +
+                                     (u.reason == UnresolvedReason::AMBIGUOUS ? " is listed in more than one of its topics; qualify it as <topic>:<name>"
+                                                                              : " is not listed by its topics' resolvers"));
+    }
+    e.reported = std::move(now);
+}
+
+void SessionManager::service_names() {
+    if (directories_.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint64_t version = names_version();
+    for (Entry& e : entries_) {
+        if (!e.session || e.unresolved.empty() || e.names_version == version) continue;
+        // INTENT: a refresh (every refresh_ms) changes the version whether or
+        // not the list did; swap the filter only when a name now resolves
+        // differently, so apps do not see FILTER_RELOADED for nothing.
+        FilterSpec fs;
+        uint64_t mask = 0;
+        Pipeline* group = nullptr;
+        std::vector<UnresolvedName> unresolved;
+        std::string err;
+        if (!resolve(e.spec, fs, mask, group, err, &unresolved)) {
+            LogRegistry::instance().warn("SESSION", "NAMES", e.spec.name + ": " + err);
+            continue;
+        }
+        if (unresolved == e.unresolved) {
+            e.names_version = version;
+            continue;
+        }
+        if (!set_filter_locked(e, e.spec, err)) LogRegistry::instance().warn("SESSION", "NAMES", e.spec.name + ": " + err);
+    }
 }
 
 bool SessionManager::destroy_locked(Entry& e, uint32_t reason, std::string& err) {
