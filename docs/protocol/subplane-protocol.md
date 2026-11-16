@@ -40,6 +40,8 @@ Live market data is never SPP. It stays on the bus, in the bus's own schema. SPP
 | 14 | `RecapReject` | snap to agent | Replaces a reply. `Reason`: Other, NotReady, UnknownInstrument, Busy. |
 | 20 | `Republish` | snap (or operator) to gateway | Publish `Instrument` (0 means every instrument) again, on the live stream. Answered by `Status`. The data itself appears in band. |
 | 30 | `SourceState` | publisher to its subscribers, one-to-many | Whether the instrument's in-band state can be trusted: `State` Unknown, Stale or Ok, with `Reason` (Startup, Gap, Disconnect, Resync, Republish), as of data-stream `Sequence`, from publisher `SourceEpoch`. `Instrument` 0 is the whole source (the beat). |
+| 40 | `Resolve` | agent to resolver | Which instrument a `Name` (the venue symbol) or `Instrument` (and `Venue`) is, and its home partition. `Instrument` 0 and an empty `Name`: the whole topic. |
+| 41 | `ResolveReply` | resolver to agent | The topic (`TopicId`, `Partitions`) and a group `Instruments` of `{Instrument, Venue, Partition, Symbol}`, `Partition` being the instrument's home. `Flags` bit 0 Last. |
 | 900 | `Extension` | either way | An envelope for an extension: `ExtensionId`, `ExtType`, `Flags` (bit 0 must-understand, bit 1 reply expected), and an opaque `Body` |
 
 **A recap reply** is `RecapBegin`, then zero or more `RecapRecord`, then `RecapEnd`, all with the request's `CorrelationId`. It is sent contiguously: replies to different requests are not interleaved. A service that cannot answer sends a single `RecapReject` instead. S must be in the same sequence space as the live stream. Records carry the stream's bytes untouched, so recap works for any stream encoding (SBE, FlatBuffers, DBN), and apps receive the publisher's bytes unchanged.
@@ -49,6 +51,12 @@ Live market data is never SPP. It stays on the bus, in the bus's own schema. SPP
 - **Answers on the response channel** shrink to what a section cannot say: `RecapReject` (an instrument the service does not have: `UnknownInstrument`) and `Status`. A service may acknowledge a request with `Status{Ok}`; nothing requires it.
 - **Bulk.** `RecapRequest.Flags` bit 0 asks for every instrument of the stream, for a resync after something every subscriber saw at once (a gap, a publisher restart). It is answered by sections only, with no end marker: a receiver ends its wait when the stream goes quiet.
 - **Coalescing and pacing** are the service's: it gathers interest for a window before an instrument's section is due (a longer one for bulk, which arrives from every agent at about the same time), publishes single requests ahead of bulk, and keeps to a byte rate. A known instrument that is not yet whole keeps its interest and is published once it is; the service does not refuse it as `NotReady`.
+
+**Resolve** is how an agent learns a topic's instruments from the service that publishes them (in subplane-feeds, a snapshot service reading the gateway's instruments file), instead of from the data.
+- **One question, three forms:** by `Name` (the venue symbol, exactly as spelled), by `Instrument` and `Venue`, or for the whole topic (`Instrument` 0, empty `Name`).
+- **The answer** is one or more `ResolveReply` with the request's `CorrelationId`; the last sets `Flags` bit 0 (Last). A whole topic is paged so that each reply fits one transport message (on Aeron, term length / 8). An unknown name or id is answered with `RecapReject{UnknownInstrument}`; a service without a list answers `Status{Unsupported}`.
+- **Every reply carries the topic** (`TopicId`, `Partitions`), so the receiver can check its own configuration against the publisher's. Stream ids are not sent: partition n's is `TopicId << 16 | n`. Transport addresses are not sent: they are the receiver's configuration.
+- **The list is a snapshot.** A receiver asks again from time to time to see instruments listed since; a reply replaces what it had.
 
 **Source state** is how a publisher that recovers from its own upstream (a gateway resyncing an exchange book) says so without putting control into its market data. Its subscribers are snapshot services; the agent does not consume it today.
 - **Separate stream.** A publisher sends `SourceState` on a state stream of its own, never on its data stream: a data stream carries one schema, the publisher's.

@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <algorithm>
 #include <inplace_vector>
 #include <sched.h>
 
@@ -20,10 +21,12 @@ constexpr uint64_t kOverflowLogIntervalNs = 10'000'000'000ull;
 constexpr uint64_t kStatusReasonBase = 0x100; // RecapReply.reason for a Status: base + code
 constexpr std::string_view kServiceName = "subplaned";
 constexpr uint16_t kRecapRequestBulk = 1u << 0; // RecapRequest.Flags bit 0: every instrument of the partition
+constexpr uint16_t kResolveReplyLast = 1u << 0; // ResolveReply.Flags bit 0: the final reply to a Resolve
+constexpr uint64_t kNsPerMs = 1'000'000ull;
 
 } // namespace
 
-RecapManager::RecapManager(uint64_t epoch, const SymbolTable& symbols)
+RecapManager::RecapManager(uint64_t epoch, SymbolTable& symbols)
     : epoch_(epoch), symbols_(symbols), rng_(epoch ? epoch : 0x9E3779B97F4A7C15ull) {}
 
 RecapManager::~RecapManager() { stop(); }
@@ -51,7 +54,29 @@ bool RecapManager::add_partition(Partition& p, RecapChannel& ch, std::string& er
     return true;
 }
 
+bool RecapManager::add_resolver(Partition& p, RecapChannel& ch, TopicDirectory& dir, uint16_t partitions, std::string& err) {
+    if (!p.has_resolver()) { err = "topic " + p.topic_name() + " has no resolver block"; return false; }
+    auto rs = std::make_unique<RState>();
+    rs->mgr = this;
+    rs->part = &p;
+    rs->ch = &ch;
+    rs->dir = &dir;
+    rs->configured = partitions;
+    rs->cfg = p.resolver_config();
+    rs->transport = p.take_resolver_transport();
+    if (!rs->transport) { err = "topic " + p.topic_name() + ": resolver component already taken"; return false; }
+    resolvers_.push_back(std::move(rs));
+    return true;
+}
+
 bool RecapManager::open(std::string& err) {
+    for (auto& rs : resolvers_) {
+        if (!rs->transport->open(err)) {
+            err = "topic " + rs->part->topic_name() + ": resolver: " + err;
+            return false;
+        }
+        LogRegistry::instance().info("RESOLVER", "OPEN", rs->part->topic_name() + " " + rs->transport->describe());
+    }
     for (auto& ps : parts_) {
         if (!ps->transport->open(err)) {
             err = "partition " + ps->part->name() + ": recap: " + err;
@@ -63,7 +88,7 @@ bool RecapManager::open(std::string& err) {
 }
 
 void RecapManager::start() {
-    if (running_ || parts_.empty()) return;
+    if (running_ || (parts_.empty() && resolvers_.empty())) return;
     stop_.store(false, std::memory_order_release);
     thread_ = std::thread([this] { loop(); });
     running_ = true;
@@ -76,6 +101,7 @@ void RecapManager::stop() {
         running_ = false;
     }
     for (auto& ps : parts_) if (ps->transport) ps->transport->close();
+    for (auto& rs : resolvers_) if (rs->transport) rs->transport->close();
 }
 
 void RecapManager::loop() noexcept {
@@ -133,13 +159,205 @@ int RecapManager::run_once(uint64_t now) noexcept {
         if (!hold_requests) { send_ready(*ps); send_bulk(*ps); }
         publish_gauges(*ps);
     }
+    for (auto& rs : resolvers_) {
+        rs->now = now;
+        work += rs->transport->poll(*rs, kFragmentsPerPoll);
+        run_resolver(*rs);
+    }
     flush_outbox();
     return work;
+}
+
+// ---- resolver client ----
+
+void RecapManager::run_resolver(RState& rs) noexcept {
+    ResolverCounters& rc = rs.part->resolver_counters;
+    const bool conn = rs.transport->connected();
+    if (conn != rs.was_connected) {
+        // As for recap (SPP section 5): the peer is per connection, and a
+        // reconnect may be a restarted service with a new list: ask at once.
+        rs.was_connected = conn;
+        rs.hello_sent = false;
+        rs.peer = Peer{};
+        rs.rid = 0;
+        rs.due_ns = 0;
+        rc.connected.store(conn ? 1 : 0, std::memory_order_relaxed);
+    }
+    if (!conn) return;
+    if (!rs.hello_sent) {
+        sp_proto::HelloEncoder e(rs.tx + 4, sizeof(rs.tx) - 4);
+        e.CorrelationId(next_request_id_++).PeerEpoch(epoch_).ProtoVersion(sp_proto::kSchemaVersion).MinProtoVersion(1)
+         .Role(sp_proto::Role::Agent).ServiceName(kServiceName);
+        e.begin_Extensions(0);
+        const auto n = static_cast<uint32_t>(e.finish());
+        std::memcpy(rs.tx, &n, 4);
+        if (rs.transport->send(rs.tx, 4 + n) == RecapSendStatus::BACK_PRESSURED) return;
+        rs.hello_sent = true;
+    }
+    if (rs.rid != 0) {
+        if (rs.now < rs.due_ns) return;
+        // INTENT: a whole topic is several replies; one lost page leaves the
+        // list incomplete, so the whole answer is asked for again.
+        inc(rc.resolver_timeouts);
+        rs.rid = 0;
+        rs.due_ns = rs.now + static_cast<uint64_t>(rs.cfg.timeout_ms) * kNsPerMs;
+        return;
+    }
+    if (rs.now < rs.due_ns || rs.peer.incompatible) return;
+    const uint64_t rid = next_request_id_;
+    sp_proto::ResolveEncoder e(rs.tx + 4, sizeof(rs.tx) - 4);
+    e.CorrelationId(rid).Instrument(0).Venue(0).Flags(0).Name(std::string_view{});
+    const auto n = static_cast<uint32_t>(e.finish());
+    std::memcpy(rs.tx, &n, 4);
+    const RecapSendStatus st = rs.transport->send(rs.tx, 4 + n);
+    if (st == RecapSendStatus::BACK_PRESSURED) return;
+    if (st != RecapSendStatus::OK) {
+        rs.due_ns = rs.now + static_cast<uint64_t>(rs.cfg.timeout_ms) * kNsPerMs;
+        return;
+    }
+    ++next_request_id_;
+    inc(rc.resolver_requests);
+    rs.rid = rid;
+    rs.due_ns = rs.now + static_cast<uint64_t>(rs.cfg.timeout_ms) * kNsPerMs;
+    rs.building.clear();
+    rs.got_topic = rs.got_parts = 0;
+}
+
+void RecapManager::RState::on_fragment(const uint8_t* data, uint32_t len, RecapSource) noexcept {
+    uint32_t at = 0;
+    while (at < len) {
+        uint32_t mlen = 0;
+        if (len - at < 4) { inc(part->resolver_counters.resolver_stray); return; }
+        std::memcpy(&mlen, data + at, 4);
+        at += 4;
+        if (mlen > len - at) { inc(part->resolver_counters.resolver_stray); return; }
+        mgr->on_resolver_message(*this, data + at, mlen);
+        at += mlen;
+    }
+}
+
+void RecapManager::on_resolver_message(RState& rs, const uint8_t* msg, uint32_t len) noexcept {
+    ResolverCounters& rc = rs.part->resolver_counters;
+    sp_proto::Header h;
+    if (!sp_proto::read_header(msg, len, h) || h.schema_id != sp_proto::kSchemaId) { inc(rc.resolver_stray); return; }
+    switch (h.template_id) {
+        case sp_proto::HelloDecoder::kTemplateId: {
+            sp_proto::HelloDecoder d;
+            if (!d.wrap(msg, len)) break;
+            rs.peer.hello = true;
+            rs.peer.epoch = d.PeerEpoch();
+            rs.peer.service.assign(d.ServiceName());
+            rs.peer.incompatible = d.MinProtoVersion() > sp_proto::kSchemaVersion;
+            LogRegistry::instance().info("RESOLVER", "HELLO", rs.part->topic_name() + ": " +
+                                         (rs.peer.service.empty() ? std::string("resolver") : rs.peer.service) +
+                                         (rs.peer.incompatible ? " speaks a newer SPP only; resolving is off until it reconnects" : ""));
+            return;
+        }
+        case sp_proto::ResolveReplyDecoder::kTemplateId: {
+            sp_proto::ResolveReplyDecoder d;
+            if (!d.wrap(msg, len)) break;
+            if (rs.rid == 0 || d.CorrelationId() != rs.rid) { inc(rc.resolver_stray); return; }
+            inc(rc.resolver_replies);
+            rs.got_topic = d.TopicId();
+            rs.got_parts = d.Partitions();
+            for (uint16_t i = 0; i < d.Instruments_count(); ++i) {
+                const auto v = d.Instruments(i);
+                rs.building.push_back(ResolvedInstrument{v.Instrument(), v.Venue(), v.Partition(), std::string(v.Symbol())});
+            }
+            if (d.Flags() & kResolveReplyLast) resolver_complete(rs);
+            return;
+        }
+        case sp_proto::RecapRejectDecoder::kTemplateId:
+        case sp_proto::StatusDecoder::kTemplateId: {
+            uint64_t cid = 0;
+            if (h.block_length < 8 || len < sp_proto::kHeaderSize + 8) break;
+            std::memcpy(&cid, msg + sp_proto::kHeaderSize, 8);
+            if (rs.rid == 0 || cid != rs.rid) { inc(rc.resolver_stray); return; }
+            // The service does not resolve (an older snap answers Unsupported):
+            // asked again at the next refresh, in case it is replaced.
+            inc(rc.resolver_rejects);
+            LogRegistry::instance().warn("RESOLVER", "REFUSED", rs.part->topic_name() + ": the resolver refused Resolve; asking again in " +
+                                         std::to_string(rs.cfg.refresh_ms) + " ms");
+            rs.rid = 0;
+            rs.due_ns = rs.now + static_cast<uint64_t>(rs.cfg.refresh_ms) * kNsPerMs;
+            return;
+        }
+        default:
+            inc(rc.resolver_stray);
+            return;
+    }
+    inc(rc.resolver_stray);
+}
+
+void RecapManager::resolver_complete(RState& rs) noexcept {
+    ResolverCounters& rc = rs.part->resolver_counters;
+    Partition& p = *rs.part;
+    inc(rc.resolver_lists);
+    rc.instruments.store(rs.building.size(), std::memory_order_relaxed);
+    const bool mismatch = rs.got_topic != p.topic_id() || rs.got_parts != rs.configured;
+    if (!rs.noted || rs.got_topic != rs.noted_topic || rs.got_parts != rs.noted_parts) {
+        if (mismatch) {
+            inc(rc.resolver_mismatch);
+            LogRegistry::instance().error("RESOLVER", "MISMATCH", p.topic_name() + ": the resolver has topic " + std::to_string(rs.got_topic) +
+                                          " with " + std::to_string(rs.got_parts) + " partitions; the config has topic " +
+                                          std::to_string(p.topic_id()) + " with " + std::to_string(rs.configured));
+        }
+        ResolveNote n;
+        n.kind = ResolveNote::Kind::TOPIC;
+        n.mismatch = mismatch;
+        n.partition = p.id();
+        n.topic_id = rs.got_topic;
+        n.partitions = rs.got_parts;
+        push_note(*rs.ch, n);
+        rs.noted = true;
+        rs.noted_topic = rs.got_topic;
+        rs.noted_parts = rs.got_parts;
+    }
+    // INTENT: intern every listed instrument now, so a session naming it and
+    // the decoder seeing it later agree on one symbol id.
+    for (const ResolvedInstrument& r : rs.building) {
+        uint32_t sym = 0;
+        if (p.symbol_passthrough()) sym = r.instrument <= 0xFFFFFFFFull ? static_cast<uint32_t>(r.instrument) : 0;
+        else sym = symbols_.intern_u64(r.instrument, p.symbol_venue_scope() ? r.venue : uint16_t{0});
+        if (sym == 0 || r.partition_num == 0) continue;
+        auto [it, fresh] = rs.noted_home.try_emplace(sym, r.partition_num);
+        if (!fresh && it->second == r.partition_num) continue;
+        it->second = r.partition_num;
+        ResolveNote n;
+        n.kind = ResolveNote::Kind::HOME;
+        n.partition = p.id();
+        n.symbol_id = sym;
+        n.home_num = r.partition_num;
+        push_note(*rs.ch, n);
+    }
+    rs.dir->publish(std::move(rs.building));
+    rs.building = {};
+    rs.rid = 0;
+    rs.due_ns = rs.now + static_cast<uint64_t>(rs.cfg.refresh_ms) * kNsPerMs;
+}
+
+void RecapManager::push_note(RecapChannel& ch, const ResolveNote& n) noexcept {
+    // INTENT: a whole topic can be thousands of notes, more than the queue
+    // holds; they wait here in order, counted per channel so neither this
+    // nor the flush walks the backlog for every note.
+    uint32_t& waiting = note_waiting_[&ch];
+    if (waiting != 0 || !ch.resolved.push(n)) {
+        note_outbox_.emplace_back(&ch, n);
+        ++waiting;
+    }
 }
 
 void RecapManager::handle_command(PState& ps, const RecapCommand& c) noexcept {
     RecapCounters& rc = ps.part->recap_counters;
     auto it = ps.entries.find(c.symbol_id);
+    if (c.op == RecapCommand::Op::FLOOR) {
+        // INTENT: a request posted by a restart carries the old stream's
+        // floor; the pipeline rebases it at the new stream's first sequence.
+        // Without this, every section of the new stream is skipped as older
+        // than the floor, and recovery waits for a timeout.
+        if (it != ps.entries.end()) it->second.floor = c.floor;
+        return;
+    }
     if (c.op == RecapCommand::Op::REQUEST) {
         if (it != ps.entries.end()) {
             it->second.cancelled = false;
@@ -716,6 +934,17 @@ void RecapManager::push_reply(PState& ps, const RecapReply& r) noexcept {
 }
 
 void RecapManager::flush_outbox() noexcept {
+    std::inplace_vector<RecapChannel*, 64> blocked;
+    for (auto it = note_outbox_.begin(); it != note_outbox_.end();) {
+        if (std::ranges::contains(blocked, it->first)) { ++it; continue; }
+        if (it->first->resolved.push(it->second)) {
+            --note_waiting_[it->first];
+            it = note_outbox_.erase(it);
+        } else {
+            if (!blocked.try_push_back(it->first)) break;
+            ++it;
+        }
+    }
     for (auto it = outbox_.begin(); it != outbox_.end();) {
         bool earlier = false;
         for (auto jt = outbox_.begin(); jt != it; ++jt) earlier = earlier || jt->first == it->first;

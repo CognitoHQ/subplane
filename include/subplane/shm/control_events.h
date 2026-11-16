@@ -156,6 +156,35 @@ struct SymbolStaleEvent {
     uint64_t changed_ns;
 };
 
+// SYMBOL_UNRESOLVED: a ticker name the session asked for is not subscribed,
+// because the topics' resolvers do not list it (UNKNOWN; asked again on each
+// refresh, and subscribed once listed) or list it in more than one of the
+// session's topics (AMBIGUOUS; qualify it as <topic>:<name>). Written to the
+// session's ring only, once per name and reason.
+enum class UnresolvedReason : uint8_t {
+    UNKNOWN   = 1,
+    AMBIGUOUS = 2,
+};
+struct SymbolUnresolvedEvent {
+    uint16_t topic_id;    // the qualifying topic; 0 for a bare name
+    uint8_t  reason;      // UnresolvedReason
+    uint8_t  name_len;
+    uint32_t reserved0;
+    char     name[56];    // as the session spelled it; not NUL-terminated if name_len == 56
+};
+
+// TOPIC_MISMATCH: the topic's resolver describes it differently from the
+// agent's config (another topic id, or another partition count). Data is still
+// delivered; the operator must reconcile the config with the publishers.
+// Written once per change of what the resolver says.
+struct TopicMismatchEvent {
+    uint16_t topic_id;             // as configured
+    uint16_t partitions;           // as configured
+    uint16_t resolver_topic_id;
+    uint16_t resolver_partitions;
+    uint64_t changed_ns;
+};
+
 #pragma pack(pop)
 
 static_assert(sizeof(GapEvent) == 32);
@@ -168,6 +197,8 @@ static_assert(sizeof(SessionClosingEvent) == 8);
 static_assert(sizeof(SymbolMappedEvent) == 32);
 static_assert(sizeof(RecapEvent) == 32);
 static_assert(sizeof(SymbolStaleEvent) == 24);
+static_assert(sizeof(SymbolUnresolvedEvent) == 64);
+static_assert(sizeof(TopicMismatchEvent) == 16);
 static_assert(std::is_trivially_copyable_v<GapEvent>);
 static_assert(std::is_trivially_copyable_v<InstrumentGapEvent>);
 static_assert(std::is_trivially_copyable_v<SymbolMappedEvent>);

@@ -78,6 +78,7 @@ add_library(subplane_core STATIC
     src/transport/tcp_stream.cpp
     src/recap/recap_config.cpp
     src/recap/recap_manager.cpp
+    src/recap/topic_directory.cpp
     src/recap/recap_status.cpp
     src/registry/builtin_components.cpp
     src/pipeline/session.cpp

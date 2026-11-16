@@ -59,6 +59,8 @@ const char* code_name(const TickHeader& h) {
         case ControlCode::RECAP_COMPLETE: return "RECAP_COMPLETE";
         case ControlCode::RECAP_FAILED: return "RECAP_FAILED";
         case ControlCode::INSTRUMENT_GAP: return "INSTRUMENT_GAP";
+        case ControlCode::SYMBOL_UNRESOLVED: return "SYMBOL_UNRESOLVED";
+        case ControlCode::TOPIC_MISMATCH: return "TOPIC_MISMATCH";
         case ControlCode::PAD: return "PAD";
         default: return "CONTROL?";
     }
@@ -78,6 +80,20 @@ void print_control_detail(const TickHeader& h, const uint8_t* p, uint32_t len) {
             InstrumentGapEvent e; std::memcpy(&e, p, sizeof(e));
             std::printf(" topic=%u symbol=%u expected=%llu received=%llu", e.topic_id, e.symbol_id,
                         static_cast<unsigned long long>(e.expected_seq), static_cast<unsigned long long>(e.received_seq));
+            break;
+        }
+        case ControlCode::SYMBOL_UNRESOLVED: {
+            if (len < sizeof(SymbolUnresolvedEvent)) return;
+            SymbolUnresolvedEvent e; std::memcpy(&e, p, sizeof(e));
+            std::printf(" name=%.*s topic=%u reason=%s", static_cast<int>(e.name_len), e.name, e.topic_id,
+                        e.reason == static_cast<uint8_t>(UnresolvedReason::AMBIGUOUS) ? "ambiguous" : "unknown");
+            break;
+        }
+        case ControlCode::TOPIC_MISMATCH: {
+            if (len < sizeof(TopicMismatchEvent)) return;
+            TopicMismatchEvent e; std::memcpy(&e, p, sizeof(e));
+            std::printf(" topic=%u partitions=%u resolver_topic=%u resolver_partitions=%u", e.topic_id, e.partitions,
+                        e.resolver_topic_id, e.resolver_partitions);
             break;
         }
         case ControlCode::SYMBOL_MAPPED: {

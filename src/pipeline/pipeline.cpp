@@ -31,6 +31,7 @@ Pipeline::~Pipeline() {
 
 void Pipeline::add_partition(Partition* p) {
     partitions_.push_back(p);
+    has_resolver_ = has_resolver_ || p->has_resolver();
     partition_mask_ |= (1ull << p->id());
     by_id_[p->id()] = p;
     // INTENT: this pipeline owns the partition's instrument state from here,
@@ -163,6 +164,7 @@ int Pipeline::run_once() noexcept {
     service_timeouts(after);
     apply_commands(after);
     if (!recap_states_.empty()) apply_recaps(after);
+    if (has_resolver_) apply_resolved(after);
     heartbeat_rings(after);
     loops_.store(loops_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     return handled;
@@ -615,6 +617,14 @@ void Pipeline::apply_commands(uint64_t now) noexcept {
                 s.applied_generation.store(c.generation, std::memory_order_release);
                 break;
             }
+            case PipelineCommand::Type::EMIT: {
+                Session& s = *c.session;
+                const FilterTable* f = s.filter.load(std::memory_order_acquire);
+                if (f == nullptr || f->agent_control) {
+                    if (!s.ring.publish_control(c.code, c.topic_id, now, c.body, c.body_len)) inc(s.counters.publish_failed);
+                }
+                break;
+            }
             case PipelineCommand::Type::STOP:
                 stop_requested_.store(true, std::memory_order_release);
                 break;
@@ -848,7 +858,11 @@ void Pipeline::recap_rebase(Partition& p, uint64_t seq) noexcept {
         RecapPending& e = st.at(i);
         if (!e.in_use) continue;
         st.free_holds(e);
-        e.floor = seq != 0 ? seq - 1 : 0;
+        const uint64_t floor = seq != 0 ? seq - 1 : 0;
+        if (e.floor == floor) continue;
+        e.floor = floor;
+        // The manager matches sections against the floor too (recap_post copies it).
+        recap_post(p, {.op = RecapCommand::Op::FLOOR, .partition = p.id(), .symbol_id = e.symbol_id});
     }
 }
 
@@ -868,6 +882,42 @@ void Pipeline::apply_recaps(uint64_t now) noexcept {
             if (!e.in_use || !e.parked) continue;
             const RecapReply parked = e.reply;
             if (parked.as_of <= p.last_seq || parked.as_of < e.floor) recap_consider(p, e, parked, now);
+        }
+    }
+}
+
+// Cold-ish: a resolver answers once a connect and once a refresh. A home seeds
+// inst_home only where no record has been seen yet: the data says where an
+// instrument is now, the list where it was when asked.
+void Pipeline::apply_resolved(uint64_t now) noexcept {
+    ResolveNote n;
+    for (int i = 0; i < 4096 && recap_.resolved.pop(n); ++i) {
+        Partition* p = n.partition < 64 ? by_id_[n.partition] : nullptr;
+        if (p == nullptr) continue;
+        if (n.kind == ResolveNote::Kind::TOPIC) {
+            if (!n.mismatch) continue;
+            TopicMismatchEvent ev{};
+            ev.topic_id = p->topic_id();
+            for (const Partition* q : partitions_) ev.partitions = static_cast<uint16_t>(ev.partitions + (q->topic_id() == p->topic_id() ? 1 : 0));
+            ev.resolver_topic_id = n.topic_id;
+            ev.resolver_partitions = n.partitions;
+            ev.changed_ns = now;
+            emit_control(*p, ControlCode::TOPIC_MISMATCH, &ev, sizeof(ev), now);
+            continue;
+        }
+        // The topic's recap partitions share one array (add_partition); the
+        // resolver's partition 1 need not be one of them.
+        uint8_t* home = nullptr;
+        uint32_t home_size = 0;
+        for (const Partition* q : partitions_) {
+            if (q->topic_id() == p->topic_id() && q->inst_home != nullptr) { home = q->inst_home; home_size = q->inst_home_size; break; }
+        }
+        if (home == nullptr || n.symbol_id >= home_size || home[n.symbol_id] != 0) continue;
+        for (const Partition* q : partitions_) {
+            if (q->topic_id() == p->topic_id() && q->partition_num() == n.home_num && q->inst_home == home) {
+                home[n.symbol_id] = static_cast<uint8_t>(q->id() + 1);
+                break;
+            }
         }
     }
 }

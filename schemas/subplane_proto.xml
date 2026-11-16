@@ -157,6 +157,29 @@
     <field name="Flags"         id="8" type="uint16" offset="36" description="0; reserved"/>
   </sbe:message>
 
+  <sbe:message name="Resolve" id="40" blockLength="24"
+               description="Agent to resolver: which instrument a name or id is, and where it lives; Instrument 0 and an empty Name ask for the whole topic">
+    <field name="CorrelationId" id="1" type="uint64" offset="0"/>
+    <field name="Instrument"    id="2" type="uint64" offset="8"  description="the instrument as on the wire, 0 if asking by name or for the whole topic"/>
+    <field name="Venue"         id="3" type="uint16" offset="16" description="the venue as on the wire, 0 if unmapped"/>
+    <field name="Flags"         id="4" type="uint16" offset="18" description="0; reserved"/>
+    <data  name="Name"          id="10" type="varData32" description="the venue symbol (BTCUSDT), empty if asking by id"/>
+  </sbe:message>
+
+  <sbe:message name="ResolveReply" id="41" blockLength="16"
+               description="Resolver to agent: the topic and the instruments asked for; a whole topic comes in several replies, the last with Flags bit 0 (Last)">
+    <field name="CorrelationId" id="1" type="uint64" offset="0"/>
+    <field name="TopicId"       id="2" type="uint16" offset="8"  description="the topic's id in the site registry"/>
+    <field name="Partitions"    id="3" type="uint16" offset="10" description="how many partitions the topic has; partition n's stream is TopicId &lt;&lt; 16 | n"/>
+    <field name="Flags"         id="4" type="uint16" offset="12" description="bit 0 Last: the final reply to this Resolve"/>
+    <group name="Instruments" id="20" dimensionType="groupSizeEncoding" blockLength="48">
+      <field name="Instrument" id="21" type="uint64" offset="0"  description="the instrument as on the wire"/>
+      <field name="Venue"      id="22" type="uint16" offset="8"  description="the venue as on the wire, 0 if unmapped"/>
+      <field name="Partition"  id="23" type="uint16" offset="10" description="its home: the partition_num that publishes it"/>
+      <field name="Symbol"     id="24" type="Name32" offset="16" description="the venue symbol"/>
+    </group>
+  </sbe:message>
+
   <sbe:message name="Extension" id="900" blockLength="16"
                description="Envelope for an extension: routed by ExtensionId, Body opaque to everyone but the extension's endpoints">
     <field name="CorrelationId" id="1" type="uint64" offset="0"/>

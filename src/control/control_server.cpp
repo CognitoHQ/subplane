@@ -198,6 +198,7 @@ void ControlServer::run() {
             // pass to client_disconnected(); both use now_ns().
             sessions_.service_linger(now_ns());
             sessions_.service_readers(now_ns());
+            sessions_.service_names();
             next_service = now_mono_ns() + kServiceIntervalNs;
         }
         if (rc <= 0) continue;

@@ -179,10 +179,12 @@ struct Rig {
         pipe.run_once();
     }
 
+    // REQUEST and CANCEL; FLOOR updates are set aside in `floors`.
+    std::vector<RecapCommand> floors;
     std::vector<RecapCommand> requests() {
         std::vector<RecapCommand> out;
         RecapCommand c;
-        while (pipe.recap_channel().requests.pop(c)) out.push_back(c);
+        while (pipe.recap_channel().requests.pop(c)) (c.op == RecapCommand::Op::FLOOR ? floors : out).push_back(c);
         return out;
     }
     std::vector<RecapRelease> releases() {
@@ -668,6 +670,10 @@ TEST_CASE("recap triggers: a sequence reset drops holds and parked replies, rene
     CHECK(r.part.recap->parked() == 0);
     CHECK(r.releases().size() == 1);
     REQUIRE(r.requests().size() == 1);
+    // The renewed request carried the old stream's floor; the manager is told the rebased one.
+    REQUIRE(r.floors.size() == 1);
+    CHECK(r.floors[0].symbol_id == r.sym(1001));
+    CHECK(r.floors[0].floor == 0);
     RecapPending* e = r.part.recap->find(r.sym(1001));
     REQUIRE(e);
     CHECK(e->floor == 0);
@@ -715,6 +721,9 @@ TEST_CASE("recap triggers: a publisher restart renews at once and parks replies 
     CHECK_FALSE(r.part.recap->awaiting_seq());
     CHECK(r.part.counters.gaps.load() == 0);
     CHECK(r.part.counters.seq_resets.load() == 0);
+    CHECK(r.requests().empty());
+    REQUIRE(r.floors.size() == 2); // the floors follow the new stream, for the manager too
+    for (const RecapCommand& c : r.floors) CHECK(c.floor == 3);
     got = rec->drain();
     REQUIRE(got.size() == 4); // the parked S = 3 = floor merges, then seq 4
     CHECK(is(got[0], ControlCode::RECAP_BEGIN));
@@ -904,10 +913,12 @@ struct TwoRig {
         fake[pi]->push(trade(sec, ++seq[pi]), now_ns());
         pipe.run_once();
     }
+    // REQUEST and CANCEL; FLOOR updates are set aside in `floors`.
+    std::vector<RecapCommand> floors;
     std::vector<RecapCommand> requests() {
         std::vector<RecapCommand> out;
         RecapCommand c;
-        while (pipe.recap_channel().requests.pop(c)) out.push_back(c);
+        while (pipe.recap_channel().requests.pop(c)) (c.op == RecapCommand::Op::FLOOR ? floors : out).push_back(c);
         return out;
     }
     void reply(int pi, uint64_t sec, uint64_t as_of, const std::vector<std::vector<uint8_t>>& records, uint16_t slab) {

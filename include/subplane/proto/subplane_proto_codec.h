@@ -995,6 +995,280 @@ private:
     uint16_t block_ = 0;
 };
 
+// ---- Resolve (template 40) ----
+
+class ResolveEncoder {
+public:
+    static constexpr uint16_t kTemplateId = 40;
+    static constexpr uint16_t kBlockLength = 24;
+
+    // Writes the header and a zeroed root block. Set root fields in any order,
+    // then groups and data in schema order, then call finish().
+    ResolveEncoder(uint8_t* buf, size_t cap) noexcept : buf_(buf), cap_(cap) {
+        if (cap < kHeaderSize + kBlockLength) { ok_ = false; return; }
+        std::memset(buf, 0, kHeaderSize + kBlockLength);
+        detail::store<uint16_t>(buf + 0, kBlockLength);
+        detail::store<uint16_t>(buf + 2, kTemplateId);
+        detail::store<uint16_t>(buf + 4, kSchemaId);
+        detail::store<uint16_t>(buf + 6, kSchemaVersion);
+        pos_ = kHeaderSize + kBlockLength;
+    }
+
+    ResolveEncoder& CorrelationId(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 0, static_cast<uint64_t>(v)); return *this; }
+    ResolveEncoder& Instrument(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 8, static_cast<uint64_t>(v)); return *this; }
+    ResolveEncoder& Venue(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 16, static_cast<uint16_t>(v)); return *this; }
+    ResolveEncoder& Flags(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 18, static_cast<uint16_t>(v)); return *this; }
+
+    // Name: uint32_t length, then the bytes.
+    ResolveEncoder& Name(const void* p, size_t n) noexcept {
+        advance(0);
+        if (!ok_) return *this;
+        if (n > static_cast<size_t>(static_cast<uint32_t>(~uint32_t{0})) || pos_ + 4u + n > cap_) { ok_ = false; return *this; }
+        detail::store<uint32_t>(buf_ + pos_, static_cast<uint32_t>(n));
+        if (n != 0) std::memcpy(buf_ + pos_ + 4, p, n);
+        pos_ += 4u + n;
+        stage_ = 1;
+        return *this;
+    }
+    ResolveEncoder& Name(std::string_view v) noexcept { return Name(v.data(), v.size()); }
+
+    // Writes every group and data element not yet written, empty. Returns the
+    // message length, or 0 when the buffer was too small or a call was out of order.
+    size_t finish() noexcept { advance(1); return ok_ ? pos_ : 0; }
+    bool ok() const noexcept { return ok_; }
+
+private:
+    // INTENT: SBE requires every group and data element on the wire, in
+    // schema order. Elements before `to` that were not written go out empty;
+    // going back to an earlier element fails the message.
+    void advance(size_t to) noexcept {
+        if (stage_ > to) { ok_ = false; return; }
+        while (ok_ && stage_ < to) {
+            switch (stage_) {
+                case 0: if (pos_ + 4u > cap_) { ok_ = false; return; } std::memset(buf_ + pos_, 0, 4u); pos_ += 4u; break;
+                default: break;
+            }
+            ++stage_;
+        }
+    }
+
+    uint8_t* buf_;
+    size_t   cap_;
+    size_t   pos_ = 0;
+    size_t   stage_ = 0;
+    bool     ok_ = true;
+};
+
+class ResolveDecoder {
+public:
+    static constexpr uint16_t kTemplateId = 40;
+
+    // INTENT: every length is checked against `len` here, once; the getters
+    // then read only inside the checked bounds. Input comes off the wire.
+    bool wrap(const uint8_t* p, size_t len) noexcept {
+        p_ = nullptr;
+        Header h;
+        if (!read_header(p, len, h) || h.schema_id != kSchemaId || h.template_id != kTemplateId) return false;
+        size_t pos = kHeaderSize + h.block_length;
+        if (pos > len) return false;
+        version_ = h.version;
+        block_ = h.block_length;
+        d0_ = nullptr; dn0_ = 0;
+        if (true) {
+            if (pos + 4u > len) return false;
+            const size_t n = detail::load<uint32_t>(p + pos);
+            pos += 4u;
+            if (pos + n > len) return false;
+            d0_ = p + pos;
+            dn0_ = n;
+            pos += n;
+        }
+        p_ = p;
+        size_ = pos;
+        return true;
+    }
+
+    // Bytes the known elements occupy (a newer sender may append more).
+    size_t size() const noexcept { return size_; }
+    uint16_t version() const noexcept { return version_; }
+    uint16_t block_length() const noexcept { return block_; }
+
+    uint64_t CorrelationId() const noexcept { return 8u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 0) : uint64_t{}; }
+    uint64_t Instrument() const noexcept { return 16u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 8) : uint64_t{}; }
+    uint16_t Venue() const noexcept { return 18u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 16) : uint16_t{}; }
+    uint16_t Flags() const noexcept { return 20u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 18) : uint16_t{}; }
+    const uint8_t* Name_data() const noexcept { return d0_; }
+    size_t Name_size() const noexcept { return dn0_; }
+    std::string_view Name() const noexcept { return d0_ ? std::string_view(reinterpret_cast<const char*>(d0_), dn0_) : std::string_view(); }
+
+private:
+    const uint8_t* p_ = nullptr;
+    size_t   size_ = 0;
+    uint16_t version_ = 0;
+    uint16_t block_ = 0;
+    const uint8_t* d0_ = nullptr;
+    size_t dn0_ = 0;
+};
+
+// ---- ResolveReply (template 41) ----
+
+class ResolveReplyInstrumentsEntry {
+public:
+    static constexpr uint16_t kBlockLength = 48;
+    ResolveReplyInstrumentsEntry(uint8_t* p) noexcept : p_(p) {}
+    ResolveReplyInstrumentsEntry& Instrument(uint64_t v) noexcept { if (p_ != nullptr) detail::store<uint64_t>(p_ + 0, static_cast<uint64_t>(v)); return *this; }
+    ResolveReplyInstrumentsEntry& Venue(uint16_t v) noexcept { if (p_ != nullptr) detail::store<uint16_t>(p_ + 8, static_cast<uint16_t>(v)); return *this; }
+    ResolveReplyInstrumentsEntry& Partition(uint16_t v) noexcept { if (p_ != nullptr) detail::store<uint16_t>(p_ + 10, static_cast<uint16_t>(v)); return *this; }
+    // Longer than 32 chars fails the message.
+    ResolveReplyInstrumentsEntry& Symbol(std::string_view v) noexcept {
+        if (p_ != nullptr) { if (v.size() > 32u) (void)0; else std::memcpy(p_ + 16, v.data(), v.size()); }
+        return *this;
+    }
+private:
+    uint8_t* p_;
+};
+
+class ResolveReplyInstrumentsView {
+public:
+    ResolveReplyInstrumentsView(const uint8_t* p, uint16_t block) noexcept : p_(p), block_(block) {}
+    uint64_t Instrument() const noexcept { return 8u <= block_ ? detail::load<uint64_t>(p_ + 0) : uint64_t{}; }
+    uint16_t Venue() const noexcept { return 10u <= block_ ? detail::load<uint16_t>(p_ + 8) : uint16_t{}; }
+    uint16_t Partition() const noexcept { return 12u <= block_ ? detail::load<uint16_t>(p_ + 10) : uint16_t{}; }
+    // Symbol: char[32], NUL-padded; empty when absent.
+    std::string_view Symbol() const noexcept {
+        if (!(48u <= block_)) return {};
+        const char* c = reinterpret_cast<const char*>(p_ + 16);
+        size_t n = 0;
+        while (n < 32u && c[n] != '\0') ++n;
+        return {c, n};
+    }
+private:
+    const uint8_t* p_;
+    uint16_t block_;
+};
+
+class ResolveReplyEncoder {
+public:
+    static constexpr uint16_t kTemplateId = 41;
+    static constexpr uint16_t kBlockLength = 16;
+
+    // Writes the header and a zeroed root block. Set root fields in any order,
+    // then groups and data in schema order, then call finish().
+    ResolveReplyEncoder(uint8_t* buf, size_t cap) noexcept : buf_(buf), cap_(cap) {
+        if (cap < kHeaderSize + kBlockLength) { ok_ = false; return; }
+        std::memset(buf, 0, kHeaderSize + kBlockLength);
+        detail::store<uint16_t>(buf + 0, kBlockLength);
+        detail::store<uint16_t>(buf + 2, kTemplateId);
+        detail::store<uint16_t>(buf + 4, kSchemaId);
+        detail::store<uint16_t>(buf + 6, kSchemaVersion);
+        pos_ = kHeaderSize + kBlockLength;
+    }
+
+    ResolveReplyEncoder& CorrelationId(uint64_t v) noexcept { if (ok_) detail::store<uint64_t>(buf_ + kHeaderSize + 0, static_cast<uint64_t>(v)); return *this; }
+    ResolveReplyEncoder& TopicId(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 8, static_cast<uint16_t>(v)); return *this; }
+    ResolveReplyEncoder& Partitions(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 10, static_cast<uint16_t>(v)); return *this; }
+    ResolveReplyEncoder& Flags(uint16_t v) noexcept { if (ok_) detail::store<uint16_t>(buf_ + kHeaderSize + 12, static_cast<uint16_t>(v)); return *this; }
+
+    // Instruments: reserves n zeroed entries; fill them with Instruments(i).
+    ResolveReplyEncoder& begin_Instruments(uint16_t n) noexcept {
+        advance(0);
+        if (!ok_) return *this;
+        const size_t need = 4u + static_cast<size_t>(n) * ResolveReplyInstrumentsEntry::kBlockLength;
+        if (pos_ + need > cap_) { ok_ = false; return *this; }
+        detail::store<uint16_t>(buf_ + pos_, ResolveReplyInstrumentsEntry::kBlockLength);
+        detail::store<uint16_t>(buf_ + pos_ + 2, n);
+        std::memset(buf_ + pos_ + 4, 0, need - 4u);
+        g0_ = buf_ + pos_ + 4;
+        n0_ = n;
+        pos_ += need;
+        stage_ = 1;
+        return *this;
+    }
+    ResolveReplyInstrumentsEntry Instruments(uint16_t i) noexcept {
+        return ResolveReplyInstrumentsEntry(ok_ && i < n0_ ? g0_ + static_cast<size_t>(i) * ResolveReplyInstrumentsEntry::kBlockLength : nullptr);
+    }
+
+    // Writes every group and data element not yet written, empty. Returns the
+    // message length, or 0 when the buffer was too small or a call was out of order.
+    size_t finish() noexcept { advance(1); return ok_ ? pos_ : 0; }
+    bool ok() const noexcept { return ok_; }
+
+private:
+    // INTENT: SBE requires every group and data element on the wire, in
+    // schema order. Elements before `to` that were not written go out empty;
+    // going back to an earlier element fails the message.
+    void advance(size_t to) noexcept {
+        if (stage_ > to) { ok_ = false; return; }
+        while (ok_ && stage_ < to) {
+            switch (stage_) {
+                case 0: if (pos_ + 4u > cap_) { ok_ = false; return; } detail::store<uint16_t>(buf_ + pos_, ResolveReplyInstrumentsEntry::kBlockLength); detail::store<uint16_t>(buf_ + pos_ + 2, 0); pos_ += 4u; break;
+                default: break;
+            }
+            ++stage_;
+        }
+    }
+
+    uint8_t* buf_;
+    size_t   cap_;
+    size_t   pos_ = 0;
+    size_t   stage_ = 0;
+    bool     ok_ = true;
+    uint8_t* g0_ = nullptr;
+    uint16_t n0_ = 0;
+};
+
+class ResolveReplyDecoder {
+public:
+    static constexpr uint16_t kTemplateId = 41;
+
+    // INTENT: every length is checked against `len` here, once; the getters
+    // then read only inside the checked bounds. Input comes off the wire.
+    bool wrap(const uint8_t* p, size_t len) noexcept {
+        p_ = nullptr;
+        Header h;
+        if (!read_header(p, len, h) || h.schema_id != kSchemaId || h.template_id != kTemplateId) return false;
+        size_t pos = kHeaderSize + h.block_length;
+        if (pos > len) return false;
+        version_ = h.version;
+        block_ = h.block_length;
+        g0_ = nullptr; n0_ = 0; b0_ = 0;
+        if (true) {
+            if (pos + 4u > len) return false;
+            b0_ = detail::load<uint16_t>(p + pos);
+            n0_ = detail::load<uint16_t>(p + pos + 2);
+            pos += 4u;
+            const size_t bytes = static_cast<size_t>(b0_) * n0_;
+            if (pos + bytes > len) return false;
+            g0_ = p + pos;
+            pos += bytes;
+        }
+        p_ = p;
+        size_ = pos;
+        return true;
+    }
+
+    // Bytes the known elements occupy (a newer sender may append more).
+    size_t size() const noexcept { return size_; }
+    uint16_t version() const noexcept { return version_; }
+    uint16_t block_length() const noexcept { return block_; }
+
+    uint64_t CorrelationId() const noexcept { return 8u <= block_ ? detail::load<uint64_t>(p_ + kHeaderSize + 0) : uint64_t{}; }
+    uint16_t TopicId() const noexcept { return 10u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 8) : uint16_t{}; }
+    uint16_t Partitions() const noexcept { return 12u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 10) : uint16_t{}; }
+    uint16_t Flags() const noexcept { return 14u <= block_ ? detail::load<uint16_t>(p_ + kHeaderSize + 12) : uint16_t{}; }
+    uint16_t Instruments_count() const noexcept { return n0_; }
+    // i < Instruments_count().
+    ResolveReplyInstrumentsView Instruments(uint16_t i) const noexcept { return ResolveReplyInstrumentsView(g0_ + static_cast<size_t>(i) * b0_, b0_); }
+
+private:
+    const uint8_t* p_ = nullptr;
+    size_t   size_ = 0;
+    uint16_t version_ = 0;
+    uint16_t block_ = 0;
+    const uint8_t* g0_ = nullptr;
+    uint16_t n0_ = 0, b0_ = 0;
+};
+
 // ---- Extension (template 900) ----
 
 class ExtensionEncoder {

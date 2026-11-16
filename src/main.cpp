@@ -1,3 +1,4 @@
+#include <atomic>
 #include <iostream>
 #include <string>
 #include <signal.h>
@@ -8,12 +9,15 @@
 using namespace subplane;
 
 std::unique_ptr<Agent> g_agent;
+std::atomic<int> g_signal{0};
+static_assert(std::atomic<int>::is_always_lock_free);
 
+// INTENT: only an async-signal-safe store. The handler used to print and call
+// Agent::stop() itself; a SIGTERM that landed while the main thread held the
+// agent's mutex (inside start(), or inside malloc) deadlocked that thread on
+// itself, and the agent never exited. The main thread acts on the flag.
 void signal_handler(int signal) {
-    std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
-    if (g_agent) {
-        g_agent->stop();
-    }
+    g_signal.store(signal, std::memory_order_relaxed);
 }
 
 void print_usage(const char* program_name) {
@@ -60,6 +64,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         
+        if (g_signal.load(std::memory_order_relaxed) != 0) return 0;   // asked to stop while initializing
+
         std::cout << "Starting subplane agent..." << std::endl;
         if (!g_agent->start()) {
             std::cerr << "Failed to start agent" << std::endl;
@@ -70,6 +76,11 @@ int main(int argc, char* argv[]) {
         
         // Wait for shutdown signal
         while (g_agent->is_running()) {
+            if (const int sig = g_signal.load(std::memory_order_relaxed); sig != 0) {
+                std::cout << "\nReceived signal " << sig << ", shutting down..." << std::endl;
+                g_agent->stop();
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         

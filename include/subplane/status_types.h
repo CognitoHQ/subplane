@@ -29,6 +29,7 @@ struct PartitionStatus {
     uint64_t    inst_gaps = 0;          // instrument sequence jumps (INSTRUMENT_GAP)
     uint64_t    inst_dups = 0;          // records dropped as an instrument's duplicate
     std::string recap_json;     // recap counters as JSON; empty without a recap block
+    std::string resolver_json;  // resolver counters as JSON; empty except on a topic's partition 1 with a resolver
     // tap: (empty tap_ring without one): the ring a recorder reads, what went
     // into it, and the slowest reader's lag behind the head.
     std::string tap_ring;

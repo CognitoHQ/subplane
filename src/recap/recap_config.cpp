@@ -44,4 +44,22 @@ bool RecapConfig::parse(const YAML::Node& node, RecapConfig& out, std::string& e
     return true;
 }
 
+bool ResolverConfig::parse(const YAML::Node& node, ResolverConfig& out, std::string& err) {
+    try {
+        out = ResolverConfig{};
+        if (!node.IsMap()) { err = "resolver must be a map"; return false; }
+        out.type = node["type"].as<std::string>("");
+        if (out.type.empty()) { err = "resolver.type is required"; return false; }
+        if (node["sections"].IsDefined()) { err = "resolver has no section stream; remove `sections:`"; return false; }
+        out.timeout_ms = node["timeout_ms"].as<uint32_t>(out.timeout_ms);
+        out.refresh_ms = node["refresh_ms"].as<uint32_t>(out.refresh_ms);
+    } catch (const YAML::Exception& e) {
+        err = std::string("resolver config: ") + e.what();
+        return false;
+    }
+    if (out.timeout_ms == 0) { err = "resolver.timeout_ms must be > 0"; return false; }
+    if (out.refresh_ms < out.timeout_ms) { err = "resolver.refresh_ms must be at least timeout_ms"; return false; }
+    return true;
+}
+
 } // namespace subplane

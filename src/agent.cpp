@@ -336,6 +336,24 @@ bool Agent::start() {
             }
         }
     }
+    // Resolvers: one per topic, held by its partition 1; the same manager
+    // thread runs them. Their lists feed the session manager's names.
+    directories_.clear();
+    for (size_t gi = 0; gi < groups_.size(); ++gi) {
+        for (Partition* p : groups_[gi]->partitions()) {
+            if (!p->has_resolver()) continue;
+            if (!recap_) recap_ = std::make_unique<RecapManager>(epoch_, *symbols_);
+            if (const RecapTransport* rt = p->resolver_transport()) resolver_keys_[p->id()] = rt->endpoint_key(host_);
+            uint16_t count = 0;
+            for (const auto& q : partitions_) count = static_cast<uint16_t>(count + (q->topic_id() == p->topic_id() ? 1 : 0));
+            directories_.push_back(std::make_unique<TopicDirectory>(p->topic_name(), p->topic_id()));
+            if (!recap_->add_resolver(*p, groups_[gi]->recap_channel(), *directories_.back(), count, err)) {
+                LogRegistry::instance().error("AGENT", "START_FAILED", err);
+                for (auto& q : partitions_) q->close();
+                return false;
+            }
+        }
+    }
     if (recap_ && !recap_->open(err)) {
         LogRegistry::instance().error("AGENT", "START_FAILED", err);
         recap_.reset();
@@ -367,7 +385,9 @@ bool Agent::start() {
     for (auto& p : partitions_) praw.push_back(p.get());
     std::vector<Pipeline*> graw;
     for (auto& g : groups_) graw.push_back(g.get());
-    sessions_ = std::make_unique<SessionManager>(smc, *symbols_, *lvc_, praw, graw);
+    std::vector<TopicDirectory*> draw;
+    for (auto& d : directories_) draw.push_back(d.get());
+    sessions_ = std::make_unique<SessionManager>(smc, *symbols_, *lvc_, praw, graw, draw);
 
     std::vector<SessionSpec> specs;
     if (!load_session_specs(specs, err) || !sessions_->reconcile_config(specs, err)) {
@@ -458,6 +478,7 @@ AgentStatus Agent::get_status() const {
         ps.inst_gaps = c.inst_gaps;
         ps.inst_dups = c.inst_dups;
         if (p->has_recap()) ps.recap_json = p->recap_counters.to_json();
+        if (p->has_resolver()) ps.resolver_json = p->resolver_counters.to_json();
         if (const RingWriter* tap = p->tap) {
             ps.tap_ring = p->tap_path();
             ps.tap_records = c.tap_records;
@@ -697,6 +718,13 @@ std::string Agent::render_topology() const {
             o += "{\"key\":" + jstr(recap_keys_[p.id()]) + ",\"role\":\"recap\",\"state\":" + jstr(up ? "up" : "down");
             o += ",\"local\":{\"topic\":" + jstr(p.topic_name()) + ",\"partition\":" + jstr(p.name()) + "}}";
         }
+        if (p.has_resolver()) {
+            o += first ? "" : ",";
+            first = false;
+            const bool up = p.resolver_counters.connected.load(std::memory_order_relaxed) != 0;
+            o += "{\"key\":" + jstr(resolver_keys_[p.id()]) + ",\"role\":\"resolver\",\"state\":" + jstr(up ? "up" : "down");
+            o += ",\"local\":{\"topic\":" + jstr(p.topic_name()) + "}}";
+        }
     }
     o += "],\"downstream\":[";
     const ConsumerScan scan = consumers(st.sessions);
@@ -827,6 +855,15 @@ std::string Agent::render_metrics(const std::string& format) const {
             w.gauge("subplane_recap_queued", "Recap requests waiting to be sent", l, static_cast<double>(p.recap_counters.queued.load(std::memory_order_relaxed)));
             w.gauge("subplane_recap_connected", "1 while the recap component is connected to its snapshot service", l, static_cast<double>(p.recap_counters.connected.load(std::memory_order_relaxed)));
         }
+        if (p.has_resolver()) {
+            p.resolver_counters.each([&](const char* n, uint64_t v) {
+                std::string_view sn(n);
+                if (sn.rfind("resolver_", 0) == 0) sn.remove_prefix(9);
+                w.counter("subplane_resolver_" + std::string(sn) + "_total", "Resolver counter " + std::string(n), l, v);
+            });
+            w.gauge("subplane_resolver_instruments", "Instruments in the topic's last complete resolver list", l, static_cast<double>(p.resolver_counters.instruments.load(std::memory_order_relaxed)));
+            w.gauge("subplane_resolver_connected", "1 while connected to the topic's resolver", l, static_cast<double>(p.resolver_counters.connected.load(std::memory_order_relaxed)));
+        }
     }
     for (const auto& g : groups_) {
         const PromWriter::Labels l = {{"group", g->name()}};
@@ -857,6 +894,11 @@ std::string Agent::render_metrics(const std::string& format) const {
             w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
                     {{"direction", "upstream"}, {"role", "recap"}, {"key", recap_keys_[p.id()]}, {"topic", p.topic_name()}, {"partition", p.name()}},
                     p.recap_counters.connected.load(std::memory_order_relaxed) != 0 ? 1 : 0);
+        }
+        if (p.has_resolver()) {
+            w.gauge("subplane_topology_edge", "An upstream or downstream endpoint: 1 up, 0 not up",
+                    {{"direction", "upstream"}, {"role", "resolver"}, {"key", resolver_keys_[p.id()]}, {"topic", p.topic_name()}, {"partition", p.name()}},
+                    p.resolver_counters.connected.load(std::memory_order_relaxed) != 0 ? 1 : 0);
         }
     }
     for (const PartitionStatus& ps : st.partitions) {

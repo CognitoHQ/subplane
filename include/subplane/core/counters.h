@@ -29,6 +29,11 @@ inline void inc(std::atomic<uint64_t>& c, uint64_t n = 1) noexcept {
     X(recap_held) X(recap_merged) X(recap_records) X(recap_too_old) X(recap_hold_overflows) X(recap_post_dropped) \
     X(recap_resyncs) X(recap_superseded) X(recap_elsewhere)
 
+// Written by the recap manager thread, which runs the topic's resolver client.
+#define SUBPLANE_RESOLVER_COUNTERS(X) \
+    X(resolver_requests) X(resolver_replies) X(resolver_lists) X(resolver_rejects) X(resolver_timeouts) \
+    X(resolver_stray) X(resolver_mismatch)
+
 #define SUBPLANE_SESSION_COUNTERS(X) X(published) X(filtered) X(ring_overruns) X(publish_failed)
 
 struct alignas(64) PartitionCounters {
@@ -96,6 +101,31 @@ struct alignas(64) RecapCounters {
 #undef X
         o += "\"recap_inflight\":" + std::to_string(inflight.load(std::memory_order_relaxed)) +
              ",\"recap_queued\":" + std::to_string(queued.load(std::memory_order_relaxed)) + "}";
+        return o;
+    }
+};
+
+struct alignas(64) ResolverCounters {
+#define X(n) std::atomic<uint64_t> n{0};
+    SUBPLANE_RESOLVER_COUNTERS(X)
+#undef X
+    std::atomic<uint64_t> instruments{0}; // gauge: instruments in the last complete list
+    std::atomic<uint64_t> connected{0};   // gauge: 1 while connected to the resolver
+
+    // Cold. f(name, value) for every counter (not the gauges).
+    template <class F> void each(F&& f) const {
+#define X(n) f(#n, n.load(std::memory_order_relaxed));
+        SUBPLANE_RESOLVER_COUNTERS(X)
+#undef X
+    }
+
+    std::string to_json() const {
+        std::string o = "{";
+#define X(n) o += "\"" #n "\":" + std::to_string(n.load(std::memory_order_relaxed)) + ",";
+        SUBPLANE_RESOLVER_COUNTERS(X)
+#undef X
+        o += "\"resolver_instruments\":" + std::to_string(instruments.load(std::memory_order_relaxed)) +
+             ",\"resolver_connected\":" + std::to_string(connected.load(std::memory_order_relaxed)) + "}";
         return o;
     }
 };
